@@ -724,7 +724,7 @@ function renderCoworkings() {
     selCoworkingId = coworkings[0].id;
   }
   el.innerHTML = coworkings.map(c =>
-    `<button class="floor-btn ${c.id===selCoworkingId?'active':''}" onclick="selectCoworking('${c.id}')">${c.name}</button>`
+    `<button class="floor-btn ${c.id===selCoworkingId?'active':''}" onclick="selectCoworking('${c.id}')">${escapeHtml(c.name)}</button>`
   ).join('');
 }
 
@@ -755,7 +755,7 @@ function renderFloors() {
     `<button class="floor-btn ${f.id===selFloorId?'active':''}" onclick="selectFloor('${f.id}')">
       <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" style="opacity:.5">
         <path d="M3 4h14v2H3zm0 5h14v2H3zm0 5h14v2H3z"/>
-      </svg>${f.name}</button>`
+      </svg>${escapeHtml(f.name)}</button>`
   ).join('');
 }
 
@@ -808,7 +808,7 @@ function renderMiniBookings() {
   el.innerHTML = mine.sort((a,b)=>a.date.localeCompare(b.date)).map(b => {
     const sp = spaces.find(s=>s.id===b.spaceId);
     return `<div class="mini-booking">
-      <div class="mb-label">${sp?.label||'?'}</div>
+      <div class="mb-label">${escapeHtml(sp?.label||'?')}</div>
       <div class="mb-meta">${fmtHuman(b.date)} · ${b.slotFrom}–${b.slotTo}</div>
       <button class="mb-del" onclick="cancelBooking('${b.id}')">✕</button>
     </div>`;
@@ -1199,8 +1199,8 @@ function renderMyBookingsView() {
         const sp = spaces.find(s=>s.id===b.spaceId);
         const fl = floors.find(f=>f.id===sp?.floorId);
         return `<tr>
-          <td><strong>${sp?.label||'?'}</strong></td>
-          <td>${fl?.name||'?'}</td>
+          <td><strong>${escapeHtml(sp?.label||'?')}</strong></td>
+          <td>${escapeHtml(fl?.name||'?')}</td>
           <td>${fmtHuman(b.date)}</td>
           <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
           <td style="font-size:12px;color:var(--ink3)">${b.expiresAt}</td>
@@ -1225,7 +1225,7 @@ function renderTeamView() {
 
   el.innerHTML = `<div class="view-area">
     <div>
-      <div class="view-head">Отдел: ${me.department}</div>
+      <div class="view-head">Отдел: ${escapeHtml(me.department)}</div>
       <div class="view-sub">${team.length} сотрудников · ${bks.length} активных бронирований</div>
     </div>
     <div class="metrics">
@@ -1488,7 +1488,7 @@ function renderAdminFloors(el) {
     <div style="margin-bottom:.875rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
       <div class="floor-tabs" id="editor-coworking-tabs" style="margin-bottom:0">
         ${coworkings.map(c=>`<button class="floor-tab-btn ${c.id===editorCoworkingId?'active':''}"
-          onclick="selectEditorCoworking('${c.id}',this)">${c.name}</button>`).join('')}
+          onclick="selectEditorCoworking('${c.id}',this)">${escapeHtml(c.name)}</button>`).join('')}
       </div>
       ${editorCoworkingId ? `<button class="btn btn-danger btn-sm" onclick="deleteCoworking('${editorCoworkingId}')">🗑 Удалить коворкинг</button>` : ''}
     </div>
@@ -1496,7 +1496,7 @@ function renderAdminFloors(el) {
       <div class="floor-tabs" id="editor-floor-tabs" style="margin-bottom:0">
         ${floors.length
           ? floors.map(f=>`<button class="floor-tab-btn ${f.id===editorFloorId?'active':''}"
-              onclick="selectEditorFloor('${f.id}',this)">${f.name}</button>`).join('')
+              onclick="selectEditorFloor('${f.id}',this)">${escapeHtml(f.name)}</button>`).join('')
           : `<span style="font-size:12px;color:var(--ink4);padding:6px 10px">Нет этажей</span>`}
       </div>
       ${editorFloorId ? `<button class="btn btn-danger btn-sm" onclick="deleteFloor('${editorFloorId}')">🗑 Удалить этаж</button>` : ''}
@@ -1724,7 +1724,7 @@ function renderEditorForFloor() {
     <div class="editor-canvas-card">
       <div class="editor-toolbar">
         <span style="font-size:12px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.7px">
-          ${floor.name}
+          ${escapeHtml(floor.name)}
         </span>
         <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center">
           <label class="btn btn-ghost btn-sm" style="cursor:pointer">
