@@ -105,7 +105,7 @@ let editorFloorId   = null;
 let editorSpaces    = [];
 let editorDrawing   = false;
 let editorDrawStart = null;
-let editorNewZone   = { label:'', seats:1, color:'#3b82f6' };
+let editorNewZone   = { label:'', seats:1, color:'#059669' };
 
 const SLOTS = [
   { id:'morning',   label:'Утро',       from:'09:00', to:'13:00' },
@@ -114,7 +114,7 @@ const SLOTS = [
   { id:'full',      label:'Весь день',  from:'09:00', to:'21:00' },
   { id:'custom',    label:'Своё время', from:'09:00', to:'18:00' },
 ];
-const COLORS = ['#3b82f6','#059669','#8b5cf6','#f59e0b','#ef4444','#ec4899','#06b6d4','#64748b'];
+const COLORS = ['#059669'];
 const MONTHS  = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
 const MONTHS_S= ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
 
@@ -753,14 +753,13 @@ function renderMapView() {
   });
 
   // Floor image or grid pattern
-  const bgPattern = floor?.imageUrl && floor.imageType !== 'pdf'
+  const bgPattern = floor?.imageUrl
     ? `<image href="${floor.imageUrl}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid meet"/>`
     : `<defs><pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
         <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#e2e8f0" stroke-width="0.8"/>
        </pattern></defs>
        <rect width="${W}" height="${H}" fill="white"/>
-       <rect width="${W}" height="${H}" fill="url(#grid)"/>
-       ${floor?.imageType === 'pdf' ? `<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="#64748b" font-size="16" font-family="DM Sans,sans-serif">PDF-план отображается в редакторе</text>` : ''}`;
+       <rect width="${W}" height="${H}" fill="url(#grid)"/>`;
 
   mapArea.innerHTML = `<div style="position:relative">
     <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"
@@ -1185,28 +1184,117 @@ function deleteUser(uid, name) {
 function renderAdminBookings(el) {
   purgeExpired();
   const bks    = getBookings().sort((a,b)=>a.date.localeCompare(b.date));
-  const spaces = getSpaces(); const floors = getFloors();
+  const spaces = getSpaces();
+  const floors = getFloors();
+  const totalSpaces = spaces.length;
+  const today = new Date();
+  const todayDs = fmtDate(today);
 
-  el.innerHTML = `<div class="card">
-    <div class="card-head">Все активные бронирования (${bks.length})
-      <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇ CSV</button>
+  const weekStart = new Date(today);
+  weekStart.setHours(0, 0, 0, 0);
+  const dow = weekStart.getDay();
+  const shift = dow === 0 ? 6 : dow - 1; // Monday-based week
+  weekStart.setDate(weekStart.getDate() - shift);
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekEnd.getDate() + 6);
+
+  const prevWeekStart = new Date(weekStart);
+  prevWeekStart.setDate(prevWeekStart.getDate() - 7);
+  const prevWeekEnd = new Date(weekStart);
+  prevWeekEnd.setDate(prevWeekEnd.getDate() - 1);
+
+  const weekStartDs = fmtDate(weekStart);
+  const weekEndDs = fmtDate(weekEnd);
+  const prevWeekStartDs = fmtDate(prevWeekStart);
+  const prevWeekEndDs = fmtDate(prevWeekEnd);
+
+  const thisWeekCount = bks.filter(b => b.date >= weekStartDs && b.date <= weekEndDs).length;
+  const prevWeekCount = bks.filter(b => b.date >= prevWeekStartDs && b.date <= prevWeekEndDs).length;
+  const weekDelta = thisWeekCount - prevWeekCount;
+  const weekDeltaSign = weekDelta > 0 ? '+' : '';
+  const weekDeltaPct = prevWeekCount > 0 ? Math.round((weekDelta / prevWeekCount) * 100) : (thisWeekCount > 0 ? 100 : 0);
+  const weekTrendColor = weekDelta > 0 ? 'var(--green)' : weekDelta < 0 ? 'var(--red)' : 'var(--ink3)';
+
+  const todayBookings = bks.filter(b => b.date === todayDs);
+  const todayUniqueSpaces = new Set(todayBookings.map(b => b.spaceId)).size;
+  const todayLoadPct = totalSpaces ? Math.round((todayUniqueSpaces / totalSpaces) * 100) : 0;
+
+  const dailyRows = [];
+  for (let i = 0; i < 14; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + i);
+    const ds = fmtDate(d);
+    const dayBookings = bks.filter(b => b.date === ds);
+    const dayUniqueSpaces = new Set(dayBookings.map(b => b.spaceId)).size;
+    const loadPct = totalSpaces ? Math.round((dayUniqueSpaces / totalSpaces) * 100) : 0;
+    dailyRows.push({ ds, dayBookings, dayUniqueSpaces, loadPct });
+  }
+
+  el.innerHTML = `
+    <div class="metrics" style="margin-bottom:1.25rem">
+      <div class="metric mt-blue">
+        <div class="metric-n" style="color:var(--blue)">${bks.length}</div>
+        <div class="metric-l">Всего бронирований</div>
+      </div>
+      <div class="metric mt-green">
+        <div class="metric-n" style="color:${weekTrendColor}">${weekDeltaSign}${weekDelta}</div>
+        <div class="metric-l">Изменение за неделю (${weekDeltaSign}${weekDeltaPct}%)</div>
+      </div>
+      <div class="metric mt-purple">
+        <div class="metric-n" style="color:var(--purple)">${totalSpaces}</div>
+        <div class="metric-l">Всего рабочих пространств</div>
+      </div>
+      <div class="metric mt-amber">
+        <div class="metric-n" style="color:var(--amber)">${todayLoadPct}%</div>
+        <div class="metric-l">Загрузка сегодня (${todayUniqueSpaces}/${totalSpaces || 0})</div>
+      </div>
     </div>
-    <div style="padding:0"><table class="data-table">
-      <thead><tr><th>Место</th><th>Сотрудник</th><th>Отдел</th><th>Дата</th><th>Время</th><th>Истекает</th><th></th></tr></thead>
-      <tbody>${!bks.length ? `<tr><td colspan="7" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>` :
-        bks.map(b=>{
-          const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
-          return `<tr>
-            <td><strong>${sp?.label||'?'}</strong><br><span style="font-size:11px;color:var(--ink3)">${fl?.name||'?'}</span></td>
-            <td>${b.userName}</td>
-            <td style="font-size:12px;color:var(--ink3)">${b.userId===currentUser.id?'<span class="badge badge-blue">Вы</span>':getUsers().find(u=>u.id===b.userId)?.department||'—'}</td>
-            <td>${fmtHuman(b.date)}</td>
-            <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
-            <td style="font-size:11px;color:var(--ink3)">${b.expiresAt}</td>
-            <td><button class="btn btn-danger btn-xs" onclick="adminCancelBk('${b.id}')">Отменить</button></td>
-          </tr>`;
-        }).join('')}
-      </tbody></table></div></div>`;
+
+    <div class="card">
+      <div class="card-head">Загрузка по дням (14 дней)</div>
+      <div style="padding:0">
+        <table class="data-table">
+          <thead><tr><th>Дата</th><th>Бронирований</th><th>Занято пространств</th><th>Загрузка</th></tr></thead>
+          <tbody>${dailyRows.map(r => `
+            <tr>
+              <td>${fmtHuman(r.ds)}</td>
+              <td>${r.dayBookings.length}</td>
+              <td>${r.dayUniqueSpaces}/${totalSpaces || 0}</td>
+              <td>
+                <div style="display:flex;align-items:center;gap:8px;min-width:180px">
+                  <div style="flex:1;height:8px;background:var(--paper);border-radius:999px;overflow:hidden">
+                    <div style="height:100%;width:${r.loadPct}%;background:var(--status-mine)"></div>
+                  </div>
+                  <span style="font-size:11px;color:var(--ink3);min-width:34px">${r.loadPct}%</span>
+                </div>
+              </td>
+            </tr>
+          `).join('')}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">Все бронирования (${bks.length})
+        <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇ CSV</button>
+      </div>
+      <div style="padding:0"><table class="data-table">
+        <thead><tr><th>Место</th><th>Сотрудник</th><th>Отдел</th><th>Дата</th><th>Время</th><th>Истекает</th><th></th></tr></thead>
+        <tbody>${!bks.length ? `<tr><td colspan="7" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>` :
+          bks.map(b=>{
+            const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
+            return `<tr>
+              <td><strong>${sp?.label||'?'}</strong><br><span style="font-size:11px;color:var(--ink3)">${fl?.name||'?'}</span></td>
+              <td>${b.userName}</td>
+              <td style="font-size:12px;color:var(--ink3)">${b.userId===currentUser.id?'<span class="badge badge-blue">Вы</span>':getUsers().find(u=>u.id===b.userId)?.department||'—'}</td>
+              <td>${fmtHuman(b.date)}</td>
+              <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
+              <td style="font-size:11px;color:var(--ink3)">${b.expiresAt}</td>
+              <td><button class="btn btn-danger btn-xs" onclick="adminCancelBk('${b.id}')">Отменить</button></td>
+            </tr>`;
+          }).join('')}
+        </tbody></table></div>
+    </div>`;
 }
 
 function adminCancelBk(id) {
@@ -1329,7 +1417,7 @@ function createCoworkingWithFloor(coworkingName, floorName='Этаж 1') {
 function addCoworking() {
   const name = prompt('Название коворкинга:');
   if (!name?.trim()) return;
-  const floorName = prompt('Название первого этажа:', 'Этаж 1');
+  const floorName = prompt('Название этажа:', 'Этаж 1');
   if (floorName === null) return;
   const created = createCoworkingWithFloor(name, floorName);
   if (!created) return;
@@ -1464,10 +1552,7 @@ function renderEditorForFloor() {
         onmousemove="editorMouseMove(event)"
         onmouseup="editorMouseUp(event)">
         ${floor.imageUrl
-          ? floor.imageType === 'pdf'
-            ? `<iframe src="${floor.imageUrl}#toolbar=0&view=FitH" id="floor-pdf"
-                style="width:100%;height:100%;min-height:560px;display:block;border:0;pointer-events:none"></iframe>`
-            : `<img src="${floor.imageUrl}" id="floor-img" style="width:100%;height:auto;display:block;pointer-events:none">`
+          ? `<img src="${floor.imageUrl}" id="floor-img" style="width:100%;height:auto;display:block;pointer-events:none">`
           : `<div class="no-image">
               <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
                 <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
@@ -1502,7 +1587,7 @@ function renderEditorForFloor() {
               onclick="pickColor('${c}')"></div>`).join('')}
           </div>
         </div>
-        <div class="hint">Нарисуй прямоугольник мышью на плане чтобы создать зону</div>
+        <div class="hint">Нарисуй прямоугольник мышью на плане чтобы создать зону. Каждая зона будет кликабельной.</div>
       </div>
 
       <div class="panel-card">
@@ -1608,9 +1693,9 @@ function editorMouseUp(e) {
 
   if (pw < 20 || ph < 20) return; // too small
 
-  const label = editorNewZone.label || prompt('Название зоны:') || 'Зона';
-  document.getElementById('ez-label').value = label;
-  editorNewZone.label = label;
+  const label = prompt('Название зоны:') || 'Зона';
+  document.getElementById('ez-label').value = '';
+  editorNewZone.label = '';
 
   const newSp = {
     id:      DB.uid(),
@@ -1621,7 +1706,7 @@ function editorMouseUp(e) {
     y:       Math.round(py/CH*100*100)/100,
     w:       Math.round(pw/CW*100*100)/100,
     h:       Math.round(ph/CH*100*100)/100,
-    color:   editorNewZone.color || '#3b82f6'
+    color:   editorNewZone.color || '#059669'
   };
   editorSpaces.push(newSp);
   renderEditorZones();
