@@ -107,6 +107,10 @@ let editorDrawing   = false;
 let editorDrawStart = null;
 let editorNewZone   = { label:'', seats:1, color:'#3b82f6' };
 
+// Add coworking modal state
+let _acwFileData = null;
+let _acwFileType = null;
+
 const SLOTS = [
   { id:'morning',   label:'Утро',       from:'09:00', to:'13:00' },
   { id:'afternoon', label:'День',       from:'13:00', to:'17:00' },
@@ -1110,24 +1114,146 @@ function renderTeamView() {
 function renderAdminView() {
   const el = document.getElementById('view-admin');
   el.innerHTML = `<div class="view-area">
-    <div><div class="view-head">Администрирование</div></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.25rem">
+      <div class="view-head">Администрирование</div>
+      <button class="btn btn-primary" onclick="showAddCoworkingModal()">+ Добавить коворкинг</button>
+    </div>
     <div class="floor-tabs" id="admin-tabs">
+      <button class="floor-tab-btn active" onclick="adminTab('stats',this)">Статистика</button>
       <button class="floor-tab-btn" onclick="adminTab('users',this)">Пользователи</button>
-      <button class="floor-tab-btn active" onclick="adminTab('floors',this)">Коворкинги и планировки</button>
+      <button class="floor-tab-btn" onclick="adminTab('floors',this)">Коворкинги и планировки</button>
       <button class="floor-tab-btn" onclick="adminTab('bookings',this)">Все брони</button>
     </div>
     <div id="admin-tab-content"></div>
   </div>`;
-  adminTab('floors', document.querySelector('#admin-tabs .floor-tab-btn:nth-child(2)'));
+  adminTab('stats', document.querySelector('#admin-tabs .floor-tab-btn:nth-child(1)'));
 }
 
 function adminTab(tab, btn) {
   document.querySelectorAll('#admin-tabs .floor-tab-btn').forEach(b=>b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   const el = document.getElementById('admin-tab-content');
+  if (tab === 'stats')    renderAdminStats(el);
   if (tab === 'users')    renderAdminUsers(el);
   if (tab === 'floors')   renderAdminFloors(el);
   if (tab === 'bookings') renderAdminBookings(el);
+}
+
+/* ── Admin: Statistics ────────────────────────────────────────────────────── */
+function renderAdminStats(el) {
+  purgeExpired();
+  const bks    = getBookings();
+  const spaces = getSpaces();
+  const floors = getFloors();
+  const today  = fmtDate(new Date());
+
+  const totalBks    = bks.length;
+  const totalSpaces = spaces.length;
+  const todayBks    = bks.filter(b => b.date === today).length;
+  const todayPct    = totalSpaces > 0 ? Math.round(todayBks / totalSpaces * 100) : 0;
+
+  // Last 7 days bar chart data
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d  = new Date(); d.setDate(d.getDate() - i);
+    const ds = fmtDate(d);
+    days.push({ date: ds, label: fmtHuman(ds), count: bks.filter(b => b.date === ds).length });
+  }
+  const thisWeekCount = days.reduce((s, d) => s + d.count, 0);
+
+  // Previous 7 days for delta
+  const prevDates = [];
+  for (let i = 13; i >= 7; i--) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    prevDates.push(fmtDate(d));
+  }
+  const lastWeekCount = bks.filter(b => prevDates.includes(b.date)).length;
+  const weekDelta     = thisWeekCount - lastWeekCount;
+  const deltaSign     = weekDelta > 0 ? '+' : '';
+  const deltaColor    = weekDelta > 0 ? 'var(--green)' : weekDelta < 0 ? 'var(--red)' : 'var(--ink4)';
+  const deltaArrow    = weekDelta > 0 ? '↑' : weekDelta < 0 ? '↓' : '→';
+
+  // Bar chart
+  const maxCount = Math.max(...days.map(d => d.count), 1);
+  const BAR_H    = 80; // px
+
+  // All bookings sorted
+  const allBks = [...bks].sort((a,b) => a.date.localeCompare(b.date));
+
+  el.innerHTML = `
+    <div class="metrics" style="margin-bottom:1.25rem">
+      <div class="metric">
+        <div class="metric-n" style="color:var(--blue)">${totalBks}</div>
+        <div class="metric-l">Всего бронирований</div>
+        <div class="metric-delta" style="color:${deltaColor}">
+          ${deltaArrow} ${deltaSign}${weekDelta} за неделю
+        </div>
+      </div>
+      <div class="metric">
+        <div class="metric-n" style="color:var(--green)">${totalSpaces}</div>
+        <div class="metric-l">Рабочих пространств</div>
+        <div class="metric-delta" style="color:var(--ink4)">${getCoworkings().length} коворкинг${getCoworkings().length===1?'':'а'}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-n" style="color:var(--amber)">${todayBks}</div>
+        <div class="metric-l">Загрузка сегодня</div>
+        <div class="metric-delta" style="color:var(--ink4)">${todayPct}% от мест</div>
+      </div>
+      <div class="metric">
+        <div class="metric-n" style="color:var(--purple)">${thisWeekCount}</div>
+        <div class="metric-l">За эту неделю</div>
+        <div class="metric-delta" style="color:var(--ink4)">vs ${lastWeekCount} прошлая</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-head">Загрузка по дням — последние 7 дней</div>
+      <div style="padding:1.25rem 1.5rem">
+        <div style="display:flex;align-items:flex-end;gap:10px;height:${BAR_H + 50}px">
+          ${days.map(d => {
+            const barH   = d.count > 0 ? Math.max(Math.round(d.count / maxCount * BAR_H), 6) : 2;
+            const isToday = d.date === today;
+            const barColor = isToday ? 'var(--blue)' : 'var(--line2)';
+            const lblColor = isToday ? 'var(--blue)' : 'var(--ink4)';
+            const numColor = isToday ? 'var(--blue)' : 'var(--ink3)';
+            return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+              <div style="font-size:12px;font-weight:700;color:${numColor};min-height:18px;display:flex;align-items:flex-end">
+                ${d.count > 0 ? d.count : ''}
+              </div>
+              <div style="width:100%;height:${barH}px;background:${barColor};border-radius:4px 4px 0 0;
+                align-self:flex-end;transition:height .3s"></div>
+              <div style="font-size:10px;color:${lblColor};font-weight:${isToday?'700':'500'};text-align:center;
+                white-space:nowrap">${d.label}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">Все бронирования (${allBks.length})
+        <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇ CSV</button>
+      </div>
+      <div style="padding:0"><table class="data-table">
+        <thead><tr><th>Место</th><th>Сотрудник</th><th>Отдел</th><th>Дата</th><th>Время</th><th>Истекает</th><th></th></tr></thead>
+        <tbody>${!allBks.length
+          ? `<tr><td colspan="7" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>`
+          : allBks.map(b => {
+              const sp = spaces.find(s=>s.id===b.spaceId);
+              const fl = floors.find(f=>f.id===sp?.floorId);
+              return `<tr>
+                <td><strong>${sp?.label||'?'}</strong><br><span style="font-size:11px;color:var(--ink3)">${fl?.name||'?'}</span></td>
+                <td>${b.userName}</td>
+                <td style="font-size:12px;color:var(--ink3)">${b.userId===currentUser.id?'<span class="badge badge-blue">Вы</span>':getUsers().find(u=>u.id===b.userId)?.department||'—'}</td>
+                <td>${fmtHuman(b.date)}</td>
+                <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
+                <td style="font-size:11px;color:var(--ink3)">${b.expiresAt}</td>
+                <td><button class="btn btn-danger btn-xs" onclick="adminCancelBk('${b.id}')">Отменить</button></td>
+              </tr>`;
+            }).join('')}
+        </tbody>
+      </table></div>
+    </div>`;
 }
 
 /* ── Admin: Users ─────────────────────────────────────────────────────────── */
@@ -1260,7 +1386,7 @@ function renderAdminFloors(el) {
         ${coworkings.map(c=>`<button class="floor-tab-btn ${c.id===editorCoworkingId?'active':''}"
           onclick="selectEditorCoworking('${c.id}',this)">${c.name}</button>`).join('')}
       </div>
-      <button class="btn btn-primary btn-sm" onclick="addCoworking()">+ Коворкинг</button>
+      <button class="btn btn-primary btn-sm" onclick="showAddCoworkingModal()">+ Коворкинг</button>
     </div>
     <div style="margin-bottom:.875rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
       <div class="floor-tabs" id="editor-floor-tabs" style="margin-bottom:0">
@@ -1326,34 +1452,139 @@ function createCoworkingWithFloor(coworkingName, floorName='Этаж 1') {
   return { item, floor: newF };
 }
 
-function addCoworking() {
-  const name = prompt('Название коворкинга:');
-  if (!name?.trim()) return;
-  const floorName = prompt('Название первого этажа:', 'Этаж 1');
-  if (floorName === null) return;
-  const created = createCoworkingWithFloor(name, floorName);
-  if (!created) return;
-  toast(`Коворкинг "${created.item.name}" создан`, 't-green', '✓');
-  refreshAdminFloorsIfOpen();
-}
+function addCoworking() { showAddCoworkingModal(); }
 
 function openAddCoworkingFlow(btn) {
   if (currentUser?.role !== 'admin') {
     toast('Доступно только администратору', 't-red', '✕');
     return;
   }
-  const name = prompt('Название коворкинга:');
-  if (!name?.trim()) return;
-  const floorName = prompt('Название этажа для плана:', 'Этаж 1');
-  if (floorName === null) return;
+  showAddCoworkingModal();
+}
 
-  const created = createCoworkingWithFloor(name, floorName);
+/* ── Add Coworking Modal ──────────────────────────────────────────────────── */
+function showAddCoworkingModal() {
+  const old = document.getElementById('add-cw-overlay');
+  if (old) old.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id        = 'add-cw-overlay';
+  overlay.className = 'overlay';
+  overlay.innerHTML = `
+    <div class="modal" style="width:500px">
+      <div class="modal-head">
+        <span class="modal-title">Добавить коворкинг</span>
+        <button class="modal-x" onclick="closeAddCoworkingModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="panel-field">
+          <label>Название коворкинга *</label>
+          <input type="text" id="acw-name" placeholder="Например: Центральный офис"
+            style="width:100%;padding:10px 12px;border:1.5px solid var(--line2);border-radius:var(--radius);
+              font-family:inherit;font-size:14px;color:var(--ink);outline:none"
+            onkeydown="if(event.key==='Enter')submitAddCoworkingModal()">
+        </div>
+        <div class="panel-field">
+          <label>Название первого этажа</label>
+          <input type="text" id="acw-floor" placeholder="Этаж 1" value="Этаж 1"
+            style="width:100%;padding:10px 12px;border:1.5px solid var(--line2);border-radius:var(--radius);
+              font-family:inherit;font-size:14px;color:var(--ink);outline:none">
+        </div>
+        <div class="panel-field">
+          <label>План помещения (необязательно)</label>
+          <label class="acw-upload-zone" id="acw-upload-zone">
+            <div class="acw-upload-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+            </div>
+            <div id="acw-file-name" style="font-size:13px;font-weight:600;color:var(--ink3)">
+              Перетащите или выберите JPG, PNG, PDF
+            </div>
+            <div style="font-size:11px;color:var(--ink4);margin-top:2px">до 20 МБ</div>
+            <input type="file" id="acw-file" accept=".jpg,.jpeg,.png,.pdf,.webp"
+              style="display:none" onchange="acwFileChosen(this)">
+          </label>
+        </div>
+        <div style="font-size:12px;color:var(--ink3);background:var(--paper);padding:.875rem;
+          border-radius:var(--radius);line-height:1.5;margin-top:.25rem">
+          После создания откроется редактор планировки — можно загрузить или изменить план
+          и нарисовать бронируемые зоны.
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" onclick="closeAddCoworkingModal()">Отмена</button>
+        <button class="btn btn-primary" onclick="submitAddCoworkingModal()">
+          Создать и открыть редактор
+        </button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add('open'));
+  setTimeout(() => document.getElementById('acw-name')?.focus(), 50);
+}
+
+function acwFileChosen(input) {
+  if (!input.files[0]) return;
+  const file = input.files[0];
+  const zone = document.getElementById('acw-upload-zone');
+  document.getElementById('acw-file-name').textContent = '✓ ' + file.name;
+  if (zone) zone.style.borderColor = 'var(--green)';
+  const reader = new FileReader();
+  reader.onload = e => {
+    _acwFileData = e.target.result;
+    _acwFileType = file.type === 'application/pdf' ? 'pdf' : 'image';
+  };
+  reader.readAsDataURL(file);
+}
+
+function closeAddCoworkingModal() {
+  const overlay = document.getElementById('add-cw-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('open');
+  setTimeout(() => overlay.remove(), 220);
+  _acwFileData = null;
+  _acwFileType = null;
+}
+
+function submitAddCoworkingModal() {
+  const name = document.getElementById('acw-name')?.value?.trim();
+  if (!name) {
+    const inp = document.getElementById('acw-name');
+    if (inp) { inp.style.borderColor = 'var(--red)'; inp.focus(); }
+    return toast('Введите название коворкинга', 't-red', '✕');
+  }
+  const floorName = document.getElementById('acw-floor')?.value?.trim() || 'Этаж 1';
+  const created   = createCoworkingWithFloor(name, floorName);
   if (!created) return;
 
+  // Apply uploaded floor image if provided
+  if (_acwFileData) {
+    const floors = getFloors();
+    const fl = floors.find(f => f.id === created.floor.id);
+    if (fl) {
+      fl.imageUrl  = _acwFileData;
+      fl.imageType = _acwFileType;
+      saveFloors(floors);
+    }
+  }
+
+  closeAddCoworkingModal();
+  toast(`Коворкинг "${name}" создан`, 't-green', '✓');
+
+  // Navigate to admin → floors tab
   const adminBtn = document.getElementById('nav-admin-btn');
-  switchView('admin', adminBtn || btn || null);
-  refreshAdminFloorsIfOpen();
-  toast(`Создано: ${created.item.name} / ${created.floor.name}`, 't-green', '✓');
+  if (currentView !== 'admin') switchView('admin', adminBtn || null);
+  else renderAdminView();
+
+  // Switch to floors editor after render (timeout ensures DOM is ready)
+  setTimeout(() => {
+    const btn = document.querySelector('#admin-tabs .floor-tab-btn:nth-child(3)');
+    adminTab('floors', btn);
+  }, 30);
 }
 
 function renameCoworking(id, name) {
