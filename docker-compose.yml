@@ -1,0 +1,103 @@
+# ═══════════════════════════════════════════════════════════════
+# Docker Compose для быстрого запуска Supabase
+# ═══════════════════════════════════════════════════════════════
+
+version: '3.8'
+
+services:
+  # PostgreSQL база данных
+  db:
+    image: supabase/postgres:15.1.0.117
+    container_name: kb_sits_db
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "54322:5432"
+    volumes:
+      - kb_sits_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Supabase Studio (UI)
+  studio:
+    image: supabase/studio:20231123-64a766a
+    container_name: kb_sits_studio
+    environment:
+      SUPABASE_URL: http://kong:8000
+      STUDIO_PG_META_URL: http://meta:8080
+      SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0
+      SUPABASE_SERVICE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+
+  # Kong API Gateway
+  kong:
+    image: kong:2.8.1
+    container_name: kb_sits_kong
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /var/lib/kong/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl
+    ports:
+      - "8000:8000"
+      - "54321:8000"
+    volumes:
+      - ./kong.yml:/var/lib/kong/kong.yml:ro
+
+  # PostgREST API
+  rest:
+    image: postgrest/postgrest:v11.2.0
+    container_name: kb_sits_rest
+    environment:
+      PGRST_DB_URI: postgres://postgres:postgres@db:5432/postgres
+      PGRST_DB_SCHEMAS: public,storage
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: super-secret-jwt-token-with-at-least-32-characters-long
+    depends_on:
+      - db
+
+  # Meta API
+  meta:
+    image: supabase/postgres-meta:v0.68.0
+    container_name: kb_sits_meta
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: db
+      PG_META_DB_PASSWORD: postgres
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+
+volumes:
+  kb_sits_db_data:
+
+# ═══════════════════════════════════════════════════════════════
+# Использование:
+# ═══════════════════════════════════════════════════════════════
+#
+# Запуск:
+#   docker-compose up -d
+#
+# Остановка:
+#   docker-compose down
+#
+# Остановка с удалением данных:
+#   docker-compose down -v
+#
+# Логи:
+#   docker-compose logs -f
+#
+# После запуска:
+#   - Studio UI: http://localhost:3000
+#   - API: http://localhost:54321
+#   - Database: postgresql://postgres:postgres@localhost:54322/postgres
+#
+# ═══════════════════════════════════════════════════════════════
