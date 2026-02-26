@@ -153,6 +153,55 @@ class SupabaseAPI {
     return data;
   }
 
+  // Загрузить план этажа в Storage
+  async uploadFloorPlan(file, floorId) {
+    const fileName = `floor-${floorId}-${Date.now()}.${file.name.split('.').pop()}`;
+    
+    const { data, error } = await this.client.storage
+      .from('floor-plans')
+      .upload(fileName, file, {
+        cacheControl: '3600',
+        upsert: false
+      });
+    
+    if (error) throw error;
+    
+    // Получить публичный URL
+    const { data: urlData } = this.client.storage
+      .from('floor-plans')
+      .getPublicUrl(fileName);
+    
+    // Обновить запись этажа
+    await this.updateFloor(floorId, {
+      storage_path: fileName,
+      image_url: urlData.publicUrl
+    });
+    
+    return { path: fileName, url: urlData.publicUrl };
+  }
+
+  // Получить URL плана этажа
+  getFloorPlanUrl(storagePath) {
+    if (!storagePath) return null;
+    
+    const { data } = this.client.storage
+      .from('floor-plans')
+      .getPublicUrl(storagePath);
+    
+    return data.publicUrl;
+  }
+
+  // Удалить план этажа из Storage
+  async deleteFloorPlan(storagePath) {
+    if (!storagePath) return;
+    
+    const { error } = await this.client.storage
+      .from('floor-plans')
+      .remove([storagePath]);
+    
+    if (error) throw error;
+  }
+
   async updateFloor(floorId, updates) {
     const { data, error } = await this.client
       .from('floors')
