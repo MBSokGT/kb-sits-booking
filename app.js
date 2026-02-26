@@ -516,14 +516,13 @@ function updateRangeHint() {
     : 'только пн-пт';
 
   if (selDates.length > 1) {
-    el.innerHTML = `${selDates.length} дней выбрано · ${modeHint} · ${daysHint} · ${todayLink}`;
-    el.style.color = 'var(--ink3)';
+    el.innerHTML = `${selDates.length} дней · ${daysHint} · ${todayLink}`;
   } else {
     el.innerHTML = selDates.length
-      ? `${fmtHuman(selDates[0])} · Shift+клик для длинного диапазона · ${daysHint} · ${todayLink}`
+      ? `${fmtHuman(selDates[0])} · ${daysHint} · ${todayLink}`
       : `${daysHint} · ${todayLink}`;
-    el.style.color = 'var(--ink3)';
   }
+  updateCalTrigger();
 }
 
 function jumpToTodayDate() {
@@ -550,6 +549,30 @@ function resetSelectedRange() {
   renderStats();
   renderMiniBookings();
   if (currentView === 'map') renderMapView();
+}
+
+function openCalendar() {
+  document.getElementById('cal-overlay').classList.add('active');
+  document.getElementById('cal-popup').classList.add('active');
+  document.addEventListener('keydown', _calEscHandler);
+}
+
+function closeCalendar() {
+  document.getElementById('cal-overlay').classList.remove('active');
+  document.getElementById('cal-popup').classList.remove('active');
+  document.removeEventListener('keydown', _calEscHandler);
+}
+
+function _calEscHandler(e) {
+  if (e.key === 'Escape') closeCalendar();
+}
+
+function updateCalTrigger() {
+  const el = document.getElementById('cal-trigger-text');
+  if (!el) return;
+  if (!selDates.length) { el.textContent = 'Выбрать даты…'; return; }
+  if (selDates.length === 1) { el.textContent = fmtHuman(selDates[0]); return; }
+  el.textContent = `${fmtHuman(selDates[0])} — ${fmtHuman(selDates[selDates.length-1])} · ${selDates.length} дн.`;
 }
 
 function renderYearCalendar(grid, todayDs, bookings) {
@@ -606,6 +629,8 @@ function renderCalendar() {
     satInp.checked = includeSaturdayInRange;
     satInp.disabled = includeWeekends;
   }
+  const satToggle = document.getElementById('cal-toggle-saturday');
+  if (satToggle) satToggle.classList.toggle('disabled', includeWeekends);
 
   if (calMode === 'year') {
     grid.classList.add('cal-grid-year');

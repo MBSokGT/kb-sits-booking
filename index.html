@@ -86,30 +86,14 @@
     <!-- SIDEBAR -->
     <div class="sidebar">
 
-      <!-- Calendar -->
+      <!-- Calendar trigger -->
       <div class="sb-block">
         <span class="sb-label">Даты</span>
-        <div class="cal-nav">
-          <button class="cal-arrow" onclick="calMove(-1)">‹</button>
-          <span class="cal-month" id="cal-month-lbl"></span>
-          <div class="cal-nav-right">
-            <button class="cal-arrow" onclick="calMove(1)">›</button>
-            <button class="cal-mode-btn" id="cal-mode-btn" onclick="toggleCalendarMode()">Год</button>
-          </div>
-        </div>
-        <div class="cal-grid" id="cal-grid"></div>
-        <div class="cal-options">
-          <label class="cal-opt">
-            <input type="checkbox" id="opt-weekends" onchange="toggleWeekendSelection(this.checked)">
-            <span>Включить выходные (сб и вс)</span>
-          </label>
-          <label class="cal-opt">
-            <input type="checkbox" id="opt-saturday-range" onchange="toggleSaturdayInRange(this.checked)">
-            <span>Включить субботу в диапазон</span>
-          </label>
-          <button class="cal-reset-btn" onclick="resetSelectedRange()">Сбросить диапазон</button>
-        </div>
-        <div class="cal-range-hint" id="cal-range-hint"></div>
+        <button class="cal-trigger" id="cal-trigger" onclick="openCalendar()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="flex-shrink:0;color:var(--status-mine)"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+          <span id="cal-trigger-text" class="cal-trigger-text">Загрузка…</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0;color:var(--ink4)"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
       </div>
 
       <!-- Time Slots -->
@@ -224,6 +208,45 @@
 <script src="supabase-adapter.js"></script>
 <script src="app-supabase-bridge.js"></script>
 -->
+
+<!-- Calendar Popup -->
+<div class="cal-overlay" id="cal-overlay" onclick="closeCalendar()"></div>
+<div class="cal-popup" id="cal-popup">
+  <div class="cal-popup-head">
+    <span class="cal-popup-title">Выбор дат</span>
+    <button class="cal-popup-close" onclick="closeCalendar()">✕</button>
+  </div>
+  <div class="cal-popup-body">
+    <div class="cal-nav">
+      <button class="cal-arrow" onclick="calMove(-1)">‹</button>
+      <span class="cal-month" id="cal-month-lbl"></span>
+      <div class="cal-nav-right">
+        <button class="cal-arrow" onclick="calMove(1)">›</button>
+        <button class="cal-mode-btn" id="cal-mode-btn" onclick="toggleCalendarMode()">Год</button>
+      </div>
+    </div>
+    <div class="cal-grid" id="cal-grid"></div>
+    <div class="cal-range-hint" id="cal-range-hint"></div>
+    <div class="cal-hint-box">
+      <div class="cal-hint-row"><span class="cal-hint-icon">👆</span><span>Клик по дню — выбрать или убрать дату</span></div>
+      <div class="cal-hint-row"><span class="cal-hint-icon">⇧</span><span>Shift+клик — добавить диапазон от последней выбранной</span></div>
+    </div>
+    <div class="cal-popup-options">
+      <label class="cal-toggle" id="cal-toggle-weekends">
+        <input type="checkbox" id="opt-weekends" onchange="toggleWeekendSelection(this.checked)">
+        <span class="cal-toggle-label">Включить выходные (сб–вс)</span>
+      </label>
+      <label class="cal-toggle" id="cal-toggle-saturday">
+        <input type="checkbox" id="opt-saturday-range" onchange="toggleSaturdayInRange(this.checked)">
+        <span class="cal-toggle-label">Включить субботу в диапазон</span>
+      </label>
+    </div>
+  </div>
+  <div class="cal-popup-footer">
+    <button class="cal-reset-btn" onclick="resetSelectedRange()">↺ Сбросить</button>
+    <button class="btn btn-primary" style="height:32px;padding:0 16px;font-size:12px" onclick="closeCalendar()">Готово</button>
+  </div>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <script>pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';</script>
