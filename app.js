@@ -1,9 +1,39 @@
 /* ═══════════════════════════════════════════════════════
+   SECURITY UTILS
+═══════════════════════════════════════════════════════ */
+function escapeHtml(text) {
+  if (!text) return '';
+  const map = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":"&#039;" };
+  return String(text).replace(/[&<>"']/g, m => map[m]);
+}
+
+function escapeCSV(value) {
+  if (!value) return '';
+  const escaped = String(value).replace(/"/g, '""');
+  return /[,"\n]/.test(escaped) ? `"${escaped}"` : escaped;
+}
+
+/* ═══════════════════════════════════════════════════════
    DATA LAYER  (localStorage — swap to fetch() later)
 ═══════════════════════════════════════════════════════ */
 const DB = {
-  get(k, def){ try{ return JSON.parse(localStorage.getItem('ws_'+k)) ?? def }catch{return def} },
-  set(k,v){ localStorage.setItem('ws_'+k, JSON.stringify(v)) },
+  get(k, def){ 
+    try{ 
+      const item = localStorage.getItem('ws_'+k);
+      return item ? JSON.parse(item) : def;
+    } catch(e) { 
+      console.warn('localStorage error:', e);
+      return def;
+    } 
+  },
+  set(k,v){ 
+    try {
+      localStorage.setItem('ws_'+k, JSON.stringify(v));
+    } catch(e) {
+      console.error('localStorage full or disabled:', e);
+      alert('⚠️ Хранилище браузера переполнено или отключено. Данные не сохранены.');
+    }
+  },
   uid(){ return Date.now() + Math.random().toString(36).slice(2,7) }
 };
 
@@ -36,16 +66,31 @@ if (!DB.get('floors', null)) {
 if (!DB.get('bookings', null)) DB.set('bookings', []);
 
 /* ── CRUD helpers ─────────────────────────────────────────────────────────── */
-const getCoworkings = ()  => DB.get('coworkings', []);
-const getUsers    = ()  => DB.get('users', []);
-const getFloors   = ()  => DB.get('floors', []);
-const getSpaces   = ()  => DB.get('spaces', []);
-const getBookings = ()  => DB.get('bookings', []);
-const saveCoworkings = v => DB.set('coworkings', v);
-const saveUsers    = v  => DB.set('users', v);
-const saveFloors   = v  => DB.set('floors', v);
-const saveSpaces   = v  => DB.set('spaces', v);
-const saveBookings = v  => DB.set('bookings', v);
+const getCoworkings = ()  => {
+  const data = DB.get('coworkings', null);
+  return Array.isArray(data) ? data : [];
+};
+const getUsers    = ()  => {
+  const data = DB.get('users', null);
+  return Array.isArray(data) ? data : [];
+};
+const getFloors   = ()  => {
+  const data = DB.get('floors', null);
+  return Array.isArray(data) ? data : [];
+};
+const getSpaces   = ()  => {
+  const data = DB.get('spaces', null);
+  return Array.isArray(data) ? data : [];
+};
+const getBookings = ()  => {
+  const data = DB.get('bookings', null);
+  return Array.isArray(data) ? data : [];
+};
+const saveCoworkings = v => { if (Array.isArray(v)) DB.set('coworkings', v); };
+const saveUsers    = v  => { if (Array.isArray(v)) DB.set('users', v); };
+const saveFloors   = v  => { if (Array.isArray(v)) DB.set('floors', v); };
+const saveSpaces   = v  => { if (Array.isArray(v)) DB.set('spaces', v); };
+const saveBookings = v  => { if (Array.isArray(v)) DB.set('bookings', v); };
 
 function ensureDataIntegrity() {
   let coworkings = getCoworkings();
@@ -73,9 +118,47 @@ function ensureDataIntegrity() {
 }
 
 function purgeExpired() {
-  const now = new Date();
-  const ts  = fmtDate(now) + ' ' + p2(now.getHours()) + ':' + p2(now.getMinutes());
-  saveBookings(getBookings().filter(b => b.expiresAt > ts));
+  // Optimize: Only purge every 5 minutes max
+  const now = Date.now();
+  if (now - lastPurgeTime < 5 * 60 * 1000) return;
+  lastPurgeTime = now;
+  
+  const timeNow = fmtDate(new Date()) + ' ' + p2(new Date().getHours()) + ':' + p2(new Date().getMinutes());
+  saveBookings(getBookings().filter(b => b.expiresAt > timeNow));
+}
+
+function startPurgeTimer() {
+  // Auto-purge expired bookings every 30 minutes
+  if (purgeTimer) clearInterval(purgeTimer);
+  purgeTimer = setInterval(() => {
+    purgeExpired();
+  }, 30 * 60 * 1000);
+}
+
+function stopPurgeTimer() {
+  if (purgeTimer) { clearInterval(purgeTimer); purgeTimer = null; }
+}
+
+function startSessionCheck() {
+  // Check session every minute, logout if > 60 mins inactive
+  if (sessionCheckTimer) clearInterval(sessionCheckTimer);
+  let lastActivityTime = Date.now();
+  
+  const resetActivity = () => { lastActivityTime = Date.now(); };
+  document.addEventListener('click', resetActivity);
+  document.addEventListener('keydown', resetActivity);
+  
+  sessionCheckTimer = setInterval(() => {
+    const inactiveTime = (Date.now() - lastActivityTime) / 1000 / 60; // minutes
+    if (inactiveTime > 60 && currentUser) {
+      doLogout();
+      authErr('Сессия истекла из-за неактивности');
+    }
+  }, 60 * 1000); // Check every minute
+}
+
+function stopSessionCheck() {
+  if (sessionCheckTimer) { clearInterval(sessionCheckTimer); sessionCheckTimer = null; }
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -106,6 +189,9 @@ let editorSpaces    = [];
 let editorDrawing   = false;
 let editorDrawStart = null;
 let editorNewZone   = { label:'', seats:1, color:'#059669' };
+let lastPurgeTime   = 0;
+let purgeTimer      = null;
+let sessionCheckTimer = null;
 
 const SLOTS = [
   { id:'morning',   label:'Утро',       from:'09:00', to:'13:00' },
@@ -189,9 +275,12 @@ function resetDemoData() {
 function doLogin() {
   const email = document.getElementById('l-email').value.trim().toLowerCase();
   const pass  = document.getElementById('l-pass').value;
+  // TODO: Implement proper password hashing (bcrypt) on backend
+  // For now: plaintext comparison (SECURITY RISK - FOR DEMO ONLY)
   const user  = getUsers().find(u => u.email === email && u.password === pass);
   if (!user) return authErr('Неверный email или пароль');
   onAuth(user);
+  console.warn('⚠️ SECURITY: Using plaintext password comparison. Use bcrypt on production backend!');
 }
 
 function doRegister() {
@@ -228,8 +317,24 @@ function doLogout() {
   currentUser = null;
   DB.set('session', null);
   stopExpiryWatcher();
+  stopPurgeTimer();
+  stopSessionCheck();
+  // Очищаем состояние
+  selCoworkingId = null;
+  selFloorId = null;
+  selDates = [];
+  bookingForUserId = null;
+  displayMode = 'map';
+  currentView = 'map';
+  editorCoworkingId = null;
+  editorFloorId = null;
+  editorSpaces = [];
   document.getElementById('app').style.display = 'none';
   document.getElementById('auth-screen').style.display = 'flex';
+  document.getElementById('auth-err').style.display = 'none';
+  // Clear auth form
+  document.getElementById('l-email').value = '';
+  document.getElementById('l-pass').value = '';
 }
 
 function applyUserUI() {
@@ -250,15 +355,20 @@ function applyUserUI() {
    INIT
 ═══════════════════════════════════════════════════════ */
 async function initApp() {
-  // Инициализация Supabase адаптера
+  // Initialize only localStorage adapter (Supabase is optional)
   try {
-    await dataAdapter.init();
+    if (window.dataAdapter && window.dataAdapter.init) {
+      await dataAdapter.init();
+    }
   } catch (error) {
-    console.warn('Ошибка инициализации Supabase:', error);
+    console.warn('Supabase adapter unavailable, using localStorage only:', error);
   }
   
   ensureDataIntegrity();
   purgeExpired();
+  startPurgeTimer();
+  startSessionCheck();
+  
   const today = new Date();
   calViewYear  = today.getFullYear();
   calViewMonth = today.getMonth();
@@ -267,18 +377,18 @@ async function initApp() {
   calAnchorDate = selDates[0];
   bookingForUserId = currentUser?.id || null;
 
-  const coworkings = await getCoworkings();
+  const coworkings = getCoworkings();
   if (!selCoworkingId && coworkings.length) selCoworkingId = coworkings[0].id;
-  const floors = await getFloorsByCoworking(selCoworkingId);
+  const floors = getFloorsByCoworking(selCoworkingId);
   if (!selFloorId || !floors.some(f=>f.id===selFloorId)) selFloorId = floors[0]?.id || null;
 
   renderCalendar();
   renderSlots();
-  await renderCoworkings();
-  await renderFloors();
-  await renderStats();
-  await renderMiniBookings();
-  await renderMapView();
+  renderCoworkings();
+  renderFloors();
+  renderStats();
+  renderMiniBookings();
+  renderMapView();
 }
 
 function refreshActiveViewAfterExpiry() {
@@ -577,7 +687,11 @@ function selectSlot(id) {
 function applyCustomTime() {
   const f = document.getElementById('ct-from').value;
   const t = document.getElementById('ct-to').value;
-  if (f >= t) return toast('Время «До» должно быть позже', 't-red', '✕');
+  if (!f || !t) return toast('Укажите оба времени', 't-red', '✕');
+  if (f >= t) return toast('Время конца должно быть позже времени начала', 't-red', '✕');
+  const fMin = timeToMinutes(f);
+  const tMin = timeToMinutes(t);
+  if (tMin - fMin < 30) return toast('Минимальная длительность 30 минут', 't-red', '✕');
   customFrom = f; customTo = t;
   renderSlots();
   renderStats();
@@ -593,8 +707,8 @@ function updateSlotBadge() {
 /* ═══════════════════════════════════════════════════════
    COWORKINGS
 ═══════════════════════════════════════════════════════ */
-async function getFloorsByCoworking(coworkingId) {
-  const floors = await getFloors();
+function getFloorsByCoworking(coworkingId) {
+  const floors = getFloors();
   return floors.filter(f => f.coworkingId === coworkingId);
 }
 
@@ -618,8 +732,10 @@ function selectCoworking(id) {
   selCoworkingId = id;
   const floors = getFloorsByCoworking(id);
   if (!floors.some(f=>f.id===selFloorId)) selFloorId = floors[0]?.id || null;
+  selDates = [fmtDate(new Date())];
   renderCoworkings();
   renderFloors();
+  renderCalendar();
   renderStats();
   if (currentView === 'map') renderMapView();
 }
@@ -756,7 +872,7 @@ function renderMapView() {
     const whoHtml = isMine ? `<text x="${x+w/2}" y="${y+h-7}" text-anchor="middle" fill="rgba(255,255,255,.75)"
         font-family="DM Sans,sans-serif" font-size="9">Моё</text>` :
       isBusy ? `<text x="${x+w/2}" y="${y+h-7}" text-anchor="middle" fill="rgba(255,255,255,.75)"
-        font-family="DM Sans,sans-serif" font-size="9">${bk.userName}</text>` : '';
+        font-family="DM Sans,sans-serif" font-size="9">${escapeHtml(bk.userName)}</text>` : '';
 
     zones += `<g class="zone-svg" style="cursor:pointer" onclick="spaceClick('${sp.id}')">
       <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5"
@@ -796,14 +912,14 @@ function renderListView(spaces, date, from, to) {
       const isBusy = bk && !isMine;
       const icon = Object.entries(types).find(([k]) => sp.label.includes(k))?.[1] || '📍';
       return `<tr>
-        <td><strong>${icon} ${sp.label}</strong></td>
+        <td><strong>${icon} ${escapeHtml(sp.label)}</strong></td>
         <td>${sp.seats}</td>
         <td>${!bk
           ? `<span class="status-dot"><span class="dot dot-free"></span>Свободно</span>`
           : isMine
           ? `<span class="status-dot"><span class="dot dot-mine"></span>Моё</span>`
           : `<span class="status-dot"><span class="dot dot-busy"></span>Занято</span>`}</td>
-        <td>${bk ? bk.userName : '—'}</td>
+        <td>${bk ? escapeHtml(bk.userName) : '—'}</td>
         <td>${!bk
           ? `<button class="btn btn-primary btn-sm" onclick="spaceClick('${sp.id}')">Забронировать</button>`
           : canCancelBooking(bk)
@@ -819,10 +935,11 @@ function getAllowedBookingTargets() {
     return getUsers().slice().sort((a,b)=>a.name.localeCompare(b.name,'ru'));
   }
   if (currentUser.role === 'manager') {
+    // Managers can ONLY book for users in their own department (security fix)
     const deptUsers = getUsers().filter(u =>
       u.department === currentUser.department &&
       u.id !== currentUser.id &&
-      u.role === 'user'
+      u.role === 'user' // Cannot book for other roles
     );
     return [currentUser, ...deptUsers];
   }
@@ -859,7 +976,9 @@ function canCancelBooking(booking) {
 ═══════════════════════════════════════════════════════ */
 function spaceClick(spaceId) {
   const sp      = getSpaces().find(s=>s.id===spaceId);
+  if (!sp) { toast('Помещение не найдено', 't-red', '✕'); return; }
   const floor   = getFloors().find(f=>f.id===sp.floorId);
+  if (!floor) { toast('Этаж не найден', 't-red', '✕'); return; }
   const date    = selDates[0] || fmtDate(new Date());
   const from    = slotFrom(), to = slotTo();
   const bk      = findBookingForSpace(spaceId, date, from, to);
@@ -894,7 +1013,7 @@ function spaceClick(spaceId) {
           Бронировать за
         </div>
         <select class="role-sel" id="book-for-user" onchange="bookingForUserId=this.value" style="width:100%">
-          ${targets.map(u=>`<option value="${u.id}" ${u.id===bookingForUserId?'selected':''}>${u.name}${u.id===currentUser.id?' (я)':''}</option>`).join('')}
+          ${targets.map(u=>`<option value="${u.id}" ${u.id===bookingForUserId?'selected':''}>${escapeHtml(u.name)}${u.id===currentUser.id?' (я)':''}</option>`).join('')}
         </select>
        </div>`
     : '';
@@ -903,14 +1022,14 @@ function spaceClick(spaceId) {
     ${datePills}
     ${targetPicker}
     <div class="modal-info-grid">
-      <div class="mig-item"><div class="mig-l">Место</div><div class="mig-v">${sp.label}</div></div>
+      <div class="mig-item"><div class="mig-l">Место</div><div class="mig-v">${escapeHtml(sp.label)}</div></div>
       <div class="mig-item"><div class="mig-l">Мест</div><div class="mig-v">${sp.seats}</div></div>
-      <div class="mig-item"><div class="mig-l">Этаж</div><div class="mig-v">${floor.name}</div></div>
+      <div class="mig-item"><div class="mig-l">Этаж</div><div class="mig-v">${escapeHtml(floor.name)}</div></div>
       <div class="mig-item"><div class="mig-l">Время</div><div class="mig-v">${from}–${to}</div></div>
     </div>
     ${isBusy ? `<div style="padding:.75rem;background:var(--amber-l);border:1px solid rgba(217,119,6,.25);
       border-radius:var(--radius);font-size:13px;color:var(--amber)">
-      Занято: <strong>${bk.userName}</strong>
+      Занято: <strong>${escapeHtml(bk.userName)}</strong>
       ${canCancelBusy ? `<div style="margin-top:4px;font-size:12px;color:var(--ink3)">У вас есть право отменить эту бронь</div>` : ''}
     </div>` : ''}`;
 
@@ -936,6 +1055,7 @@ function spaceClick(spaceId) {
 
 function bookSpace(spaceId) {
   const sp   = getSpaces().find(s=>s.id===spaceId);
+  if (!sp) { toast('Помещение не найдено', 't-red', '✕'); return; }
   const from = slotFrom(), to = slotTo();
   const bookings = getBookings();
   const targetId = document.getElementById('book-for-user')?.value || bookingForUserId || currentUser.id;
@@ -949,7 +1069,9 @@ function bookSpace(spaceId) {
   const bookedInBatchByDate = new Set();
 
   selDates.forEach(date => {
-    const exists = bookings.find(b =>
+    // Double-check availability right before adding (race condition prevention)
+    const freshBookings = getBookings();
+    const exists = freshBookings.find(b =>
       b.spaceId === spaceId &&
       b.date === date &&
       timesOverlap(from, to, b.slotFrom, b.slotTo)
@@ -959,12 +1081,12 @@ function bookSpace(spaceId) {
     if (targetUser.role === 'user') {
       const alreadyBookedThisDay =
         bookedInBatchByDate.has(date) ||
-        bookings.some(b => b.userId === targetUser.id && b.date === date);
+        freshBookings.some(b => b.userId === targetUser.id && b.date === date);
       if (alreadyBookedThisDay) { skippedDailyLimit++; return; }
     }
 
-    if (hasUserTimeConflict(bookings, targetUser.id, date, from, to)) { skippedUser++; return; }
-    bookings.push({
+    if (hasUserTimeConflict(freshBookings, targetUser.id, date, from, to)) { skippedUser++; return; }
+    freshBookings.push({
       id:       DB.uid(),
       userId:   targetUser.id,
       userName: targetUser.name,
@@ -974,6 +1096,7 @@ function bookSpace(spaceId) {
       expiresAt: `${date} ${to}`,
       createdAt: new Date().toISOString()
     });
+    bookings.push(freshBookings[freshBookings.length-1]);
     bookedInBatchByDate.add(date);
     created++;
   });
@@ -990,9 +1113,20 @@ function bookSpace(spaceId) {
     : `Забронировано${who}: ${created} ${created===1?'день':'дней'}`;
   toast(msg, 't-green', '✓');
 
-  renderCalendar(); renderStats(); renderMiniBookings();
+  renderCalendar(); 
+  renderStats(); 
+  renderMiniBookings();
   if (currentView === 'map') renderMapView();
 }
+
+function refreshView() {
+  // Utility to refresh current view without full page reload
+  if (currentView === 'map') renderMapView();
+  if (currentView === 'list') renderListView(getVisibleSpaces(), selDates[0], slotFrom(), slotTo());
+  if (currentView === 'mybookings') renderMyBookingsView();
+  if (currentView === 'team') renderTeamView();
+  renderStats();
+  renderMiniBookings();
 
 function cancelBooking(id) {
   const bookings = getBookings();
@@ -1105,8 +1239,8 @@ function renderTeamView() {
         bks.map(b=>{
           const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
           return `<tr>
-            <td><strong>${b.userName}</strong></td>
-            <td>${sp?.label||'?'}</td>
+            <td><strong>${escapeHtml(b.userName)}</strong></td>
+            <td>${escapeHtml(sp?.label||'?')}</td>
             <td>${fmtHuman(b.date)}</td>
             <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
             <td><button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}');renderTeamView()">Отменить</button></td>
@@ -1161,16 +1295,16 @@ function renderAdminUsers(el) {
       const cnt = bks.filter(b=>b.userId===u.id).length;
       const isSelf = u.id === currentUser.id;
       return `<tr>
-        <td><strong>${u.name}</strong></td>
-        <td style="color:var(--ink3)">${u.email}</td>
-        <td>${u.department||'—'}</td>
+        <td><strong>${escapeHtml(u.name)}</strong></td>
+        <td style="color:var(--ink3)">${escapeHtml(u.email)}</td>
+        <td>${escapeHtml(u.department||'—')}</td>
         <td><span class="badge badge-blue">${cnt}</span></td>
         <td>${isSelf
           ? `<span class="badge badge-amber">Вы</span>`
           : `<select class="role-sel" onchange="setUserRole('${u.id}',this.value)">
               ${['user','manager','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${roles[r]}</option>`).join('')}
              </select>`}</td>
-        <td>${isSelf ? '' : `<button class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}','${u.name}')">Удалить</button>`}</td>
+        <td>${isSelf ? '' : `<button class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}','${escapeHtml(u.name).replace(/'/g, "\\'")}'")` >Удалить</button>`}</td>
       </tr>`;
     }).join('')}
     </tbody></table></div></div>`;
@@ -1182,14 +1316,14 @@ function setUserRole(uid, role) {
   if (!u) return;
   u.role = role;
   saveUsers(users);
-  toast(`Роль обновлена: ${u.name}`, 't-green', '✓');
+  toast(`Роль обновлена: ${escapeHtml(u.name)}`, 't-green', '✓');
 }
 
 function deleteUser(uid, name) {
-  if (!confirm(`Удалить ${name}? Все брони будут удалены.`)) return;
+  if (!confirm(`Удалить ${escapeHtml(name)}? Все брони будут удалены.`)) return;
   saveUsers(getUsers().filter(u=>u.id!==uid));
   saveBookings(getBookings().filter(b=>b.userId!==uid));
-  toast(`${name} удалён`, '', '✓');
+  toast(`${escapeHtml(name)} удалён`, '', '✓');
   renderAdminView();
 }
 
@@ -1297,9 +1431,9 @@ function renderAdminBookings(el) {
           bks.map(b=>{
             const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
             return `<tr>
-              <td><strong>${sp?.label||'?'}</strong><br><span style="font-size:11px;color:var(--ink3)">${fl?.name||'?'}</span></td>
-              <td>${b.userName}</td>
-              <td style="font-size:12px;color:var(--ink3)">${b.userId===currentUser.id?'<span class="badge badge-blue">Вы</span>':getUsers().find(u=>u.id===b.userId)?.department||'—'}</td>
+              <td><strong>${escapeHtml(sp?.label||'?')}</strong><br><span style="font-size:11px;color:var(--ink3)">${escapeHtml(fl?.name||'?')}</span></td>
+              <td>${escapeHtml(b.userName)}</td>
+              <td style="font-size:12px;color:var(--ink3)">${b.userId===currentUser.id?'<span class="badge badge-blue">Вы</span>':escapeHtml(getUsers().find(u=>u.id===b.userId)?.department||'—')}</td>
               <td>${fmtHuman(b.date)}</td>
               <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
               <td style="font-size:11px;color:var(--ink3)">${b.expiresAt}</td>
@@ -1324,9 +1458,9 @@ function exportCSV() {
   const rows = [['Место','Этаж','Сотрудник','Дата','Слот от','Слот до','Истекает']];
   bks.forEach(b => {
     const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
-    rows.push([sp?.label||'?', fl?.name||'?', b.userName, b.date, b.slotFrom, b.slotTo, b.expiresAt]);
+    rows.push([escapeCSV(sp?.label||'?'), escapeCSV(fl?.name||'?'), escapeCSV(b.userName), escapeCSV(b.date), escapeCSV(b.slotFrom), escapeCSV(b.slotTo), escapeCSV(b.expiresAt)]);
   });
-  const csv = rows.map(r=>r.map(v=>`"${v}"`).join(',')).join('\n');
+  const csv = rows.map(r=>r.join(',')).join('\n');
   const a = document.createElement('a');
   a.href = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(csv);
   a.download = 'bookings.csv'; a.click();
@@ -1934,6 +2068,16 @@ window.addEventListener('zoneUpdated', (event) => {
 // ═══════════════════════════════════════════════════════════════
 // REALTIME SYNC
 // ═══════════════════════════════════════════════════════════════
-window.addEventListener('realtimeBooking', () => location.reload());
-window.addEventListener('realtimeZone', () => location.reload());
-window.addEventListener('realtimeFloor', () => location.reload());
+// Update specific components instead of full page reload
+window.addEventListener('realtimeBooking', () => {
+  renderStats();
+  renderMiniBookings();
+  if (currentView === 'map') renderMapView();
+});
+window.addEventListener('realtimeZone', () => {
+  renderMapView();
+});
+window.addEventListener('realtimeFloor', () => {
+  renderFloors();
+  if (currentView === 'map') renderMapView();
+});
