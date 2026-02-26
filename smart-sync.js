@@ -65,19 +65,33 @@ class SmartSyncAdapter {
     }
   }
 
-  // Real-time синхронизация
+  // Real-time синхронизация БЕЗ перезагрузки
   setupRealtimeSync() {
     if (!this.useSupabase) return;
     
     this.client
       .channel('sync-channel')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'app_bookings' }, () => {
-        this.loadFromSupabase();
-        window.location.reload(); // Простое решение - перезагрузка
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'app_bookings' }, async (payload) => {
+        console.log('🔄 Real-time: изменение бронирований', payload);
+        await this.loadFromSupabase();
+        // Обновляем UI без перезагрузки
+        if (typeof renderMapView === 'function') await renderMapView();
+        if (typeof renderStats === 'function') await renderStats();
+        if (typeof renderMiniBookings === 'function') await renderMiniBookings();
+        // Показываем уведомление
+        if (typeof toast === 'function') {
+          if (payload.eventType === 'INSERT') {
+            toast('📢 Новое бронирование', 't-blue', '📢');
+          } else if (payload.eventType === 'DELETE') {
+            toast('📢 Бронирование отменено', 't-blue', '📢');
+          }
+        }
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'app_spaces' }, () => {
-        this.loadFromSupabase();
-        window.location.reload();
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'app_spaces' }, async (payload) => {
+        console.log('🔄 Real-time: изменение пространств', payload);
+        await this.loadFromSupabase();
+        if (typeof renderMapView === 'function') await renderMapView();
+        if (typeof toast === 'function') toast('🔄 Планировка обновлена', 't-blue', '🔄');
       })
       .subscribe();
   }

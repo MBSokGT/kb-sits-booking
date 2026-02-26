@@ -1,60 +1,86 @@
-# Деплой на GitHub Pages
+# 🚀 Деплой КБ Ситс
 
-## Быстрый деплой
+## Быстрый старт (5 минут)
 
-```bash
-# 1. Убедитесь что все изменения закоммичены
-git add -A
-git commit -m "Готово к деплою"
-git push
+### 1. Supabase (3 мин)
 
-# 2. Создайте ветку gh-pages
-git checkout -b gh-pages
-git push origin gh-pages
+1. Создайте проект на [supabase.com](https://supabase.com)
+2. SQL Editor → выполните `supabase-schema.sql`
+3. Database → Replication → включите Realtime:
+   - ✅ bookings
+   - ✅ seats
+   - ✅ zones
+4. Settings → API → скопируйте:
+   - Project URL
+   - anon public key
 
-# 3. Включите GitHub Pages
-# Перейдите: Settings → Pages → Source: gh-pages → Save
-```
+### 2. Настройка (1 мин)
 
-## Настройка Supabase для production
-
-1. Создайте проект на https://supabase.com
-2. Скопируйте URL и anon key
-3. Обновите `config.js`:
+Обновите `config.js`:
 
 ```javascript
 const SUPABASE_CONFIG = {
-  url: 'https://your-project.supabase.co',
-  anonKey: 'your-anon-key'
+  url: 'https://ваш-проект.supabase.co',
+  anonKey: 'ваш-anon-key'
 };
 ```
 
-4. Примените схему БД:
-   - Откройте SQL Editor в Supabase
-   - Скопируйте содержимое `supabase-schema.sql`
-   - Выполните
+### 3. Деплой на Vercel (1 мин)
 
-## Автоматический деплой
+```bash
+# Через CLI
+npx vercel
 
-Создайте `.github/workflows/deploy.yml`:
-
-```yaml
-name: Deploy to GitHub Pages
-
-on:
-  push:
-    branches: [ main ]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Deploy
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: .
+# Или через GitHub
+git push
+# Затем импортируйте на vercel.com
 ```
 
-Теперь при каждом push в main будет автоматический деплой!
+## Real-Time функционал
+
+### Подключение в app.js
+
+```javascript
+// Инициализация
+const realtimeManager = new RealtimeManager(supabase);
+const bookingManager = new BookingManager(supabase);
+
+// Подписка на изменения
+realtimeManager.subscribeToBookings((payload) => {
+  const { eventType, new: newRecord } = payload;
+  
+  if (eventType === 'INSERT') {
+    showNotification('Новое бронирование');
+    refreshSeatsMap();
+  }
+});
+
+// Создание бронирования с проверкой конфликтов
+async function bookSeat(data) {
+  try {
+    await bookingManager.createBooking(data);
+  } catch (error) {
+    alert(error.message); // "Место уже забронировано"
+  }
+}
+```
+
+### Очистка при выходе
+
+```javascript
+function logout() {
+  realtimeManager.unsubscribeAll();
+}
+```
+
+## Демо-аккаунты
+
+```
+admin@demo.ru / admin123
+manager@demo.ru / pass123
+user@demo.ru / pass123
+```
+
+## Готово! 🎉
+
+Все изменения бронирований отображаются у всех пользователей в реальном времени без перезагрузки.

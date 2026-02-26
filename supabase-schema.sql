@@ -249,6 +249,82 @@ BEGIN
 END $$;
 
 -- ═══════════════════════════════════════════════════════════════
+-- REALTIME - Включение для таблиц
+-- ═══════════════════════════════════════════════════════════════
+
+-- Включаем Realtime для критичных таблиц
+ALTER PUBLICATION supabase_realtime ADD TABLE bookings;
+ALTER PUBLICATION supabase_realtime ADD TABLE seats;
+ALTER PUBLICATION supabase_realtime ADD TABLE zones;
+
+-- ═══════════════════════════════════════════════════════════════
+-- REALTIME - Функции для уведомлений
+-- ═══════════════════════════════════════════════════════════════
+
+-- Функция для отправки уведомлений о новых бронированиях
+CREATE OR REPLACE FUNCTION notify_booking_change()
+RETURNS TRIGGER AS $$
+DECLARE
+  payload JSON;
+BEGIN
+  payload = json_build_object(
+    'operation', TG_OP,
+    'booking_id', COALESCE(NEW.id, OLD.id),
+    'seat_id', COALESCE(NEW.seat_id, OLD.seat_id),
+    'user_id', COALESCE(NEW.user_id, OLD.user_id),
+    'booking_date', COALESCE(NEW.booking_date, OLD.booking_date),
+    'time_slot', COALESCE(NEW.time_slot, OLD.time_slot),
+    'status', COALESCE(NEW.status, OLD.status),
+    'timestamp', NOW()
+  );
+  
+  PERFORM pg_notify('booking_changes', payload::text);
+  
+  RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Триггер для отслеживания изменений бронирований
+CREATE TRIGGER booking_change_trigger
+  AFTER INSERT OR UPDATE OR DELETE ON bookings
+  FOR EACH ROW
+  EXECUTE FUNCTION notify_booking_change();
+
+-- Функция для проверки конфликтов бронирования в реальном времени
+CREATE OR REPLACE FUNCTION check_booking_conflict(
+  p_seat_id UUID,
+  p_booking_date DATE,
+  p_time_slot TEXT,
+  p_start_time TIME DEFAULT NULL,
+  p_end_time TIME DEFAULT NULL
+)
+RETURNS BOOLEAN AS $$
+DECLARE
+  conflict_exists BOOLEAN;
+BEGIN
+  SELECT EXISTS(
+    SELECT 1 FROM bookings
+    WHERE seat_id = p_seat_id
+      AND booking_date = p_booking_date
+      AND status = 'active'
+      AND (
+        time_slot = p_time_slot
+        OR time_slot = 'full_day'
+        OR p_time_slot = 'full_day'
+        OR (
+          time_slot = 'custom' 
+          AND p_time_slot = 'custom'
+          AND p_start_time < end_time
+          AND p_end_time > start_time
+        )
+      )
+  ) INTO conflict_exists;
+  
+  RETURN conflict_exists;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ═══════════════════════════════════════════════════════════════
 -- ПОЛЕЗНЫЕ ПРЕДСТАВЛЕНИЯ (VIEWS)
 -- ═══════════════════════════════════════════════════════════════
 
