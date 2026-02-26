@@ -1,11 +1,104 @@
 /* ═══════════════════════════════════════════════════════
-   DATA LAYER  (localStorage — swap to fetch() later)
+   DATA LAYER  (localStorage + PostgreSQL server sync)
 ═══════════════════════════════════════════════════════ */
 const DB = {
   get(k, def){ try{ return JSON.parse(localStorage.getItem('ws_'+k)) ?? def }catch{return def} },
-  set(k,v){ localStorage.setItem('ws_'+k, JSON.stringify(v)) },
+  set(k, v){
+    localStorage.setItem('ws_'+k, JSON.stringify(v));
+    if (k !== 'session') _apiPush(k, v);
+  },
   uid(){ return Date.now() + Math.random().toString(36).slice(2,7) }
 };
+
+/* ── Server sync helpers ─────────────────────────────────────────────────── */
+// Base URL: same origin (server.js serves static files from same dir).
+// In dev you can override via localStorage item 'ws_api_base'.
+function _apiBase() {
+  try {
+    return localStorage.getItem('ws_api_base') || '';
+  } catch(_){ return ''; }
+}
+
+let _sseSource = null;
+let _apiPushPending = {};    // key → timer (debounce)
+
+/** Push a key/value to the server (debounced 200 ms to batch rapid calls). */
+function _apiPush(key, value) {
+  clearTimeout(_apiPushPending[key]);
+  _apiPushPending[key] = setTimeout(async () => {
+    try {
+      await fetch(`${_apiBase()}/api/data/${encodeURIComponent(key)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(value),
+      });
+    } catch(_) { /* offline — localStorage is the fallback */ }
+  }, 200);
+}
+
+/** Pull all keys from server and merge into localStorage, then refresh UI. */
+async function syncFromServer() {
+  try {
+    const res = await fetch(`${_apiBase()}/api/all`);
+    if (!res.ok) return;
+    const all = await res.json();
+    for (const [key, val] of Object.entries(all)) {
+      if (key === 'session') continue;
+      localStorage.setItem('ws_' + key, JSON.stringify(val));
+    }
+  } catch(_) { /* server unavailable — keep localStorage data */ }
+}
+
+/** Start SSE listener; re-fetches a key whenever the server says it changed. */
+function startSSE() {
+  if (_sseSource) return;
+  try {
+    _sseSource = new EventSource(`${_apiBase()}/api/events`);
+    _sseSource.onmessage = async (e) => {
+      try {
+        const { key } = JSON.parse(e.data);
+        if (!key || key === 'session') return;
+        const res = await fetch(`${_apiBase()}/api/data/${encodeURIComponent(key)}`);
+        if (!res.ok) return;
+        const val = await res.json();
+        if (val !== null) {
+          const local = DB.get(key, null);
+          if (JSON.stringify(local) === JSON.stringify(val)) return; // no change
+          localStorage.setItem('ws_' + key, JSON.stringify(val));
+          _onServerUpdate(key);
+        }
+      } catch(_) {}
+    };
+    _sseSource.onerror = () => {
+      // Auto-reconnect is handled by the browser; no action needed.
+    };
+  } catch(_) {}
+}
+
+/** Called when the server pushes an updated key; refreshes the relevant UI. */
+function _onServerUpdate(key) {
+  // Refresh whichever view is currently active that depends on this key.
+  const activeView = document.querySelector('.tnav.active');
+  const view = activeView ? activeView.getAttribute('onclick') : '';
+  if (key === 'bookings') {
+    // Refresh map / my bookings / admin bookings if visible
+    if (typeof renderMapView === 'function')        { try{ renderMapView();        }catch(_){} }
+    if (typeof renderMyBookingsView === 'function') { try{ renderMyBookingsView(); }catch(_){} }
+  }
+  if (key === 'users' || key === 'bookings' || key === 'spaces' || key === 'floors' || key === 'coworkings') {
+    // If admin panel is open, refresh current tab
+    const atc = document.getElementById('admin-tab-content');
+    if (atc && atc.children.length) {
+      const activeTab = document.querySelector('#admin-tabs .floor-tab-btn.active');
+      if (activeTab) activeTab.click();
+    }
+  }
+}
+
+/** Stop SSE (on logout). */
+function stopSSE() {
+  if (_sseSource) { _sseSource.close(); _sseSource = null; }
+}
 
 /* ── Initial seed ─────────────────────────────────────────────────────────── */
 if (!DB.get('users', null)) {
@@ -219,14 +312,19 @@ function onAuth(user) {
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   applyUserUI();
-  initApp();
-  startExpiryWatcher();
+  // Sync server data first, then init UI
+  syncFromServer().then(() => {
+    initApp();
+    startExpiryWatcher();
+    startSSE();
+  });
 }
 
 function doLogout() {
   currentUser = null;
   DB.set('session', null);
   stopExpiryWatcher();
+  stopSSE();
   document.getElementById('app').style.display = 'none';
   document.getElementById('auth-screen').style.display = 'flex';
 }
@@ -240,9 +338,9 @@ function applyUserUI() {
   rp.textContent = labels[u.role] || u.role;
   rp.className   = 'role-pill rp-' + u.role;
   document.querySelectorAll('.manager-only').forEach(el =>
-    el.style.display = (u.role==='manager'||u.role==='admin') ? '' : 'none');
+    el.style.display = (u.role==='manager'||u.role==='admin') ? 'block' : 'none');
   document.querySelectorAll('.admin-only').forEach(el =>
-    el.style.display = u.role==='admin' ? '' : 'none');
+    el.style.display = u.role==='admin' ? 'block' : 'none');
 }
 
 /* ═══════════════════════════════════════════════════════
