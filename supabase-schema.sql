@@ -228,9 +228,61 @@ CREATE POLICY "Пользователи отменяют свои брони" ON
   user_id = auth.uid() OR booked_by = auth.uid()
 );
 
-CREATE POLICY "Админы удаляют брони" ON bookings FOR DELETE USING (
-  EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
-);
+-- ═══════════════════════════════════════════════════════════════
+-- REALTIME - Включение для таблиц
+-- ═══════════════════════════════════════════════════════════════
+
+ALTER PUBLICATION supabase_realtime ADD TABLE bookings;
+ALTER PUBLICATION supabase_realtime ADD TABLE zones;
+ALTER PUBLICATION supabase_realtime ADD TABLE floors;
+ALTER PUBLICATION supabase_realtime ADD TABLE seats;
+
+-- ═══════════════════════════════════════════════════════════════
+-- ДЕМО ДАННЫЕ
+-- ═══════════════════════════════════════════════════════════════
+
+INSERT INTO departments (name) VALUES ('IT'), ('HR'), ('Финансы'), ('Маркетинг')
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO users (email, password_hash, full_name, department_id, role) VALUES
+  ('admin@demo.ru', 'admin123', 'Администратор', (SELECT id FROM departments WHERE name = 'IT'), 'admin'),
+  ('manager@demo.ru', 'pass123', 'Менеджер', (SELECT id FROM departments WHERE name = 'IT'), 'manager'),
+  ('user@demo.ru', 'pass123', 'Сотрудник', (SELECT id FROM departments WHERE name = 'IT'), 'employee')
+ON CONFLICT (email) DO NOTHING;
+
+INSERT INTO floors (name, floor_number) 
+SELECT 'Первый этаж', 1
+WHERE NOT EXISTS (SELECT 1 FROM floors WHERE floor_number = 1);
+
+INSERT INTO zones (floor_id, name, color, seats_count, coordinates)
+SELECT 
+  (SELECT id FROM floors WHERE floor_number = 1),
+  'Зона A',
+  '#3b82f6',
+  5,
+  '[{"x":100,"y":100},{"x":300,"y":100},{"x":300,"y":200},{"x":100,"y":200}]'::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM zones WHERE name = 'Зона A');
+
+INSERT INTO zones (floor_id, name, color, seats_count, coordinates)
+SELECT 
+  (SELECT id FROM floors WHERE floor_number = 1),
+  'Зона B',
+  '#10b981',
+  3,
+  '[{"x":350,"y":100},{"x":550,"y":100},{"x":550,"y":200},{"x":350,"y":200}]'::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM zones WHERE name = 'Зона B');
+
+DO $$
+DECLARE
+  zone_record RECORD;
+  i INTEGER;
+BEGIN
+  FOR zone_record IN SELECT id, seats_count FROM zones WHERE NOT EXISTS (SELECT 1 FROM seats WHERE zone_id = zones.id) LOOP
+    FOR i IN 1..zone_record.seats_count LOOP
+      INSERT INTO seats (zone_id, seat_number) VALUES (zone_record.id, i);
+    END LOOP;
+  END LOOP;
+END $$;
 
 -- ═══════════════════════════════════════════════════════════════
 -- REALTIME - Включение для таблиц
