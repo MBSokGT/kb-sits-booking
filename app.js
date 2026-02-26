@@ -215,7 +215,12 @@ async function onAuth(user) {
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   applyUserUI();
-  await initApp();
+  try {
+    await initApp();
+  } catch (error) {
+    console.error('Ошибка инициализации:', error);
+    // Продолжаем работу с localStorage
+  }
   startExpiryWatcher();
 }
 
@@ -246,7 +251,11 @@ function applyUserUI() {
 ═══════════════════════════════════════════════════════ */
 async function initApp() {
   // Инициализация data adapter (Supabase или localStorage)
-  await dataAdapter.init();
+  try {
+    await dataAdapter.init();
+  } catch (error) {
+    console.warn('Ошибка инициализации dataAdapter:', error);
+  }
   
   ensureDataIntegrity();
   purgeExpired();
