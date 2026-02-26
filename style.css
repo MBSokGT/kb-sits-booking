@@ -88,7 +88,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
   border:none;background:transparent;font-family:inherit;cursor:pointer;border-radius:6px;transition:all .15s}
 .tnav:hover{color:white;background:rgba(255,255,255,.08)}
 .tnav.active{color:white;background:rgba(255,255,255,.13)}
-.tnav.admin-only,.tnav.manager-only{display:none}
+.tnav.manager-only{display:none}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:.75rem}
 .user-info{display:flex;align-items:center;gap:8px;cursor:pointer}
 .avatar{width:30px;height:30px;border-radius:50%;background:var(--blue);color:white;

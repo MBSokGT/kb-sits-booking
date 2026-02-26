@@ -1334,21 +1334,16 @@ function renderAdminFloors(el) {
   }
 
   el.innerHTML = `
-    <div class="card" style="margin-bottom:.875rem">
-      <div class="card-head">Как загрузить план и отметить рабочие зоны</div>
-      <div style="padding:.875rem 1rem;font-size:13px;color:var(--ink3);line-height:1.45">
-        1) Выберите или создайте коворкинг и этаж.<br>
-        2) Нажмите «📎 Загрузить план (JPG/PNG/PDF)».<br>
-        3) Нарисуйте прямоугольники мышью поверх плана.<br>
-        4) Нажмите «💾 Сохранить», чтобы зоны стали доступными для брони.
-      </div>
+    <div style="margin-bottom:1rem;display:flex;gap:.75rem">
+      <button class="btn btn-primary" onclick="showAddCoworkingModal()">➕ Добавить коворкинг</button>
+      <button class="btn btn-primary" onclick="showAddFloorModal()">➕ Добавить этаж</button>
     </div>
     <div style="margin-bottom:.875rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
       <div class="floor-tabs" id="editor-coworking-tabs" style="margin-bottom:0">
         ${coworkings.map(c=>`<button class="floor-tab-btn ${c.id===editorCoworkingId?'active':''}"
           onclick="selectEditorCoworking('${c.id}',this)">${c.name}</button>`).join('')}
       </div>
-      <button class="btn btn-primary btn-sm" onclick="addCoworking()">+ Коворкинг</button>
+      ${editorCoworkingId ? `<button class="btn btn-danger btn-sm" onclick="deleteCoworking('${editorCoworkingId}')">🗑 Удалить коворкинг</button>` : ''}
     </div>
     <div style="margin-bottom:.875rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
       <div class="floor-tabs" id="editor-floor-tabs" style="margin-bottom:0">
@@ -1357,7 +1352,7 @@ function renderAdminFloors(el) {
               onclick="selectEditorFloor('${f.id}',this)">${f.name}</button>`).join('')
           : `<span style="font-size:12px;color:var(--ink4);padding:6px 10px">Нет этажей</span>`}
       </div>
-      <button class="btn btn-primary btn-sm" onclick="addFloor()">+ Этаж</button>
+      ${editorFloorId ? `<button class="btn btn-danger btn-sm" onclick="deleteFloor('${editorFloorId}')">🗑 Удалить этаж</button>` : ''}
     </div>
     <div class="editor-wrap" style="padding:0">
       <div class="editor-layout" id="editor-layout"></div>
@@ -1412,6 +1407,52 @@ function createCoworkingWithFloor(coworkingName, floorName='Этаж 1') {
   if (currentView === 'map') renderMapView();
 
   return { item, floor: newF };
+}
+
+function showAddCoworkingModal() {
+  document.getElementById('modal-title').textContent = 'Добавить коворкинг';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="field"><label>Название коворкинга</label>
+      <input type="text" id="new-coworking-name" placeholder="Например: Главный офис">
+    </div>
+    <div class="field"><label>Название этажа</label>
+      <input type="text" id="new-floor-name" placeholder="Например: Этаж 1" value="Этаж 1">
+    </div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+    <button class="btn btn-primary" onclick="createCoworkingFromModal()">Создать</button>`;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function showAddFloorModal() {
+  if (!editorCoworkingId) return toast('Сначала выберите коворкинг', 't-red', '✕');
+  document.getElementById('modal-title').textContent = 'Добавить этаж';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="field"><label>Название этажа</label>
+      <input type="text" id="new-floor-name" placeholder="Например: Этаж 2">
+    </div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+    <button class="btn btn-primary" onclick="createFloorFromModal()">Создать</button>`;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function createCoworkingFromModal() {
+  const name = document.getElementById('new-coworking-name').value.trim();
+  const floorName = document.getElementById('new-floor-name').value.trim();
+  if (!name) return toast('Введите название коворкинга', 't-red', '✕');
+  const created = createCoworkingWithFloor(name, floorName || 'Этаж 1');
+  if (!created) return;
+  closeModal();
+  toast(`Коворкинг "${created.item.name}" создан`, 't-green', '✓');
+  refreshAdminFloorsIfOpen();
+}
+
+function createFloorFromModal() {
+  const name = document.getElementById('new-floor-name').value.trim();
+  if (!name) return toast('Введите название этажа', 't-red', '✕');
+  addFloor();
+  closeModal();
 }
 
 function addCoworking() {
@@ -1497,7 +1538,7 @@ function selectEditorFloor(id, btn) {
 
 function addFloor() {
   if (!editorCoworkingId) return;
-  const name = prompt('Название этажа:');
+  const name = document.getElementById('new-floor-name')?.value.trim() || prompt('Название этажа:');
   if (!name) return;
   const floors = getFloors();
   const newF = {
@@ -1691,9 +1732,22 @@ function editorMouseUp(e) {
   const px = Math.min(cx, editorDrawStart.x), py = Math.min(cy, editorDrawStart.y);
   const pw = Math.abs(cx - editorDrawStart.x), ph = Math.abs(cy - editorDrawStart.y);
 
-  if (pw < 20 || ph < 20) return; // too small
+  if (pw < 20 || ph < 20) return;
 
-  const label = prompt('Название зоны:') || 'Зона';
+  document.getElementById('modal-title').textContent = 'Новая зона';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="field"><label>Название зоны</label>
+      <input type="text" id="zone-name-input" placeholder="Например: Кабинет 401">
+    </div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+    <button class="btn btn-primary" onclick="createZoneFromModal(${px},${py},${pw},${ph},${CW},${CH})">Создать</button>`;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function createZoneFromModal(px,py,pw,ph,CW,CH) {
+  const label = document.getElementById('zone-name-input').value.trim() || 'Зона';
+  closeModal();
   document.getElementById('ez-label').value = '';
   editorNewZone.label = '';
 
