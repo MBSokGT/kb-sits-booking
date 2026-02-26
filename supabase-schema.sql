@@ -150,7 +150,13 @@ ALTER TABLE bookings ENABLE ROW LEVEL SECURITY;
 
 -- Политики для departments (все могут читать)
 CREATE POLICY "Все могут читать отделы" ON departments FOR SELECT USING (true);
-CREATE POLICY "Только админы могут создавать отделы" ON departments FOR INSERT WITH CHECK (
+CREATE POLICY "Админы создают отделы" ON departments FOR INSERT WITH CHECK (
+  EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
+);
+CREATE POLICY "Админы редактируют отделы" ON departments FOR UPDATE USING (
+  EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
+);
+CREATE POLICY "Админы удаляют отделы" ON departments FOR DELETE USING (
   EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
 );
 
@@ -167,19 +173,37 @@ CREATE POLICY "Админы управляют пользователями" ON 
 
 -- Политики для floors (все читают, админы управляют)
 CREATE POLICY "Все видят этажи" ON floors FOR SELECT USING (true);
-CREATE POLICY "Админы управляют этажами" ON floors FOR ALL USING (
+CREATE POLICY "Админы создают этажи" ON floors FOR INSERT WITH CHECK (
+  EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
+);
+CREATE POLICY "Админы редактируют этажи" ON floors FOR UPDATE USING (
+  EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
+);
+CREATE POLICY "Админы удаляют этажи" ON floors FOR DELETE USING (
   EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
 );
 
 -- Политики для zones (все читают, админы управляют)
 CREATE POLICY "Все видят зоны" ON zones FOR SELECT USING (true);
-CREATE POLICY "Админы управляют зонами" ON zones FOR ALL USING (
+CREATE POLICY "Админы создают зоны" ON zones FOR INSERT WITH CHECK (
+  EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
+);
+CREATE POLICY "Админы редактируют зоны" ON zones FOR UPDATE USING (
+  EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
+);
+CREATE POLICY "Админы удаляют зоны" ON zones FOR DELETE USING (
   EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
 );
 
 -- Политики для seats (все читают, админы управляют)
 CREATE POLICY "Все видят места" ON seats FOR SELECT USING (true);
-CREATE POLICY "Админы управляют местами" ON seats FOR ALL USING (
+CREATE POLICY "Админы создают места" ON seats FOR INSERT WITH CHECK (
+  EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
+);
+CREATE POLICY "Админы редактируют места" ON seats FOR UPDATE USING (
+  EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
+);
+CREATE POLICY "Админы удаляют места" ON seats FOR DELETE USING (
   EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
 );
 
@@ -204,7 +228,7 @@ CREATE POLICY "Пользователи отменяют свои брони" ON
   user_id = auth.uid() OR booked_by = auth.uid()
 );
 
-CREATE POLICY "Админы управляют всеми бронями" ON bookings FOR ALL USING (
+CREATE POLICY "Админы удаляют брони" ON bookings FOR DELETE USING (
   EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND role = 'admin')
 );
 
