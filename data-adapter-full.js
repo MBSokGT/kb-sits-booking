@@ -99,9 +99,11 @@ class DataAdapter {
 
 const dataAdapter = new DataAdapter();
 
-// Заменяем глобальный DB на dataAdapter
-const DB = {
-  get: (k, def) => dataAdapter.get(k, def),
-  set: (k, v) => dataAdapter.set(k, v),
-  uid: () => dataAdapter.uid()
-};
+// Заменяем глобальный DB на dataAdapter (только если еще не определен)
+if (typeof DB === 'undefined') {
+  window.DB = {
+    get: (k, def) => dataAdapter.get(k, def),
+    set: (k, v) => dataAdapter.set(k, v),
+    uid: () => dataAdapter.uid()
+  };
+}
