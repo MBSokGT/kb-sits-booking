@@ -1930,3 +1930,10 @@ window.addEventListener('zoneUpdated', (event) => {
   if (currentView === 'map') renderMapView();
   renderStats();
 });
+
+// ═══════════════════════════════════════════════════════════════
+// REALTIME SYNC
+// ═══════════════════════════════════════════════════════════════
+window.addEventListener('realtimeBooking', () => location.reload());
+window.addEventListener('realtimeZone', () => location.reload());
+window.addEventListener('realtimeFloor', () => location.reload());
