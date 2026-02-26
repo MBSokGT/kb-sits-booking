@@ -250,11 +250,11 @@ function applyUserUI() {
    INIT
 ═══════════════════════════════════════════════════════ */
 async function initApp() {
-  // Инициализация data adapter (Supabase или localStorage)
+  // Инициализация Supabase адаптера
   try {
-    await dataAdapter.init();
+    await supabaseDataAdapter.init();
   } catch (error) {
-    console.warn('Ошибка инициализации dataAdapter:', error);
+    console.warn('Ошибка инициализации Supabase:', error);
   }
   
   ensureDataIntegrity();
@@ -267,18 +267,18 @@ async function initApp() {
   calAnchorDate = selDates[0];
   bookingForUserId = currentUser?.id || null;
 
-  const coworkings = getCoworkings();
+  const coworkings = await getCoworkings();
   if (!selCoworkingId && coworkings.length) selCoworkingId = coworkings[0].id;
-  const floors = getFloorsByCoworking(selCoworkingId);
+  const floors = await getFloorsByCoworking(selCoworkingId);
   if (!selFloorId || !floors.some(f=>f.id===selFloorId)) selFloorId = floors[0]?.id || null;
 
   renderCalendar();
   renderSlots();
-  renderCoworkings();
-  renderFloors();
-  renderStats();
-  renderMiniBookings();
-  renderMapView();
+  await renderCoworkings();
+  await renderFloors();
+  await renderStats();
+  await renderMiniBookings();
+  await renderMapView();
 }
 
 function refreshActiveViewAfterExpiry() {
@@ -593,8 +593,9 @@ function updateSlotBadge() {
 /* ═══════════════════════════════════════════════════════
    COWORKINGS
 ═══════════════════════════════════════════════════════ */
-function getFloorsByCoworking(coworkingId) {
-  return getFloors().filter(f => f.coworkingId === coworkingId);
+async function getFloorsByCoworking(coworkingId) {
+  const floors = await getFloors();
+  return floors.filter(f => f.coworkingId === coworkingId);
 }
 
 function renderCoworkings() {
