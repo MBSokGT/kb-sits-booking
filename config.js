@@ -1,19 +1,17 @@
 // ═══════════════════════════════════════════════════════════════
-// Конфигурация Supabase
+// Supabase configuration
+// ═══════════════════════════════════════════════════════════════
+//
+// For local development, copy .env.example → .env and fill in your values.
+// These values are loaded here for the browser (no process.env in browser).
+//
+// How to get your keys:
+//   1. Go to https://supabase.com/dashboard → your project → Settings → API
+//   2. Copy "Project URL"  → SUPABASE_URL
+//   3. Copy "anon public"  → SUPABASE_ANON_KEY
 // ═══════════════════════════════════════════════════════════════
 
 const SUPABASE_CONFIG = {
-  url: 'http://127.0.0.1:54321',
-  anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0'
+  url:     'YOUR_SUPABASE_URL',
+  anonKey: 'YOUR_SUPABASE_ANON_KEY',
 };
-
-// ═══════════════════════════════════════════════════════════════
-// Как получить ключи:
-// ═══════════════════════════════════════════════════════════════
-// 1. Откройте https://supabase.com/dashboard
-// 2. Выберите ваш проект
-// 3. Перейдите в Settings → API
-// 4. Скопируйте:
-//    - Project URL → вставьте в url
-//    - anon public key → вставьте в anonKey
-// ═══════════════════════════════════════════════════════════════

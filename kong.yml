@@ -1,5 +1,9 @@
 _format_version: "2.1"
 
+# Kong API Gateway config for local Supabase stack.
+# Replace YOUR_ANON_KEY and YOUR_SERVICE_ROLE_KEY with the JWT tokens
+# from your Supabase project: Settings → API → JWT Settings.
+
 services:
   - name: rest
     url: http://rest:3000
@@ -25,7 +29,7 @@ services:
 consumers:
   - username: anon
     keyauth_credentials:
-      - key: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0
+      - key: YOUR_ANON_KEY
   - username: service_role
     keyauth_credentials:
-      - key: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU
+      - key: YOUR_SERVICE_ROLE_KEY

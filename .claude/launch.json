@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Static (index.html)",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8000"],
+      "port": 8000
+    },
+    {
+      "name": "Node.js backend (server.js + PostgreSQL)",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--watch", "server.js"],
+      "port": 3000
+    }
+  ]
+}
