@@ -24,6 +24,13 @@
   --purple: #7c3aed;
   --purple-l:#f5f3ff;
 
+  --status-free:#059669;
+  --status-free-bg:#ecfdf5;
+  --status-mine:#1d4ed8;
+  --status-mine-bg:#eff6ff;
+  --status-busy:#ef4444;
+  --status-busy-bg:#fef2f2;
+
   --radius: 8px;
   --radius-lg: 12px;
   --shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 12px rgba(0,0,0,.08);
@@ -109,29 +116,59 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 
 /* Calendar */
 .cal-nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:.625rem}
+.cal-nav-right{display:flex;align-items:center;gap:4px}
 .cal-month{font-size:13px;font-weight:700;color:var(--ink)}
+.cal-mode-btn{height:26px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:transparent;
+  color:var(--ink3);font-family:inherit;font-size:11px;font-weight:700;cursor:pointer;transition:all .15s}
+.cal-mode-btn:hover{border-color:var(--status-mine);color:var(--status-mine);background:var(--status-mine-bg)}
 .cal-arrow{width:26px;height:26px;border:1px solid var(--line);border-radius:6px;
   background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;
   color:var(--ink3);font-size:13px;transition:all .15s}
 .cal-arrow:hover{border-color:var(--blue);color:var(--blue);background:var(--blue-l)}
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:4px}
+.cal-grid.cal-grid-year{display:block}
 .cal-dow{text-align:center;font-size:10px;font-weight:700;color:var(--ink4);
   text-transform:uppercase;padding:3px 0;letter-spacing:.3px}
 .cal-day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;
   font-size:12px;font-weight:500;border-radius:6px;cursor:pointer;position:relative;
   transition:all .12s;color:var(--ink2);border:1.5px solid transparent}
-.cal-day:hover:not(.cal-other):not(.cal-past){background:var(--blue-l);color:var(--blue)}
+.cal-day:hover:not(.cal-other):not(.cal-past){background:var(--status-mine-bg);color:var(--status-mine)}
 .cal-day.cal-other{color:var(--ink4);cursor:default}
 .cal-day.cal-past{color:var(--ink4);cursor:default;opacity:.5}
 .cal-day.cal-today{font-weight:700;color:var(--amber);border-color:rgba(217,119,6,.3)}
-.cal-day.cal-selected{background:var(--blue);color:white;border-color:var(--blue)}
+.cal-day.cal-selected{background:var(--status-mine);color:white;border-color:var(--status-mine)}
 .cal-day.cal-range{background:var(--blue-l);color:var(--blue-d)}
-.cal-day.cal-range-start{background:var(--blue);color:white;border-radius:6px 0 0 6px}
-.cal-day.cal-range-end{background:var(--blue);color:white;border-radius:0 6px 6px 0}
+.cal-day.cal-range-start{background:var(--status-mine);color:white;border-radius:6px 0 0 6px}
+.cal-day.cal-range-end{background:var(--status-mine);color:white;border-radius:0 6px 6px 0}
 .cal-day.cal-has-booking::after{content:'';position:absolute;bottom:2px;left:50%;transform:translateX(-50%);
   width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.6}
 .cal-day.cal-selected.cal-has-booking::after{background:rgba(255,255,255,.8)}
-.cal-range-hint{font-size:11px;color:var(--blue);font-weight:500;margin-top:4px;min-height:16px}
+.cal-options{display:flex;flex-direction:column;gap:4px;margin-top:6px}
+.cal-opt{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink3);cursor:pointer}
+.cal-opt input{accent-color:var(--status-mine)}
+.cal-opt input:disabled{opacity:.45}
+.cal-reset-btn{margin-top:2px;height:24px;padding:0 8px;border:1px solid var(--line);border-radius:6px;
+  background:transparent;color:var(--ink3);font-family:inherit;font-size:11px;font-weight:700;cursor:pointer;
+  text-align:left;transition:all .15s}
+.cal-reset-btn:hover{border-color:var(--status-mine);color:var(--status-mine);background:var(--status-mine-bg)}
+.cal-year-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-bottom:4px}
+.cal-year-month{background:white;border:1px solid var(--line);border-radius:6px;padding:4px}
+.cal-year-title{font-size:10px;font-weight:700;color:var(--ink2);margin-bottom:3px}
+.cal-year-week{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;margin-bottom:1px}
+.cal-year-week span{text-align:center;font-size:8px;font-weight:700;color:var(--ink4)}
+.cal-mini-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px}
+.cal-mini-day{height:16px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:500;
+  border-radius:4px;color:var(--ink2);cursor:pointer;position:relative}
+.cal-mini-day:hover:not(.cal-other):not(.cal-past){background:var(--status-mine-bg);color:var(--status-mine)}
+.cal-mini-day.cal-other{color:var(--ink4);cursor:default}
+.cal-mini-day.cal-past{opacity:.45;cursor:default}
+.cal-mini-day.cal-selected{background:var(--status-mine);color:white}
+.cal-mini-day.cal-today{font-weight:700;border:1px solid rgba(217,119,6,.35)}
+.cal-mini-day.cal-has-booking::after{content:'';position:absolute;bottom:1px;left:50%;transform:translateX(-50%);
+  width:3px;height:3px;border-radius:50%;background:currentColor;opacity:.65}
+.cal-mini-day.cal-selected.cal-has-booking::after{background:rgba(255,255,255,.85)}
+.cal-mini-empty{visibility:hidden;pointer-events:none}
+.cal-range-hint{font-size:11px;color:var(--ink3);font-weight:500;margin-top:4px;min-height:16px}
 
 /* Time slots */
 .slot-list{display:flex;flex-direction:column;gap:4px}
@@ -164,13 +201,13 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .stat-chips{display:flex;gap:6px}
 .stat-chip{flex:1;padding:8px;border-radius:var(--radius);display:flex;flex-direction:column;
   align-items:center;gap:2px}
-.sc-free{background:var(--green-l);border:1px solid rgba(5,150,105,.2)}
-.sc-mine{background:var(--blue-l);border:1px solid rgba(37,99,235,.2)}
-.sc-busy{background:var(--red-l);border:1px solid rgba(220,38,38,.2)}
+.sc-free{background:var(--status-free-bg);border:1px solid rgba(5,150,105,.2)}
+.sc-mine{background:var(--status-mine-bg);border:1px solid rgba(29,78,216,.2)}
+.sc-busy{background:var(--status-busy-bg);border:1px solid rgba(239,68,68,.2)}
 .sv{font-size:18px;font-weight:700;line-height:1}
-.sc-free .sv{color:var(--green)}
-.sc-mine .sv{color:var(--blue)}
-.sc-busy .sv{color:var(--red)}
+.sc-free .sv{color:var(--status-free)}
+.sc-mine .sv{color:var(--status-mine)}
+.sc-busy .sv{color:var(--status-busy)}
 .sk{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--ink3)}
 
 /* Mini bookings */
@@ -219,9 +256,9 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .spaces-table td{padding:12px 14px;border-top:1px solid var(--line);font-size:13px;color:var(--ink2)}
 .status-dot{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500}
 .dot{width:8px;height:8px;border-radius:50%}
-.dot-free{background:var(--green)}
-.dot-mine{background:var(--blue)}
-.dot-busy{background:var(--red)}
+.dot-free{background:var(--status-free)}
+.dot-mine{background:var(--status-mine)}
+.dot-busy{background:var(--status-busy)}
 
 /* ═══════════════════════════════════════════════════════
    VIEWS
@@ -400,9 +437,9 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .stat-chip{border-radius:var(--radius);padding:8px 6px;text-align:center}
 .stat-chip .sv{font-size:20px;font-weight:800;display:block;line-height:1;font-variant-numeric:tabular-nums}
 .stat-chip .sk{font-size:10px;font-weight:600;margin-top:2px}
-.sc-free{background:var(--green-l);color:var(--green)}
-.sc-mine{background:var(--blue-l);color:var(--blue-d)}
-.sc-busy{background:var(--red-l);color:var(--red)}
+.sc-free{background:var(--status-free-bg);color:var(--status-free)}
+.sc-mine{background:var(--status-mine-bg);color:var(--status-mine)}
+.sc-busy{background:var(--status-busy-bg);color:var(--status-busy)}
 
 /* My bookings in sidebar */
 .mini-booking{padding:9px 10px;border:1.5px solid var(--line);border-left:3px solid var(--blue);
@@ -453,7 +490,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .spaces-table tr:hover td{background:var(--paper)}
 .status-dot{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600}
 .dot{width:8px;height:8px;border-radius:50%}
-.dot-free{background:var(--green)}.dot-mine{background:var(--blue)}.dot-busy{background:var(--red)}
+.dot-free{background:var(--status-free)}.dot-mine{background:var(--status-mine)}.dot-busy{background:var(--status-busy)}
 
 /* ═══════════════════════════════════════════════════════
    VIEWS: MY BOOKINGS / TEAM / ADMIN
