@@ -1959,22 +1959,45 @@ function uploadFloorImage(e, floorId) {
   const file = e.target.files[0];
   if (!file) return;
   const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-  // For now: read as base64 and store in localStorage
-  // (When server is ready: POST /api/floors/:id/image)
+
+  if (isPdf) {
+    toast('Конвертирую PDF…', '', '⏳');
+    const url = URL.createObjectURL(file);
+    pdfjsLib.getDocument(url).promise
+      .then(pdf => pdf.getPage(1))
+      .then(page => {
+        const vp = page.getViewport({ scale: 1.5 });
+        const canvas = document.createElement('canvas');
+        canvas.width = vp.width;
+        canvas.height = vp.height;
+        return page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise
+          .then(() => {
+            URL.revokeObjectURL(url);
+            _applyFloorImage(floorId, canvas.toDataURL('image/jpeg', 0.85));
+          });
+      })
+      .catch(err => {
+        URL.revokeObjectURL(url);
+        toast('Ошибка PDF: ' + err.message, 't-red', '✕');
+      });
+    return;
+  }
+
   const reader = new FileReader();
-  reader.onload = evt => {
-    const floors = getFloors();
-    const fl = floors.find(f=>f.id===floorId);
-    if (fl) {
-      fl.imageUrl = evt.target.result; // base64
-      fl.imageType = isPdf ? 'pdf' : 'image';
-      saveFloors(floors);
-      if (currentView === 'map') renderMapView();
-      refreshAdminFloorsIfOpen();
-      toast('План загружен ✓', 't-green', '✓');
-    }
-  };
+  reader.onload = evt => _applyFloorImage(floorId, evt.target.result);
   reader.readAsDataURL(file);
+}
+
+function _applyFloorImage(floorId, dataUrl) {
+  const floors = getFloors();
+  const fl = floors.find(f => f.id === floorId);
+  if (!fl) return;
+  fl.imageUrl = dataUrl;
+  fl.imageType = 'image';
+  saveFloors(floors);
+  if (currentView === 'map') renderMapView();
+  refreshAdminFloorsIfOpen();
+  toast('План загружен ✓', 't-green', '✓');
 }
 
 function removeFloorImage(floorId) {
