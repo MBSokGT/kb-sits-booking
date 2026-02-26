@@ -1,33 +1,38 @@
-// Мост между старым app.js и новым Supabase адаптером
-(async function() {
-  await dataAdapter.init();
+// Синхронный мост между app.js и Supabase
+const SupabaseBridge = {
+  cache: { floors: [], zones: [], bookings: [], users: [], departments: [] },
   
-  // Переопределяем DB методы для работы с Supabase
-  window.DB = {
-    get: async (key, def) => {
-      try {
-        switch(key) {
-          case 'floors': return await dataAdapter.getFloors() || def;
-          case 'zones': return await dataAdapter.getZones() || def;
-          case 'bookings': return await dataAdapter.getBookings() || def;
-          case 'users': return await dataAdapter.getUsers() || def;
-          case 'departments': return await dataAdapter.getDepartments() || def;
-          default: return JSON.parse(localStorage.getItem('ws_' + key)) || def;
-        }
-      } catch(e) { console.error('DB.get error:', e); return def; }
-    },
-    set: async (key, value) => {
-      try {
-        switch(key) {
-          case 'floors': return await dataAdapter.saveFloors?.(value);
-          case 'zones': return await dataAdapter.saveZones?.(value);
-          case 'bookings': return await dataAdapter.saveBookings?.(value);
-          default: localStorage.setItem('ws_' + key, JSON.stringify(value));
-        }
-      } catch(e) { console.error('DB.set error:', e); }
-    },
-    uid: () => Date.now() + Math.random().toString(36).slice(2, 7)
-  };
+  async init() {
+    await dataAdapter.init();
+    await this.loadAll();
+    this.setupSync();
+    console.log('✅ Bridge готов');
+  },
   
-  console.log('✅ Supabase bridge активен');
-})();
+  async loadAll() {
+    this.cache.floors = await dataAdapter.getFloors() || [];
+    this.cache.zones = await dataAdapter.getZones() || [];
+    this.cache.bookings = await dataAdapter.getBookings() || [];
+    this.cache.users = await dataAdapter.getUsers() || [];
+    this.cache.departments = await dataAdapter.getDepartments() || [];
+  },
+  
+  setupSync() {
+    window.addEventListener('realtimeFloor', () => this.loadAll().then(() => location.reload()));
+    window.addEventListener('realtimeZone', () => this.loadAll().then(() => location.reload()));
+    window.addEventListener('realtimeBooking', () => this.loadAll().then(() => location.reload()));
+  }
+};
+
+window.DB = {
+  get: (key, def) => SupabaseBridge.cache[key] || def,
+  set: async (key, value) => {
+    SupabaseBridge.cache[key] = value;
+    if (key === 'floors') await dataAdapter.createFloor?.(value[value.length-1]);
+    if (key === 'zones') await dataAdapter.createZone?.(value[value.length-1]);
+    if (key === 'bookings') await dataAdapter.createBooking?.(value[value.length-1]);
+  },
+  uid: () => crypto.randomUUID?.() || Date.now() + Math.random().toString(36).slice(2)
+};
+
+SupabaseBridge.init();
