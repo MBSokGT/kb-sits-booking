@@ -252,7 +252,7 @@ function applyUserUI() {
 async function initApp() {
   // Инициализация Supabase адаптера
   try {
-    await supabaseDataAdapter.init();
+    await dataAdapter.init();
   } catch (error) {
     console.warn('Ошибка инициализации Supabase:', error);
   }
