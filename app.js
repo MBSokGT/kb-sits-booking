@@ -1127,6 +1127,7 @@ function refreshView() {
   if (currentView === 'team') renderTeamView();
   renderStats();
   renderMiniBookings();
+}
 
 function cancelBooking(id) {
   const bookings = getBookings();
@@ -1304,7 +1305,7 @@ function renderAdminUsers(el) {
           : `<select class="role-sel" onchange="setUserRole('${u.id}',this.value)">
               ${['user','manager','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${roles[r]}</option>`).join('')}
              </select>`}</td>
-        <td>${isSelf ? '' : `<button class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}','${escapeHtml(u.name).replace(/'/g, "\\'")}'")` >Удалить</button>`}</td>
+        <td>${isSelf ? '' : `<button class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}','${escapeHtml(u.name).replace(/'/g, "\\'")}')">Удалить</button>`}</td>
       </tr>`;
     }).join('')}
     </tbody></table></div></div>`;
