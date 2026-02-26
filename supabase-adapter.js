@@ -22,8 +22,32 @@ class SupabaseDataAdapter {
       this.currentUser = session.user;
     }
     
-    console.log('✅ Supabase подключен');
+    // Автоматическая подписка на изменения
+    this.setupRealtimeSync();
+    
+    console.log('✅ Supabase подключен + Realtime активен');
     return true;
+  }
+
+  setupRealtimeSync() {
+    // Подписка на бронирования
+    this.client
+      .channel('all-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, (payload) => {
+        console.log('🔄 Bookings:', payload);
+        window.dispatchEvent(new CustomEvent('realtimeBooking', { detail: payload }));
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'zones' }, (payload) => {
+        console.log('🔄 Zones:', payload);
+        window.dispatchEvent(new CustomEvent('realtimeZone', { detail: payload }));
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'floors' }, (payload) => {
+        console.log('🔄 Floors:', payload);
+        window.dispatchEvent(new CustomEvent('realtimeFloor', { detail: payload }));
+      })
+      .subscribe((status) => {
+        console.log('📡 Realtime status:', status);
+      });
   }
 
   // ═══════════════════════════════════════════════════════════════
