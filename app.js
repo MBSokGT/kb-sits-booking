@@ -209,13 +209,13 @@ function doRegister() {
   onAuth(user);
 }
 
-function onAuth(user) {
+async function onAuth(user) {
   currentUser = user;
   DB.set('session', user.id);
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   applyUserUI();
-  initApp();
+  await initApp();
   startExpiryWatcher();
 }
 
@@ -244,7 +244,10 @@ function applyUserUI() {
 /* ═══════════════════════════════════════════════════════
    INIT
 ═══════════════════════════════════════════════════════ */
-function initApp() {
+async function initApp() {
+  // Инициализация data adapter (Supabase или localStorage)
+  await dataAdapter.init();
+  
   ensureDataIntegrity();
   purgeExpired();
   const today = new Date();
@@ -1879,7 +1882,7 @@ function overlayClick(e) { if (e.target === document.getElementById('modal-overl
 /* ═══════════════════════════════════════════════════════
    BOOT
 ═══════════════════════════════════════════════════════ */
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
   // Enter key
   document.getElementById('l-pass').addEventListener('keydown', e => e.key==='Enter' && doLogin());
   document.getElementById('r-pass').addEventListener('keydown', e => e.key==='Enter' && doRegister());
@@ -1888,7 +1891,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const sid = DB.get('session', null);
   if (sid) {
     const u = getUsers().find(u=>u.id===sid);
-    if (u) { onAuth(u); return; }
+    if (u) { await onAuth(u); return; }
   }
 });
 
@@ -1897,57 +1900,23 @@ window.addEventListener('DOMContentLoaded', () => {
    REAL-TIME UPDATES (Supabase)
 ═══════════════════════════════════════════════════════ */
 
-// Real-time подписки
-let bookingsSubscription = null;
-let zonesSubscription = null;
+// Подписка на real-time обновления
+window.addEventListener('bookingUpdated', (event) => {
+  console.log('🔄 Real-time: изменение в бронированиях', event.detail);
+  
+  // Обновляем UI
+  if (currentView === 'map') renderMapView();
+  if (currentView === 'mybookings') renderMyBookingsView();
+  if (currentView === 'team') renderTeamView();
+  if (currentView === 'admin') renderAdminView();
+  renderStats();
+  renderMiniBookings();
+});
 
-function setupRealtimeSubscriptions() {
-  if (typeof api === 'undefined' || !api.subscribeToBookings) {
-    console.log('Supabase real-time недоступен, используется polling');
-    return;
-  }
-
-  // Подписка на изменения бронирований
-  bookingsSubscription = api.subscribeToBookings((payload) => {
-    console.log('Real-time: изменение в бронированиях', payload);
-    
-    // Обновляем UI
-    if (currentView === 'map') renderMapView();
-    if (currentView === 'mybookings') renderMyBookingsView();
-    if (currentView === 'team') renderTeamView();
-    if (currentView === 'admin') renderAdminView();
-    renderStats();
-    renderMiniBookings();
-  });
-
-  // Подписка на изменения зон текущего этажа
-  if (selFloorId) {
-    zonesSubscription = api.subscribeToZones(selFloorId, (payload) => {
-      console.log('Real-time: изменение в зонах', payload);
-      
-      // Обновляем карту
-      if (currentView === 'map') renderMapView();
-      renderStats();
-    });
-  }
-
-  console.log('✓ Real-time подписки активированы');
-}
-
-function cleanupRealtimeSubscriptions() {
-  if (bookingsSubscription) {
-    api.unsubscribe(bookingsSubscription);
-    bookingsSubscription = null;
-  }
-  if (zonesSubscription) {
-    api.unsubscribe(zonesSubscription);
-    zonesSubscription = null;
-  }
-}
-
-// Активируем real-time при загрузке
-if (typeof api !== 'undefined') {
-  window.addEventListener('DOMContentLoaded', () => {
-    setTimeout(setupRealtimeSubscriptions, 2000);
-  });
-}
+window.addEventListener('zoneUpdated', (event) => {
+  console.log('🔄 Real-time: изменение в зонах', event.detail);
+  
+  // Обновляем карту
+  if (currentView === 'map') renderMapView();
+  renderStats();
+});
