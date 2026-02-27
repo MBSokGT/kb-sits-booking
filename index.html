@@ -6,7 +6,7 @@
 <title>КБ Ситс — бронирование мест</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=1772185434">
 </head>
 <body>
 
@@ -180,6 +180,34 @@
 
     </div><!-- /content -->
   </div><!-- /main -->
+
+  <!-- MOBILE BOTTOM NAV -->
+  <nav class="mobile-nav" id="mobile-nav">
+    <button class="mnav active" data-view="map" onclick="switchView('map',this)">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3V6z"/><path d="M9 3v15M15 6v15"/></svg>
+      <span>Карта</span>
+    </button>
+    <button class="mnav" data-view="mybookings" onclick="switchView('mybookings',this)">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>
+      <span>Брони</span>
+    </button>
+    <button class="mnav manager-only" data-view="team" onclick="switchView('team',this)">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/><path d="M16 3.13a4 4 0 010 7.75M21 21v-2a4 4 0 00-3-3.87"/></svg>
+      <span>Отдел</span>
+    </button>
+    <button class="mnav admin-only" data-view="admin" onclick="switchView('admin',this)">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M12 14c-5 0-8 2.5-8 4v1h16v-1c0-1.5-3-4-8-4z"/><path d="M18 3l3 3-9.5 9.5L8 16l.5-3.5L18 3z"/></svg>
+      <span>Админ</span>
+    </button>
+    <button class="mnav mnav-filter" id="mnav-filter-btn" onclick="openFilterDrawer()">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="11" y1="18" x2="13" y2="18"/></svg>
+      <span>Фильтры</span>
+    </button>
+  </nav>
+
+  <!-- DRAWER OVERLAY -->
+  <div class="drawer-overlay" id="drawer-overlay" onclick="closeFilterDrawer()"></div>
+
 </div><!-- /app -->
 
 <!-- MODAL -->
