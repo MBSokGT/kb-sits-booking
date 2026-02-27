@@ -1726,11 +1726,35 @@ function showAddCoworkingModal() {
 function showAddFloorModal() {
   if (!editorCoworkingId) return toast('Сначала выберите коворкинг', 't-red', '✕');
   const existingFloors = getFloorsByCoworking(editorCoworkingId);
-  const defaultName = 'Этаж ' + (existingFloors.length + 1);
+  const existingNames  = new Set(existingFloors.map(f => f.name.trim().toLowerCase()));
+
+  // First available from Этаж 1-4, or Этаж N
+  function nextUniqueName() {
+    for (let i = 1; i <= 4; i++) {
+      const candidate = 'Этаж ' + i;
+      if (!existingNames.has(candidate.toLowerCase())) return candidate;
+    }
+    let n = existingFloors.length + 1;
+    while (existingNames.has(('Этаж ' + n).toLowerCase())) n++;
+    return 'Этаж ' + n;
+  }
+  const defaultName = nextUniqueName();
+
+  const chips = [1,2,3,4].map(n => {
+    const label = 'Этаж ' + n;
+    const taken = existingNames.has(label.toLowerCase());
+    const active = label === defaultName;
+    return `<button type="button" class="floor-pick-chip${active?' active':''}${taken?' disabled':''}"
+      ${taken ? 'disabled title="Уже существует"' : `onclick="floorChipPick('${label}')"`}>${label}</button>`;
+  }).join('');
+
   document.getElementById('modal-title').textContent = 'Добавить этаж';
   document.getElementById('modal-body').innerHTML = `
-    <div class="field"><label>Название этажа</label>
-      <input type="text" id="new-floor-name" placeholder="Например: Этаж 2" value="${escapeHtml(defaultName)}">
+    <div class="field" style="margin-bottom:.5rem"><label>Быстрый выбор</label>
+      <div class="floor-pick-chips">${chips}</div>
+    </div>
+    <div class="field"><label>Название</label>
+      <input type="text" id="new-floor-name" placeholder="Например: Этаж 5" value="${escapeHtml(defaultName)}">
     </div>`;
   document.getElementById('modal-foot').innerHTML = `
     <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
@@ -1740,6 +1764,15 @@ function showAddFloorModal() {
     const inp = document.getElementById('new-floor-name');
     if (inp) { inp.focus(); inp.select(); }
   });
+}
+
+function floorChipPick(label) {
+  const inp = document.getElementById('new-floor-name');
+  if (!inp) return;
+  inp.value = label;
+  document.querySelectorAll('.floor-pick-chip').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  inp.focus();
 }
 
 function createCoworkingFromModal() {

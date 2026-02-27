@@ -760,3 +760,12 @@ table.data-table tr:hover td{background:var(--paper)}
 @media (min-width:769px){
   #app[data-view]:not([data-view="map"]) .sidebar{display:none}
 }
+
+/* Floor picker chips (Add Floor modal) */
+.floor-pick-chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.floor-pick-chip{padding:6px 14px;border:1.5px solid var(--line);border-radius:8px;
+  background:transparent;font-family:inherit;font-size:13px;font-weight:500;
+  color:var(--ink2);cursor:pointer;transition:all .12s}
+.floor-pick-chip:hover:not(:disabled){border-color:var(--blue);color:var(--blue);background:var(--blue-l)}
+.floor-pick-chip.active{border-color:var(--blue);background:var(--blue-l);color:var(--blue);font-weight:600}
+.floor-pick-chip.disabled,.floor-pick-chip:disabled{opacity:.35;cursor:not-allowed;text-decoration:line-through}
