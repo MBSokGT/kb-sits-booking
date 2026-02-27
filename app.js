@@ -13,6 +13,17 @@ function escapeCSV(value) {
   return /[,"\n]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
+// Разрешаем только hex-цвета (#rgb / #rrggbb / #rrggbbaa) — больше ничего в style-атрибуты
+function safeCssColor(color, fallback = '#059669') {
+  return /^#[0-9a-fA-F]{3,8}$/.test(String(color)) ? color : fallback;
+}
+
+// Разрешаем только data:image/ URL для планов этажей — блокируем javascript: и любые внешние URL
+function safeImageUrl(url) {
+  if (!url) return null;
+  return String(url).startsWith('data:image/') ? url : null;
+}
+
 /* ═══════════════════════════════════════════════════════
    DATA LAYER  (localStorage — swap to fetch() later)
 ═══════════════════════════════════════════════════════ */
@@ -960,10 +971,10 @@ function renderMapView() {
     if (lines.length <= 2) {
       textHtml = lines.map((l,i) => `<text x="${x+w/2}" y="${cy + (i-(lines.length-1)/2)*14}"
         text-anchor="middle" dominant-baseline="middle" fill="white"
-        font-family="DM Sans,sans-serif" font-size="11.5" font-weight="700">${l}</text>`).join('');
+        font-family="DM Sans,sans-serif" font-size="11.5" font-weight="700">${escapeHtml(l)}</text>`).join('');
     } else {
       textHtml = `<text x="${x+w/2}" y="${cy}" text-anchor="middle" dominant-baseline="middle"
-        fill="white" font-family="DM Sans,sans-serif" font-size="11" font-weight="700">${sp.label}</text>`;
+        fill="white" font-family="DM Sans,sans-serif" font-size="11" font-weight="700">${escapeHtml(sp.label)}</text>`;
     }
     // seats badge
     const seatsHtml = `<rect x="${x+w-22}" y="${y+4}" width="18" height="13" rx="6" fill="rgba(0,0,0,.25)"/>
@@ -986,8 +997,8 @@ function renderMapView() {
   });
 
   // Floor image or grid pattern
-  const bgPattern = floor?.imageUrl
-    ? `<image href="${floor.imageUrl}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid meet"/>`
+  const bgPattern = safeImageUrl(floor?.imageUrl)
+    ? `<image href="${safeImageUrl(floor.imageUrl)}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid meet"/>`
     : `<defs><pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
         <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#e2e8f0" stroke-width="0.8"/>
        </pattern></defs>
@@ -1893,7 +1904,7 @@ function renderEditorForFloor() {
           ${editorSpaces.length ? editorSpaces.map(sp=>`
             <div style="display:flex;align-items:center;gap:8px;padding:7px 8px;border:1px solid var(--line);
               border-radius:6px;font-size:12px">
-              <div style="width:10px;height:10px;border-radius:2px;background:${sp.color};flex-shrink:0"></div>
+              <div style="width:10px;height:10px;border-radius:2px;background:${safeCssColor(sp.color)};flex-shrink:0"></div>
               <span style="flex:1;font-weight:600">${escapeHtml(sp.label)}</span>
               <span style="color:var(--ink4)">${sp.seats} мест</span>
               <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')">✕</button>
@@ -1936,7 +1947,7 @@ function renderEditorZones() {
   zonesEl.innerHTML = editorSpaces.map(sp => {
     const x = sp.x/100*CW, y = sp.y/100*CH, w = sp.w/100*CW, h = sp.h/100*CH;
     return `<div class="zone-rect" data-id="${sp.id}"
-      style="left:${x}px;top:${y}px;width:${w}px;height:${h}px;background:${sp.color}">
+      style="left:${x}px;top:${y}px;width:${w}px;height:${h}px;background:${safeCssColor(sp.color)}">
       <div class="zone-label">${escapeHtml(sp.label)}<br><span style="font-size:9px;opacity:.8">${sp.seats} мест</span></div>
       <button class="zone-del" onclick="deleteEditorZone('${sp.id}')">✕</button>
     </div>`;
@@ -2042,7 +2053,7 @@ function updateEditorZonesList() {
   el.innerHTML = editorSpaces.length ? editorSpaces.map(sp=>`
     <div style="display:flex;align-items:center;gap:8px;padding:7px 8px;border:1px solid var(--line);
       border-radius:6px;font-size:12px">
-      <div style="width:10px;height:10px;border-radius:2px;background:${sp.color};flex-shrink:0"></div>
+      <div style="width:10px;height:10px;border-radius:2px;background:${safeCssColor(sp.color)};flex-shrink:0"></div>
       <span style="flex:1;font-weight:600">${escapeHtml(sp.label)}</span>
       <span style="color:var(--ink4)">${sp.seats} мест</span>
       <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')">✕</button>

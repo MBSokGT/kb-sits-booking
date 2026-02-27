@@ -229,17 +229,20 @@
     <div class="cal-range-hint" id="cal-range-hint"></div>
     <div class="cal-hint-box">
       <div class="cal-hint-row"><span class="cal-hint-icon">👆</span><span>Клик по дню — выбрать или убрать дату</span></div>
-      <div class="cal-hint-row"><span class="cal-hint-icon">⇧</span><span>Shift+клик — добавить диапазон от последней выбранной</span></div>
+      <div class="cal-hint-row"><span class="cal-hint-icon">⇧</span><span>Shift + клик — выбрать диапазон дат</span></div>
     </div>
     <div class="cal-popup-options">
       <label class="cal-toggle" id="cal-toggle-weekends">
         <input type="checkbox" id="opt-weekends" onchange="toggleWeekendSelection(this.checked)">
         <span class="cal-toggle-label">Включить выходные (сб–вс)</span>
       </label>
-      <label class="cal-toggle" id="cal-toggle-saturday">
-        <input type="checkbox" id="opt-saturday-range" onchange="toggleSaturdayInRange(this.checked)">
-        <span class="cal-toggle-label">Включить субботу в диапазон</span>
-      </label>
+      <div id="cal-sat-section">
+        <label class="cal-toggle" id="cal-toggle-saturday">
+          <input type="checkbox" id="opt-saturday" onchange="toggleSaturdayMode(this.checked)">
+          <span class="cal-toggle-label">Рабочие субботы</span>
+        </label>
+        <div class="sat-picker" id="sat-picker" style="display:none"></div>
+      </div>
     </div>
   </div>
   <div class="cal-popup-footer">
