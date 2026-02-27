@@ -142,12 +142,16 @@ function stopPurgeTimer() {
 function startSessionCheck() {
   // Check session every minute, logout if > 60 mins inactive
   if (sessionCheckTimer) clearInterval(sessionCheckTimer);
+  // Remove previous listener if any (prevent accumulation on re-login)
+  if (_sessionActivityHandler) {
+    document.removeEventListener('click',   _sessionActivityHandler);
+    document.removeEventListener('keydown', _sessionActivityHandler);
+  }
   let lastActivityTime = Date.now();
-  
-  const resetActivity = () => { lastActivityTime = Date.now(); };
-  document.addEventListener('click', resetActivity);
-  document.addEventListener('keydown', resetActivity);
-  
+  _sessionActivityHandler = () => { lastActivityTime = Date.now(); };
+  document.addEventListener('click',   _sessionActivityHandler);
+  document.addEventListener('keydown', _sessionActivityHandler);
+
   sessionCheckTimer = setInterval(() => {
     const inactiveTime = (Date.now() - lastActivityTime) / 1000 / 60; // minutes
     if (inactiveTime > 60 && currentUser) {
@@ -159,6 +163,11 @@ function startSessionCheck() {
 
 function stopSessionCheck() {
   if (sessionCheckTimer) { clearInterval(sessionCheckTimer); sessionCheckTimer = null; }
+  if (_sessionActivityHandler) {
+    document.removeEventListener('click',   _sessionActivityHandler);
+    document.removeEventListener('keydown', _sessionActivityHandler);
+    _sessionActivityHandler = null;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -173,7 +182,7 @@ let calViewMonth  = 0;
 let calMode       = 'month';   // 'month' | 'year'
 let calAnchorDate = null;
 let includeWeekends = false;
-let includeSaturdayInRange = false;
+let workingSaturdays = [];  // array of 'YYYY-MM-DD' for bookable Saturdays
 let slotId        = 'full';
 let customFrom    = '09:00';
 let customTo      = '18:00';
@@ -192,6 +201,7 @@ let editorNewZone   = { label:'', seats:1, color:'#059669' };
 let lastPurgeTime   = 0;
 let purgeTimer      = null;
 let sessionCheckTimer = null;
+let _sessionActivityHandler = null;  // single ref so we can removeEventListener
 
 const SLOTS = [
   { id:'morning',   label:'Утро',       from:'09:00', to:'13:00' },
@@ -289,6 +299,7 @@ function doRegister() {
   const pass  = document.getElementById('r-pass').value;
   const dept  = document.getElementById('r-dept').value.trim();
   if (!name || !email || !pass) return authErr('Заполните обязательные поля');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return authErr('Введите корректный email');
   if (pass.length < 6) return authErr('Пароль минимум 6 символов');
   const users = getUsers();
   if (users.find(u => u.email === email)) return authErr('Email уже зарегистрирован');
@@ -329,6 +340,24 @@ function doLogout() {
   editorCoworkingId = null;
   editorFloorId = null;
   editorSpaces = [];
+  // Сброс настроек календаря (чтобы следующий пользователь не видел чужие)
+  includeWeekends = false;
+  workingSaturdays = [];
+  calMode = 'month';
+  const _logoutToday = new Date();
+  calViewYear  = _logoutToday.getFullYear();
+  calViewMonth = _logoutToday.getMonth();
+  calAnchorDate = null;
+  slotId = 'full';
+  customFrom = '09:00';
+  customTo   = '18:00';
+  // Сброс UI попапа календаря
+  const _satInp = document.getElementById('opt-saturday');
+  if (_satInp) _satInp.checked = false;
+  const _satPicker = document.getElementById('sat-picker');
+  if (_satPicker) _satPicker.style.display = 'none';
+  const _wkInp = document.getElementById('opt-weekends');
+  if (_wkInp) _wkInp.checked = false;
   document.getElementById('app').style.display = 'none';
   document.getElementById('auth-screen').style.display = 'flex';
   document.getElementById('auth-err').style.display = 'none';
@@ -442,9 +471,45 @@ function toggleWeekendSelection(checked) {
   renderCalendar();
 }
 
-function toggleSaturdayInRange(checked) {
-  includeSaturdayInRange = !!checked;
+function toggleSaturdayMode(checked) {
+  if (!checked) workingSaturdays = [];
+  const picker = document.getElementById('sat-picker');
+  if (picker) {
+    picker.style.display = checked ? '' : 'none';
+    if (checked) renderSatPicker();
+  }
   renderCalendar();
+}
+
+function toggleWorkingSaturday(ds) {
+  if (workingSaturdays.includes(ds)) {
+    workingSaturdays = workingSaturdays.filter(x => x !== ds);
+  } else {
+    workingSaturdays = [...workingSaturdays, ds].sort();
+  }
+  renderSatPicker();
+  renderCalendar();
+}
+
+function renderSatPicker() {
+  const picker = document.getElementById('sat-picker');
+  if (!picker) return;
+  const today = new Date();
+  const sats = [];
+  const cur = new Date(today);
+  // Advance to the next Saturday (or today if Saturday)
+  const daysUntilSat = (6 - cur.getDay() + 7) % 7 || 7;
+  cur.setDate(cur.getDate() + daysUntilSat);
+  for (let i = 0; i < 12; i++) {
+    sats.push(fmtDate(new Date(cur)));
+    cur.setDate(cur.getDate() + 7);
+  }
+  picker.innerHTML = sats.map(ds => {
+    const sel = workingSaturdays.includes(ds);
+    const d = new Date(ds + 'T12:00:00');
+    const label = `${d.getDate()} ${MONTHS_S[d.getMonth()]}`;
+    return `<button class="sat-chip${sel ? ' active' : ''}" onclick="toggleWorkingSaturday('${ds}')">${label}</button>`;
+  }).join('');
 }
 
 function isPastDate(ds) {
@@ -454,7 +519,8 @@ function isPastDate(ds) {
 function isDateSelectable(ds) {
   if (isPastDate(ds)) return false;
   const dow = new Date(ds + 'T12:00:00').getDay();
-  if (!includeWeekends && (dow === 0 || dow === 6)) return false;
+  if (dow === 0) return includeWeekends;  // Sunday
+  if (dow === 6) return includeWeekends || workingSaturdays.includes(ds);  // Saturday
   return true;
 }
 
@@ -462,7 +528,7 @@ function isRangeDayAllowed(dateObj) {
   const dow = dateObj.getDay();
   if (includeWeekends) return true;
   if (dow === 0) return false;
-  if (dow === 6) return includeSaturdayInRange;
+  if (dow === 6) return workingSaturdays.includes(fmtDate(dateObj));
   return true;
 }
 
@@ -511,8 +577,8 @@ function updateRangeHint() {
   const modeHint = calMode === 'year' ? 'Годовой режим' : 'Месячный режим';
   const daysHint = includeWeekends
     ? 'включены сб и вс'
-    : includeSaturdayInRange
-    ? 'в диапазоне включена суббота'
+    : workingSaturdays.length
+    ? `рабочих суббот: ${workingSaturdays.length}`
     : 'только пн-пт';
 
   if (selDates.length > 1) {
@@ -598,9 +664,11 @@ function renderYearCalendar(grid, todayDs, bookings) {
       const isSelected = selDates.includes(ds);
       const hasMine = bookings.some(b => b.date === ds);
 
+      const isWorkingSat = dow === 6 && workingSaturdays.includes(ds);
       let cls = 'cal-mini-day';
       if (isPast) cls += ' cal-past';
-      if (isWeekend && !includeWeekends) cls += ' cal-other';
+      if (isWeekend && !includeWeekends && !isWorkingSat) cls += ' cal-other';
+      if (isWorkingSat) cls += ' cal-working-sat';
       if (isToday) cls += ' cal-today';
       if (isSelected) cls += ' cal-selected';
       if (hasMine) cls += ' cal-has-booking';
@@ -621,16 +689,15 @@ function renderCalendar() {
   const bookings = getBookings().filter(b => b.userId === currentUser.id);
   const modeBtn = document.getElementById('cal-mode-btn');
   const weekendsInp = document.getElementById('opt-weekends');
-  const satInp = document.getElementById('opt-saturday-range');
+  const satInp = document.getElementById('opt-saturday');
+  const popup = document.getElementById('cal-popup');
 
   if (modeBtn) modeBtn.textContent = calMode === 'year' ? 'Месяц' : 'Год';
   if (weekendsInp) weekendsInp.checked = includeWeekends;
-  if (satInp) {
-    satInp.checked = includeSaturdayInRange;
-    satInp.disabled = includeWeekends;
-  }
+  if (satInp) satInp.disabled = includeWeekends;
   const satToggle = document.getElementById('cal-toggle-saturday');
   if (satToggle) satToggle.classList.toggle('disabled', includeWeekends);
+  if (popup) popup.classList.toggle('year-mode', calMode === 'year');
 
   if (calMode === 'year') {
     grid.classList.add('cal-grid-year');
@@ -668,9 +735,11 @@ function renderCalendar() {
     const isSelected = selDates.includes(ds);
     const hasMine   = bookings.some(b => b.date === ds);
 
+    const isWorkingSat = dow === 6 && workingSaturdays.includes(ds);
     let cls = 'cal-day';
     if (isPast)      cls += ' cal-past';
-    if (isWeekend && !includeWeekends && !isPast) cls += ' cal-other';
+    if (isWeekend && !includeWeekends && !isWorkingSat && !isPast) cls += ' cal-other';
+    if (isWorkingSat && !isPast) cls += ' cal-working-sat';
     if (isToday)     cls += ' cal-today';
     if (isSelected)  cls += ' cal-selected';
     if (hasMine)     cls += ' cal-has-booking';
@@ -870,10 +939,17 @@ function renderMapView() {
   const W=760, H=520;
   let zones = '';
   spaces.forEach(sp => {
-    const bk    = findBookingForSpace(sp.id, date, from, to);
-    const isMine = bk?.userId === currentUser.id;
-    const isBusy = bk && !isMine;
-    const fill   = isMine ? '#1d4ed8' : isBusy ? '#ef4444' : '#059669';
+    // Проверяем занятость по ВСЕМ выбранным датам (не только первой)
+    const checkDates = selDates.length > 0 ? selDates : [date];
+    let isMine = false, isBusy = false, busyBk = null;
+    for (const d of checkDates) {
+      const bk = findBookingForSpace(sp.id, d, from, to);
+      if (!bk) continue;
+      if (bk.userId === currentUser.id) { isMine = true; }
+      else { isBusy = true; if (!busyBk) busyBk = bk; }
+    }
+    // Занято чужим — красное; только моё — синее; свободно везде — зелёное
+    const fill   = isBusy ? '#ef4444' : isMine ? '#1d4ed8' : '#059669';
     const opacity = 0.82;
     // coords are % → scale to SVG px
     const x = sp.x/100*W, y = sp.y/100*H, w = sp.w/100*W, h = sp.h/100*H;
@@ -893,11 +969,14 @@ function renderMapView() {
     const seatsHtml = `<rect x="${x+w-22}" y="${y+4}" width="18" height="13" rx="6" fill="rgba(0,0,0,.25)"/>
       <text x="${x+w-13}" y="${y+14}" text-anchor="middle" fill="rgba(255,255,255,.9)"
         font-family="DM Mono,monospace" font-size="8" font-weight="500">${sp.seats}</text>`;
-    // name badge if booked
-    const whoHtml = isMine ? `<text x="${x+w/2}" y="${y+h-7}" text-anchor="middle" fill="rgba(255,255,255,.75)"
-        font-family="DM Sans,sans-serif" font-size="9">Моё</text>` :
-      isBusy ? `<text x="${x+w/2}" y="${y+h-7}" text-anchor="middle" fill="rgba(255,255,255,.75)"
-        font-family="DM Sans,sans-serif" font-size="9">${escapeHtml(bk.userName)}</text>` : '';
+    // Подпись: при нескольких датах показываем «Занято» без имени (у разных дней могут быть разные люди)
+    const whoHtml = isBusy
+      ? `<text x="${x+w/2}" y="${y+h-7}" text-anchor="middle" fill="rgba(255,255,255,.75)"
+          font-family="DM Sans,sans-serif" font-size="9">${checkDates.length > 1 ? 'Занято' : escapeHtml(busyBk.userName)}</text>`
+      : isMine
+      ? `<text x="${x+w/2}" y="${y+h-7}" text-anchor="middle" fill="rgba(255,255,255,.75)"
+          font-family="DM Sans,sans-serif" font-size="9">Моё</text>`
+      : '';
 
     zones += `<g class="zone-svg" style="cursor:pointer" onclick="spaceClick('${sp.id}')">
       <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5"
@@ -1330,13 +1409,14 @@ function renderAdminUsers(el) {
           : `<select class="role-sel" onchange="setUserRole('${u.id}',this.value)">
               ${['user','manager','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${roles[r]}</option>`).join('')}
              </select>`}</td>
-        <td>${isSelf ? '' : `<button class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}','${escapeHtml(u.name).replace(/'/g, "\\'")}')">Удалить</button>`}</td>
+        <td>${isSelf ? '' : `<button class="btn btn-danger btn-xs" data-uid="${u.id}" data-name="${escapeHtml(u.name)}" onclick="deleteUser(this.dataset.uid, this.dataset.name)">Удалить</button>`}</td>
       </tr>`;
     }).join('')}
     </tbody></table></div></div>`;
 }
 
 function setUserRole(uid, role) {
+  if (!['user', 'manager', 'admin'].includes(role)) return;  // недопустимое значение
   const users = getUsers();
   const u = users.find(u=>u.id===uid);
   if (!u) return;
@@ -1814,7 +1894,7 @@ function renderEditorForFloor() {
             <div style="display:flex;align-items:center;gap:8px;padding:7px 8px;border:1px solid var(--line);
               border-radius:6px;font-size:12px">
               <div style="width:10px;height:10px;border-radius:2px;background:${sp.color};flex-shrink:0"></div>
-              <span style="flex:1;font-weight:600">${sp.label}</span>
+              <span style="flex:1;font-weight:600">${escapeHtml(sp.label)}</span>
               <span style="color:var(--ink4)">${sp.seats} мест</span>
               <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')">✕</button>
             </div>`).join('') :
@@ -1857,7 +1937,7 @@ function renderEditorZones() {
     const x = sp.x/100*CW, y = sp.y/100*CH, w = sp.w/100*CW, h = sp.h/100*CH;
     return `<div class="zone-rect" data-id="${sp.id}"
       style="left:${x}px;top:${y}px;width:${w}px;height:${h}px;background:${sp.color}">
-      <div class="zone-label">${sp.label}<br><span style="font-size:9px;opacity:.8">${sp.seats} мест</span></div>
+      <div class="zone-label">${escapeHtml(sp.label)}<br><span style="font-size:9px;opacity:.8">${sp.seats} мест</span></div>
       <button class="zone-del" onclick="deleteEditorZone('${sp.id}')">✕</button>
     </div>`;
   }).join('');
@@ -1963,7 +2043,7 @@ function updateEditorZonesList() {
     <div style="display:flex;align-items:center;gap:8px;padding:7px 8px;border:1px solid var(--line);
       border-radius:6px;font-size:12px">
       <div style="width:10px;height:10px;border-radius:2px;background:${sp.color};flex-shrink:0"></div>
-      <span style="flex:1;font-weight:600">${sp.label}</span>
+      <span style="flex:1;font-weight:600">${escapeHtml(sp.label)}</span>
       <span style="color:var(--ink4)">${sp.seats} мест</span>
       <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')">✕</button>
     </div>`).join('') :
