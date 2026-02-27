@@ -1725,15 +1725,21 @@ function showAddCoworkingModal() {
 
 function showAddFloorModal() {
   if (!editorCoworkingId) return toast('Сначала выберите коворкинг', 't-red', '✕');
+  const existingFloors = getFloorsByCoworking(editorCoworkingId);
+  const defaultName = 'Этаж ' + (existingFloors.length + 1);
   document.getElementById('modal-title').textContent = 'Добавить этаж';
   document.getElementById('modal-body').innerHTML = `
     <div class="field"><label>Название этажа</label>
-      <input type="text" id="new-floor-name" placeholder="Например: Этаж 2">
+      <input type="text" id="new-floor-name" placeholder="Например: Этаж 2" value="${escapeHtml(defaultName)}">
     </div>`;
   document.getElementById('modal-foot').innerHTML = `
     <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
     <button class="btn btn-primary" onclick="createFloorFromModal()">Создать</button>`;
   document.getElementById('modal-overlay').classList.add('open');
+  requestAnimationFrame(() => {
+    const inp = document.getElementById('new-floor-name');
+    if (inp) { inp.focus(); inp.select(); }
+  });
 }
 
 function createCoworkingFromModal() {
@@ -1750,7 +1756,7 @@ function createCoworkingFromModal() {
 function createFloorFromModal() {
   const name = document.getElementById('new-floor-name').value.trim();
   if (!name) return toast('Введите название этажа', 't-red', '✕');
-  addFloor();
+  addFloorWithName(name);
   closeModal();
 }
 
@@ -1835,10 +1841,19 @@ function selectEditorFloor(id, btn) {
   renderEditorForFloor();
 }
 
+function addFloorWithName(name) {
+  if (!editorCoworkingId || !name?.trim()) return;
+  _addFloor(name.trim());
+}
+
 function addFloor() {
   if (!editorCoworkingId) return;
   const name = document.getElementById('new-floor-name')?.value.trim() || prompt('Название этажа:');
   if (!name) return;
+  _addFloor(name);
+}
+
+function _addFloor(name) {
   const floors = getFloors();
   const newF = {
     id: DB.uid(),
