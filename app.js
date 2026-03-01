@@ -25,10 +25,11 @@ function tryRenderTurnstile() {
       callback:          (token) => { _turnstileToken = token; },
       'expired-callback': ()     => { _turnstileToken = ''; },
       'error-callback':   ()     => {
-        // widget error (network, hostname mismatch, etc.) — disable check so login still works
-        console.warn('[Turnstile] widget error — disabling captcha check');
+        // widget error (hostname mismatch, network, etc.) — show friendly message
+        console.warn('[Turnstile] widget error — showing user message');
         TURNSTILE_SITE_KEY = '';
         _turnstileToken    = '';
+        authErr('Ошибка загрузки капчи. Обновите страницу или свяжитесь с администратором.');
       },
     }) ?? 'failed'; // render returns undefined on failure; store 'failed' so we don't retry
     if (_turnstileWidgetId === 'failed') {
