@@ -46,7 +46,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .auth-card{position:relative;background:var(--white);border-radius:16px;width:420px;max-width:94vw;
   box-shadow:0 25px 80px rgba(0,0,0,.35);overflow:hidden;animation:fadeUp .4s ease}
 @keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
-.auth-head{background:var(--ink);padding:1rem 1.5rem;display:flex;
+.auth-head{background:#000;padding:1rem 1.5rem;display:flex;
   flex-direction:column;align-items:flex-start;gap:.6rem}
 .auth-head-logo{height:36px;width:auto;flex-shrink:0}
 .auth-head-title{width:100%;text-align:center;color:white;font-size:16px;
