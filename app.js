@@ -48,6 +48,7 @@ const DB = {
     if (k !== 'session' && k !== 'users') DB._push(k, v);
   },
   _push(k, v) {
+    if (!currentUser) return; // don't push before login
     fetch('/api/kv/' + encodeURIComponent(k), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -58,13 +59,8 @@ const DB = {
 };
 
 /* ── Initial seed ─────────────────────────────────────────────────────────── */
-if (!DB.get('users', null)) {
-  DB.set('users', [
-    { id:'u1', email:'admin@demo.ru',   password:'admin123',  name:'Администратор',    department:'IT',      role:'admin'   },
-    { id:'u2', email:'manager@demo.ru', password:'pass123',   name:'Менеджер Иванова', department:'HR / T&D',role:'manager' },
-    { id:'u3', email:'user@demo.ru',    password:'pass123',   name:'Сотрудник Петров', department:'Продажи', role:'user'    },
-  ]);
-}
+// Users are managed server-side via D1 — no local seed needed.
+// Populated from /api/users on login via syncFromD1().
 if (!DB.get('coworkings', null)) {
   DB.set('coworkings', [{ id:'c1', name:'Главный коворкинг' }]);
 }
@@ -84,6 +80,11 @@ if (!DB.get('floors', null)) {
   ]);
 }
 if (!DB.get('bookings', null)) DB.set('bookings', []);
+if (!DB.get('departments', null)) {
+  const dnames = ['Закупка и логистика','Маркетинг','HR','Экспортное развитие',
+                  'Антелава','Программисты','Контроль качества','Офис менеджеры'];
+  DB.set('departments', dnames.map(name => ({ id: DB.uid(), name, headUserId: null, memberIds: [] })));
+}
 
 /* ── CRUD helpers ─────────────────────────────────────────────────────────── */
 const getCoworkings = ()  => {
@@ -110,7 +111,9 @@ const saveCoworkings = v => { if (Array.isArray(v)) DB.set('coworkings', v); };
 const saveUsers    = v  => { if (Array.isArray(v)) DB.set('users', v); };
 const saveFloors   = v  => { if (Array.isArray(v)) DB.set('floors', v); };
 const saveSpaces   = v  => { if (Array.isArray(v)) DB.set('spaces', v); };
-const saveBookings = v  => { if (Array.isArray(v)) DB.set('bookings', v); };
+const saveBookings    = v  => { if (Array.isArray(v)) DB.set('bookings', v); };
+const getDepartments  = () => { const d = DB.get('departments', null); return Array.isArray(d) ? d : []; };
+const saveDepartments = v  => { if (Array.isArray(v)) DB.set('departments', v); };
 
 function ensureDataIntegrity() {
   let coworkings = getCoworkings();
@@ -284,21 +287,14 @@ function toast(msg, cls='', icon='✓') {
 /* ═══════════════════════════════════════════════════════
    AUTH
 ═══════════════════════════════════════════════════════ */
-function authTab(tab) {
-  document.getElementById('aform-login').style.display = tab==='login' ? '' : 'none';
-  document.getElementById('aform-reg').style.display   = tab==='reg'   ? '' : 'none';
-  document.getElementById('atab-login').classList.toggle('active', tab==='login');
-  document.getElementById('atab-reg').classList.toggle('active',   tab==='reg');
-  document.getElementById('auth-err').style.display = 'none';
-}
 function authErr(msg) {
   const el = document.getElementById('auth-err');
   el.textContent = msg; el.style.display = '';
 }
 
 function resetDemoData() {
-  if (!confirm('Сбросить локальные данные и восстановить демо-аккаунты?')) return;
-  ['users','coworkings','floors','spaces','bookings','session'].forEach(k => localStorage.removeItem('ws_' + k));
+  if (!confirm('Сбросить все локальные данные? Данные будут перезагружены из облака при следующем входе.')) return;
+  ['coworkings','floors','spaces','bookings','departments','session'].forEach(k => localStorage.removeItem('ws_' + k));
   location.reload();
 }
 
@@ -318,34 +314,6 @@ async function doLogin() {
     // Fallback to localStorage when API unavailable (local dev / offline)
     const user = getUsers().find(u => u.email === email && (u.password === pass || u.password_hash === pass));
     if (!user) return authErr('Неверный email или пароль');
-    onAuth(user);
-  }
-}
-
-async function doRegister() {
-  const name  = document.getElementById('r-name').value.trim();
-  const email = document.getElementById('r-email').value.trim().toLowerCase();
-  const pass  = document.getElementById('r-pass').value;
-  const dept  = document.getElementById('r-dept').value.trim();
-  if (!name || !email || !pass) return authErr('Заполните обязательные поля');
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return authErr('Введите корректный email');
-  if (pass.length < 6) return authErr('Пароль минимум 6 символов');
-  try {
-    const r = await fetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email, password: pass, department: dept })
-    });
-    const data = await r.json();
-    if (!r.ok) return authErr(data.error || 'Ошибка регистрации');
-    onAuth(data.user);
-  } catch(e) {
-    // Fallback: localStorage only when API unavailable
-    const users = getUsers();
-    if (users.find(u => u.email === email)) return authErr('Email уже зарегистрирован');
-    const user = { id: DB.uid(), email, password: pass, name, department: dept, role: 'user' };
-    users.push(user);
-    saveUsers(users);
     onAuth(user);
   }
 }
@@ -440,7 +408,7 @@ async function syncFromD1() {
       }
     }
     // 2. Sync all KV buckets
-    const keys = ['coworkings', 'floors', 'spaces', 'bookings', 'workingSaturdays'];
+    const keys = ['coworkings', 'floors', 'spaces', 'bookings', 'workingSaturdays', 'departments'];
     await Promise.all(keys.map(async k => {
       const r = await fetch('/api/kv/' + encodeURIComponent(k));
       if (!r.ok) return;
@@ -1468,6 +1436,218 @@ function renderTeamView() {
 }
 
 /* ═══════════════════════════════════════════════════════
+   DEPARTMENTS MANAGEMENT
+═══════════════════════════════════════════════════════ */
+function renderAdminDepartments(el) {
+  const depts = getDepartments();
+  const users  = getUsers();
+  el.innerHTML = `
+    <div style="padding:1.25rem 0 .5rem;display:flex;align-items:center;gap:.75rem">
+      <button class="btn btn-primary" onclick="addDepartment()">+ Добавить отдел</button>
+    </div>
+    <div id="dept-list" style="display:flex;flex-direction:column;gap:1rem;padding-bottom:2rem">
+      ${depts.length ? depts.map(d => buildDeptCard(d, users)).join('') : '<p style="color:var(--ink3)">Нет отделов</p>'}
+    </div>`;
+}
+
+function buildDeptCard(dept, users) {
+  const head    = users.find(u => u.id === dept.headUserId);
+  const members = (dept.memberIds || []).map(id => users.find(u => u.id === id)).filter(Boolean);
+  const nonMembers = users.filter(u => !(dept.memberIds || []).includes(u.id));
+  return `
+  <div class="dept-card" id="dept-${dept.id}">
+    <div class="dept-card-head">
+      <div class="dept-name-area">
+        <span class="dept-name">${escapeHtml(dept.name)}</span>
+        <button class="icon-btn" title="Переименовать" onclick="editDeptName('${dept.id}')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+      </div>
+      <button class="btn btn-ghost btn-sm" style="color:var(--red);font-size:12px" onclick="deleteDepartment('${dept.id}')">Удалить</button>
+    </div>
+    <div class="dept-meta">
+      <label class="dept-label">Руководитель</label>
+      <select class="dept-select" onchange="setDeptHead('${dept.id}',this.value)">
+        <option value="">— не назначен —</option>
+        ${users.map(u=>`<option value="${u.id}"${u.id===dept.headUserId?' selected':''}>${escapeHtml(u.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="dept-members">
+      <label class="dept-label">Сотрудники (${members.length})</label>
+      <div class="dept-member-list">
+        ${members.map(u=>`
+          <span class="dept-member-chip">
+            ${escapeHtml(u.name)}
+            <button onclick="removeMemberFromDept('${dept.id}','${u.id}')" title="Убрать">×</button>
+          </span>`).join('')}
+      </div>
+      ${nonMembers.length ? `
+        <div class="dept-add-row">
+          <select id="dept-add-sel-${dept.id}" class="dept-select">
+            <option value="">Добавить сотрудника…</option>
+            ${nonMembers.map(u=>`<option value="${u.id}">${escapeHtml(u.name)}</option>`).join('')}
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="addMemberToDept('${dept.id}')">Добавить</button>
+        </div>` : ''}
+    </div>
+  </div>`;
+}
+
+function addDepartment() {
+  document.getElementById('modal-title').textContent = 'Новый отдел';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="field">
+      <label>Название</label>
+      <input type="text" id="new-dept-name" placeholder="Например: Финансы">
+    </div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+    <button class="btn btn-primary" onclick="createDepartment()">Создать</button>`;
+  document.getElementById('modal-overlay').classList.add('open');
+  requestAnimationFrame(() => { const i = document.getElementById('new-dept-name'); if(i) i.focus(); });
+}
+
+function createDepartment() {
+  const name = document.getElementById('new-dept-name').value.trim();
+  if (!name) return toast('Введите название', 't-red', '✕');
+  const depts = getDepartments();
+  depts.push({ id: DB.uid(), name, headUserId: null, memberIds: [] });
+  saveDepartments(depts);
+  closeModal();
+  _refreshDeptTab();
+  toast('Отдел создан', '', '✓');
+}
+
+function editDeptName(deptId) {
+  const depts = getDepartments();
+  const dept  = depts.find(d => d.id === deptId);
+  if (!dept) return;
+  document.getElementById('modal-title').textContent = 'Переименовать отдел';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="field">
+      <label>Название</label>
+      <input type="text" id="edit-dept-name" value="${escapeHtml(dept.name)}">
+    </div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+    <button class="btn btn-primary" onclick="saveDeptName('${deptId}')">Сохранить</button>`;
+  document.getElementById('modal-overlay').classList.add('open');
+  requestAnimationFrame(() => { const i = document.getElementById('edit-dept-name'); if(i){i.focus();i.select();} });
+}
+
+function saveDeptName(deptId) {
+  const name = document.getElementById('edit-dept-name').value.trim();
+  if (!name) return toast('Введите название', 't-red', '✕');
+  const depts = getDepartments();
+  const dept  = depts.find(d => d.id === deptId);
+  if (!dept) return;
+  dept.name = name;
+  saveDepartments(depts);
+  closeModal();
+  _refreshDeptTab();
+}
+
+function deleteDepartment(deptId) {
+  const depts = getDepartments();
+  const dept  = depts.find(d => d.id === deptId);
+  if (!dept || !confirm(`Удалить отдел «${dept.name}»?`)) return;
+  saveDepartments(depts.filter(d => d.id !== deptId));
+  _refreshDeptTab();
+  toast('Отдел удалён', '', '✓');
+}
+
+function setDeptHead(deptId, userId) {
+  const depts = getDepartments();
+  const dept  = depts.find(d => d.id === deptId);
+  if (!dept) return;
+  dept.headUserId = userId || null;
+  saveDepartments(depts);
+  toast('Руководитель обновлён', '', '✓');
+}
+
+function addMemberToDept(deptId) {
+  const sel    = document.getElementById('dept-add-sel-' + deptId);
+  const userId = sel ? sel.value : '';
+  if (!userId) return;
+  const depts = getDepartments();
+  const dept  = depts.find(d => d.id === deptId);
+  if (!dept) return;
+  if (!dept.memberIds) dept.memberIds = [];
+  if (!dept.memberIds.includes(userId)) dept.memberIds.push(userId);
+  saveDepartments(depts);
+  _refreshDeptTab();
+}
+
+function removeMemberFromDept(deptId, userId) {
+  const depts = getDepartments();
+  const dept  = depts.find(d => d.id === deptId);
+  if (!dept) return;
+  dept.memberIds = (dept.memberIds || []).filter(id => id !== userId);
+  if (dept.headUserId === userId) dept.headUserId = null;
+  saveDepartments(depts);
+  _refreshDeptTab();
+}
+
+function _refreshDeptTab() {
+  const content = document.getElementById('admin-tab-content');
+  if (content) renderAdminDepartments(content);
+}
+
+/* ═══════════════════════════════════════════════════════
+   PROFILE / CHANGE PASSWORD
+═══════════════════════════════════════════════════════ */
+function showChangePasswordModal() {
+  document.getElementById('modal-title').textContent = 'Изменить пароль';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="field">
+      <label>Текущий пароль</label>
+      <input type="password" id="cp-old" autocomplete="current-password">
+    </div>
+    <div class="field">
+      <label>Новый пароль <span style="color:var(--ink3);font-size:11px">(мин. 6 символов)</span></label>
+      <input type="password" id="cp-new" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label>Повторите новый пароль</label>
+      <input type="password" id="cp-confirm" autocomplete="new-password">
+    </div>
+    <div id="cp-err" style="color:var(--red);font-size:13px;display:none"></div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+    <button class="btn btn-primary" onclick="doChangePassword()">Сохранить</button>`;
+  document.getElementById('modal-overlay').classList.add('open');
+  requestAnimationFrame(() => { const i = document.getElementById('cp-old'); if(i) i.focus(); });
+  // Allow Enter on last field
+  document.getElementById('cp-confirm').addEventListener('keydown', e => { if(e.key==='Enter') doChangePassword(); });
+}
+
+async function doChangePassword() {
+  const oldPwd  = document.getElementById('cp-old').value;
+  const newPwd  = document.getElementById('cp-new').value;
+  const confirm = document.getElementById('cp-confirm').value;
+  const errEl   = document.getElementById('cp-err');
+  const showErr = msg => { errEl.textContent = msg; errEl.style.display = ''; };
+
+  if (!oldPwd || !newPwd) return showErr('Заполните все поля');
+  if (newPwd.length < 6)  return showErr('Новый пароль минимум 6 символов');
+  if (newPwd !== confirm)  return showErr('Пароли не совпадают');
+
+  try {
+    const r = await fetch('/api/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: currentUser.email, oldPassword: oldPwd, newPassword: newPwd })
+    });
+    const data = await r.json();
+    if (!r.ok) return showErr(data.error || 'Ошибка');
+    closeModal();
+    toast('Пароль изменён', '', '✓');
+  } catch(e) {
+    showErr('Нет соединения с сервером');
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
    ADMIN VIEW
 ═══════════════════════════════════════════════════════ */
 function renderAdminView() {
@@ -1478,6 +1658,7 @@ function renderAdminView() {
       <button class="floor-tab-btn" onclick="adminTab('users',this)">Пользователи</button>
       <button class="floor-tab-btn active" onclick="adminTab('floors',this)">Коворкинги и планировки</button>
       <button class="floor-tab-btn" onclick="adminTab('bookings',this)">Все брони</button>
+      <button class="floor-tab-btn" onclick="adminTab('departments',this)">Департаменты</button>
     </div>
     <div id="admin-tab-content"></div>
   </div>`;
@@ -1488,9 +1669,10 @@ function adminTab(tab, btn) {
   document.querySelectorAll('#admin-tabs .floor-tab-btn').forEach(b=>b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   const el = document.getElementById('admin-tab-content');
-  if (tab === 'users')    renderAdminUsers(el);
-  if (tab === 'floors')   renderAdminFloors(el);
-  if (tab === 'bookings') renderAdminBookings(el);
+  if (tab === 'users')       renderAdminUsers(el);
+  if (tab === 'floors')      renderAdminFloors(el);
+  if (tab === 'bookings')    renderAdminBookings(el);
+  if (tab === 'departments') renderAdminDepartments(el);
 }
 
 /* ── Admin: Users ─────────────────────────────────────────────────────────── */
@@ -2318,7 +2500,6 @@ function overlayClick(e) { if (e.target === document.getElementById('modal-overl
 window.addEventListener('DOMContentLoaded', async () => {
   // Enter key
   document.getElementById('l-pass').addEventListener('keydown', e => e.key==='Enter' && doLogin());
-  document.getElementById('r-pass').addEventListener('keydown', e => e.key==='Enter' && doRegister());
 
   // Restore session (new format: full user object; legacy: user ID string)
   const sessionData = DB.get('session', null);

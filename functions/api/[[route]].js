@@ -66,6 +66,21 @@ export async function onRequest(context) {
       return json({ user: { id, email: emailClean, name: name.trim(), department: department.trim(), role: 'user' } });
     }
 
+    /* ── POST /auth/change-password ──────────────────── */
+    if (path === '/auth/change-password' && method === 'POST') {
+      const { email = '', oldPassword = '', newPassword = '' } = await request.json();
+      if (!newPassword || newPassword.length < 6) {
+        return json({ error: 'Новый пароль минимум 6 символов' }, 400);
+      }
+      const row = await env.DB.prepare(
+        'SELECT id FROM users WHERE email = ? AND password = ?'
+      ).bind(email.trim().toLowerCase(), oldPassword).first();
+      if (!row) return json({ error: 'Неверный текущий пароль' }, 401);
+      await env.DB.prepare('UPDATE users SET password = ? WHERE id = ?')
+        .bind(newPassword, row.id).run();
+      return json({ ok: true });
+    }
+
     /* ── GET /users ───────────────────────────────────── */
     if (path === '/users' && method === 'GET') {
       const { results } = await env.DB.prepare(
