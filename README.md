@@ -18,6 +18,7 @@
 - Вход по email + пароль
 - Саморегистрация отключена (аккаунты создаёт администратор)
 - Смена пароля в личном кабинете
+- Письма через Resend: приглашение при создании аккаунта, код сброса пароля, уведомление о смене пароля
 - Автоматический выход после 60 минут бездействия
 - Сессия восстанавливается после перезагрузки страницы
 
@@ -91,6 +92,28 @@ npx wrangler d1 execute kb-sits-db --file=d1-schema.sql --remote
   Пример: `https://kb-sits.pages.dev,https://your-domain.ru`
 - `RESET_TOKEN_PEPPER` — секрет для хеширования кодов сброса пароля
 - `RESET_DEBUG=1` — только для отладки, чтобы API возвращал код сброса в ответе
+- `EMAIL_PROVIDER` — провайдер почты (сейчас поддерживается `resend`)
+- `RESEND_API_KEY` — API ключ Resend
+- `EMAIL_FROM` — подтверждённый отправитель в Resend, например `KB Sits <noreply@your-domain.ru>`
+- `APP_BASE_URL` — публичный URL приложения для ссылки в письме (например `https://kb-sits.pages.dev`)
+- `EMAIL_INCLUDE_PASSWORD=1` — опционально: включать пароль в письмо (по умолчанию `0`)
+
+### Отправка письма при создании аккаунта админом
+
+1. В Resend подтвердите домен отправителя и получите API key.
+2. Добавьте секреты в Cloudflare Pages:
+
+```bash
+npx wrangler pages secret put EMAIL_PROVIDER --project-name kb-sits
+npx wrangler pages secret put RESEND_API_KEY --project-name kb-sits
+npx wrangler pages secret put EMAIL_FROM --project-name kb-sits
+npx wrangler pages secret put APP_BASE_URL --project-name kb-sits
+# опционально:
+npx wrangler pages secret put EMAIL_INCLUDE_PASSWORD --project-name kb-sits
+```
+
+3. Задеплойте проект.
+4. В админке при создании пользователя оставьте включённым чекбокс `Отправить письмо с доступом`.
 
 ## 📱 Адаптивность
 

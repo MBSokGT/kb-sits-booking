@@ -24,6 +24,27 @@ function safeImageUrl(url) {
   return String(url).startsWith('data:image/') ? url : null;
 }
 
+function sameId(a, b) {
+  return String(a ?? '').trim() === String(b ?? '').trim();
+}
+
+function isCurrentUserId(id) {
+  return !!currentUser && sameId(id, currentUser.id);
+}
+
+function isMineBooking(booking) {
+  return !!booking && isCurrentUserId(booking.userId);
+}
+
+function getStatusColors() {
+  const root = getComputedStyle(document.documentElement);
+  return {
+    free: root.getPropertyValue('--status-free').trim() || '#059669',
+    mine: root.getPropertyValue('--status-mine').trim() || '#1d4ed8',
+    busy: root.getPropertyValue('--status-busy').trim() || '#ef4444',
+  };
+}
+
 /* ═══════════════════════════════════════════════════════
    DATA LAYER  (localStorage — swap to fetch() later)
 ═══════════════════════════════════════════════════════ */
@@ -887,7 +908,7 @@ function renderYearCalendar(grid, todayDs, bookings) {
 function renderCalendar() {
   const grid    = document.getElementById('cal-grid');
   const todayDs = fmtDate(new Date());
-  const bookings = getActiveBookings(getBookings()).filter(b => b.userId === currentUser.id);
+  const bookings = getActiveBookings(getBookings()).filter(b => isMineBooking(b));
   const modeBtn = document.getElementById('cal-mode-btn');
   const weekendsInp = document.getElementById('opt-weekends');
   const satInp = document.getElementById('opt-saturday');
@@ -1080,7 +1101,7 @@ function renderStats() {
   spaces.forEach(sp => {
     const bk = findBookingForSpace(sp.id, date, from, to);
     if (!bk) free++;
-    else if (bk.userId === currentUser.id) mine++;
+    else if (isMineBooking(bk)) mine++;
     else busy++;
   });
   document.getElementById('s-free').textContent = free;
@@ -1093,7 +1114,7 @@ function renderStats() {
 ═══════════════════════════════════════════════════════ */
 function renderMiniBookings() {
   const el    = document.getElementById('mini-bk-list');
-  const mine  = getActiveBookings(getBookings()).filter(b => b.userId === currentUser.id);
+  const mine  = getActiveBookings(getBookings()).filter(b => isMineBooking(b));
   if (!mine.length) {
     el.innerHTML = `<div style="font-size:12px;color:var(--ink4);text-align:center;padding:1rem;
       border:1px dashed var(--line);border-radius:var(--radius)">Нет активных бронирований</div>`;
@@ -1138,6 +1159,7 @@ function renderMapView() {
 
   // Build SVG map
   const W=760, H=520;
+  const statusColors = getStatusColors();
   let zones = '';
   spaces.forEach(sp => {
     // Проверяем занятость по ВСЕМ выбранным датам (не только первой)
@@ -1146,11 +1168,12 @@ function renderMapView() {
     for (const d of checkDates) {
       const bk = findBookingForSpace(sp.id, d, from, to);
       if (!bk) continue;
-      if (bk.userId === currentUser.id) { isMine = true; }
+      if (isMineBooking(bk)) { isMine = true; }
       else { isBusy = true; if (!busyBk) busyBk = bk; }
     }
-    // Занято чужим — красное; только моё — синее; свободно везде — зелёное
-    const fill   = isBusy ? '#ef4444' : isMine ? '#1d4ed8' : '#059669';
+    // Занято чужим — красное; только моё — синее; свободно везде — зелёное.
+    // Цвета берём из тех же CSS-переменных, что и у индикаторов под названием этажа.
+    const fill   = isBusy ? statusColors.busy : isMine ? statusColors.mine : statusColors.free;
     const opacity = 0.82;
     // coords are % → scale to SVG px
     const x = sp.x/100*W, y = sp.y/100*H, w = sp.w/100*W, h = sp.h/100*H;
@@ -1213,7 +1236,7 @@ function renderListView(spaces, date, from, to) {
     </tr></thead>
     <tbody>${spaces.map(sp => {
       const bk    = findBookingForSpace(sp.id, date, from, to);
-      const isMine = bk?.userId === currentUser.id;
+      const isMine = isMineBooking(bk);
       const isBusy = bk && !isMine;
       const icon = Object.entries(types).find(([k]) => sp.label.includes(k))?.[1] || '📍';
       return `<tr>
@@ -1243,7 +1266,7 @@ function getAllowedBookingTargets() {
     // Managers can ONLY book for users in their own department (security fix)
     const deptUsers = getUsers().filter(u =>
       u.department === currentUser.department &&
-      u.id !== currentUser.id &&
+      !isCurrentUserId(u.id) &&
       u.role === 'user' // Cannot book for other roles
     );
     return [currentUser, ...deptUsers];
@@ -1252,7 +1275,7 @@ function getAllowedBookingTargets() {
 }
 
 function canBookForUser(userId) {
-  return getAllowedBookingTargets().some(u => u.id === userId);
+  return getAllowedBookingTargets().some(u => sameId(u.id, userId));
 }
 
 function hasUserTimeConflict(bookings, userId, date, from, to) {
@@ -1269,11 +1292,11 @@ function canCancelBooking(booking) {
   const endMs = bookingEndUtcMs(booking);
   if (!Number.isFinite(endMs) || endMs <= Date.now()) return false;
   if (currentUser.role === 'admin') return true;
-  if (currentUser.role === 'user') return booking.userId === currentUser.id;
+  if (currentUser.role === 'user') return isMineBooking(booking);
   if (currentUser.role === 'manager') {
     const owner = getUsers().find(u => u.id === booking.userId);
     if (!owner) return false;
-    if (owner.id === currentUser.id) return true;
+    if (isCurrentUserId(owner.id)) return true;
     return owner.role === 'user' && owner.department === currentUser.department;
   }
   return false;
@@ -1290,11 +1313,11 @@ function spaceClick(spaceId) {
   const date    = selDates[0] || fmtDate(new Date());
   const from    = slotFrom(), to = slotTo();
   const bk      = findBookingForSpace(spaceId, date, from, to);
-  const isMine  = bk?.userId === currentUser.id;
+  const isMine  = isMineBooking(bk);
   const isBusy  = bk && !isMine;
   const canCancelBusy = isBusy && canCancelBooking(bk);
   const targets = getAllowedBookingTargets();
-  if (!bookingForUserId || !targets.some(u=>u.id===bookingForUserId)) {
+  if (!bookingForUserId || !targets.some(u=>sameId(u.id, bookingForUserId))) {
     bookingForUserId = currentUser.id;
   }
 
@@ -1321,7 +1344,7 @@ function spaceClick(spaceId) {
           Бронировать за
         </div>
         <select class="role-sel" id="book-for-user" onchange="bookingForUserId=this.value" style="width:100%">
-          ${targets.map(u=>`<option value="${u.id}" ${u.id===bookingForUserId?'selected':''}>${escapeHtml(u.name)}${u.id===currentUser.id?' (я)':''}</option>`).join('')}
+          ${targets.map(u=>`<option value="${u.id}" ${sameId(u.id, bookingForUserId)?'selected':''}>${escapeHtml(u.name)}${isCurrentUserId(u.id)?' (я)':''}</option>`).join('')}
         </select>
        </div>`
     : '';
@@ -1399,7 +1422,7 @@ async function bookSpace(spaceId) {
   if (skippedBusy) parts.push(`занято: ${skippedBusy}`);
   if (skippedDailyLimit) parts.push(`лимит 1 место в день: ${skippedDailyLimit}`);
   if (skippedUser) parts.push(`конфликт у сотрудника: ${skippedUser}`);
-  const who = targetUser.id === currentUser.id ? '' : ` для ${targetUser.name}`;
+  const who = isCurrentUserId(targetUser.id) ? '' : ` для ${targetUser.name}`;
   const msg = parts.length
     ? `Забронировано${who}: ${created} дн., пропущено (${parts.join(', ')})`
     : `Забронировано${who}: ${created} ${created===1?'день':'дней'}`;
@@ -1518,7 +1541,7 @@ function setDisplay(mode, btn) {
 function renderMyBookingsView() {
   purgeExpired();
   const el     = document.getElementById('view-mybookings');
-  const mine   = getActiveBookings(getBookings()).filter(b=>b.userId===currentUser.id)
+  const mine   = getActiveBookings(getBookings()).filter(b=>isMineBooking(b))
                               .sort((a,b)=>a.date.localeCompare(b.date));
   const spaces = getSpaces(); const floors = getFloors();
 
@@ -1559,11 +1582,11 @@ function renderCabinetView() {
   const me = currentUser;
   const spaces = getSpaces(); const floors = getFloors();
   const activeBookings = getActiveBookings(getBookings());
-  const myBks = activeBookings.filter(b => b.userId === me.id)
+  const myBks = activeBookings.filter(b => sameId(b.userId, me.id))
                               .sort((a, b) => a.date.localeCompare(b.date));
   const isManager = me.role === 'manager' || me.role === 'admin';
   const team = isManager
-    ? getUsers().filter(u => u.department === me.department && u.id !== me.id && u.role === 'user')
+    ? getUsers().filter(u => u.department === me.department && !sameId(u.id, me.id) && u.role === 'user')
     : [];
   const teamBks = isManager
     ? activeBookings.filter(b => team.some(u => u.id === b.userId))
@@ -1675,8 +1698,8 @@ function renderTeamView() {
   purgeExpired();
   const el   = document.getElementById('view-team');
   const me   = currentUser;
-  const team = getUsers().filter(u=>u.department===me.department && u.id!==me.id && u.role==='user');
-  const bks  = getActiveBookings(getBookings()).filter(b => team.some(u=>u.id===b.userId))
+  const team = getUsers().filter(u=>u.department===me.department && !sameId(u.id, me.id) && u.role==='user');
+  const bks  = getActiveBookings(getBookings()).filter(b => team.some(u=>sameId(u.id, b.userId)))
                              .sort((a,b)=>a.date.localeCompare(b.date));
   const spaces = getSpaces(); const floors = getFloors();
 
@@ -2083,8 +2106,8 @@ function renderAdminUsers(el) {
   <div style="padding:0"><table class="data-table">
     <thead><tr><th>ФИО</th><th>Email</th><th>Отдел</th><th>Бронирований</th><th>Роль</th><th></th></tr></thead>
     <tbody>${users.map(u => {
-      const cnt = bks.filter(b=>b.userId===u.id).length;
-      const isSelf = u.id === currentUser.id;
+      const cnt = bks.filter(b=>sameId(b.userId, u.id)).length;
+      const isSelf = isCurrentUserId(u.id);
       return `<tr>
         <td><strong>${escapeHtml(u.name)}</strong></td>
         <td style="color:var(--ink3)">${escapeHtml(u.email)}</td>
@@ -2115,6 +2138,12 @@ function showAddUserModal() {
         <option value="admin">Администратор</option>
       </select>
     </div>
+    <div class="field">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="au-send-email" checked>
+        Отправить письмо с доступом
+      </label>
+    </div>
     <div id="au-err" style="display:none;color:var(--red);font-size:13px"></div>`;
   document.getElementById('modal-foot').innerHTML = `
     <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
@@ -2128,6 +2157,7 @@ async function createAdminUser() {
   const email = (document.getElementById('au-email')?.value || '').trim().toLowerCase();
   const password = document.getElementById('au-pass')?.value || '';
   const role = document.getElementById('au-role')?.value || 'user';
+  const sendInviteEmail = !!document.getElementById('au-send-email')?.checked;
   const err = document.getElementById('au-err');
   const showErr = (msg) => { if (err) { err.textContent = msg; err.style.display = 'block'; } };
   if (!name || !department || !email || !password) return showErr('Заполните все поля');
@@ -2136,14 +2166,21 @@ async function createAdminUser() {
   const r = await apiFetch('/api/users/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, department, email, password, role }),
+    body: JSON.stringify({ name, department, email, password, role, sendInviteEmail }),
   });
   if (r.status === 401) return requireRelogin();
   const data = await r.json();
   if (!r.ok) return showErr(data.error || 'Не удалось создать аккаунт');
   if (Array.isArray(data.users)) saveUsers(data.users);
   closeModal();
-  toast('Аккаунт создан', '', '✓');
+  if (data?.mail?.sent) {
+    toast('Аккаунт создан, письмо отправлено', 't-green', '✓');
+  } else if (sendInviteEmail) {
+    const reason = data?.mail?.reason ? ` (${data.mail.reason})` : '';
+    toast(`Аккаунт создан, письмо не отправлено${reason}`, 't-amber', '!');
+  } else {
+    toast('Аккаунт создан', '', '✓');
+  }
   if (currentView === 'admin') renderAdminView();
 }
 
@@ -2289,7 +2326,7 @@ function renderAdminBookings(el) {
             return `<tr>
               <td><strong>${escapeHtml(sp?.label||'?')}</strong><br><span style="font-size:11px;color:var(--ink3)">${escapeHtml(fl?.name||'?')}</span></td>
               <td>${escapeHtml(b.userName)}</td>
-              <td style="font-size:12px;color:var(--ink3)">${b.userId===currentUser.id?'<span class="badge badge-blue">Вы</span>':escapeHtml(getUsers().find(u=>u.id===b.userId)?.department||'—')}</td>
+              <td style="font-size:12px;color:var(--ink3)">${isMineBooking(b)?'<span class="badge badge-blue">Вы</span>':escapeHtml(getUsers().find(u=>u.id===b.userId)?.department||'—')}</td>
               <td>${fmtHuman(b.date)}</td>
               <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
               <td style="font-size:11px;color:var(--ink3)">${b.expiresAt}</td>
