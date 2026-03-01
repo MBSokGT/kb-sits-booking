@@ -980,6 +980,11 @@ export async function onRequest(context) {
         let skippedDailyLimit = 0;
         let skippedPast = 0;
         const nowMs = Date.now();
+        const createdDates = [];
+        const skippedBusyDates = [];
+        const skippedUserConflictDates = [];
+        const skippedDailyLimitDates = [];
+        const skippedPastDates = [];
 
         const next = [...bookings];
 
@@ -987,21 +992,22 @@ export async function onRequest(context) {
           const endMs = parseMskDateTimeToUtcMs(date, valid.slotTo);
           if (!Number.isFinite(endMs) || endMs <= nowMs) {
             skippedPast++;
+            skippedPastDates.push(date);
             continue;
           }
 
           const busy = active.find(b => b.spaceId === valid.spaceId && b.date === date &&
             timesOverlap(valid.slotFrom, valid.slotTo, b.slotFrom, b.slotTo));
-          if (busy) { skippedBusy++; continue; }
+          if (busy) { skippedBusy++; skippedBusyDates.push(date); continue; }
 
           if (targetUser.role === 'user') {
             const daily = active.find(b => b.userId === targetUser.id && b.date === date);
-            if (daily) { skippedDailyLimit++; continue; }
+            if (daily) { skippedDailyLimit++; skippedDailyLimitDates.push(date); continue; }
           }
 
           const userConflict = active.find(b => b.userId === targetUser.id && b.date === date &&
             timesOverlap(valid.slotFrom, valid.slotTo, b.slotFrom, b.slotTo));
-          if (userConflict) { skippedUser++; continue; }
+          if (userConflict) { skippedUser++; skippedUserConflictDates.push(date); continue; }
 
           const booking = {
             id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
@@ -1023,11 +1029,23 @@ export async function onRequest(context) {
           next.push(booking);
           active.push(booking);
           created++;
+          createdDates.push(date);
         }
 
         return {
           bookings: next,
-          meta: { created, skippedBusy, skippedUser, skippedDailyLimit, skippedPast },
+          meta: {
+            created,
+            createdDates,
+            skippedBusy,
+            skippedBusyDates,
+            skippedUser,
+            skippedUserConflictDates,
+            skippedDailyLimit,
+            skippedDailyLimitDates,
+            skippedPast,
+            skippedPastDates,
+          },
         };
       });
 

@@ -1438,13 +1438,25 @@ async function bookSpace(spaceId) {
   const skippedDailyLimit = Number(data.skippedDailyLimit || 0);
   const skippedUser = Number(data.skippedUser || 0);
   const skippedPast = Number(data.skippedPast || 0);
+  const skippedBusyDates = Array.isArray(data.skippedBusyDates) ? data.skippedBusyDates : [];
+  const skippedPastDates = Array.isArray(data.skippedPastDates) ? data.skippedPastDates : [];
+  const skippedDailyLimitDates = Array.isArray(data.skippedDailyLimitDates) ? data.skippedDailyLimitDates : [];
+  const skippedUserConflictDates = Array.isArray(data.skippedUserConflictDates) ? data.skippedUserConflictDates : [];
+  const previewDates = (dates) => {
+    if (!dates.length) return '';
+    const shown = dates.slice(0, 3).map(fmtHuman).join(', ');
+    return dates.length > 3 ? `${shown} и ещё ${dates.length - 3}` : shown;
+  };
   const parts = [];
-  if (skippedBusy) parts.push(`занято: ${skippedBusy}`);
-  if (skippedDailyLimit) parts.push(`лимит 1 место в день: ${skippedDailyLimit}`);
-  if (skippedUser) parts.push(`конфликт у сотрудника: ${skippedUser}`);
-  if (skippedPast) parts.push(`время уже прошло: ${skippedPast}`);
+  if (skippedBusy) parts.push(`занято: ${skippedBusy}${skippedBusyDates.length ? ` (${previewDates(skippedBusyDates)})` : ''}`);
+  if (skippedDailyLimit) parts.push(`лимит 1 место в день: ${skippedDailyLimit}${skippedDailyLimitDates.length ? ` (${previewDates(skippedDailyLimitDates)})` : ''}`);
+  if (skippedUser) parts.push(`конфликт у сотрудника: ${skippedUser}${skippedUserConflictDates.length ? ` (${previewDates(skippedUserConflictDates)})` : ''}`);
+  if (skippedPast) parts.push(`время уже прошло: ${skippedPast}${skippedPastDates.length ? ` (${previewDates(skippedPastDates)})` : ''}`);
   const who = isCurrentUserId(targetUser.id) ? '' : ` для ${targetUser.name}`;
   if (created === 0) {
+    if (skippedBusyDates.length) {
+      return toast(`Стол недоступен: ${previewDates(skippedBusyDates)}. Выберите другое место.`, 't-amber', '!');
+    }
     const reason = parts.length ? ` (${parts.join(', ')})` : '';
     return toast(`Бронь не создана${reason}`, 't-amber', '!');
   }
