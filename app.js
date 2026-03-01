@@ -44,6 +44,15 @@ const DB = {
       console.error('localStorage full or disabled:', e);
       alert('⚠️ Хранилище браузера переполнено или отключено. Данные не сохранены.');
     }
+    // Async push to D1 (skip auth keys; fire-and-forget)
+    if (k !== 'session' && k !== 'users') DB._push(k, v);
+  },
+  _push(k, v) {
+    fetch('/api/kv/' + encodeURIComponent(k), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: v })
+    }).catch(() => {}); // silently ignore when offline
   },
   uid(){ return Date.now() + Math.random().toString(36).slice(2,7) }
 };
@@ -293,18 +302,27 @@ function resetDemoData() {
   location.reload();
 }
 
-function doLogin() {
+async function doLogin() {
   const email = document.getElementById('l-email').value.trim().toLowerCase();
   const pass  = document.getElementById('l-pass').value;
-  // TODO: Implement proper password hashing (bcrypt) on backend
-  // For now: plaintext comparison (SECURITY RISK - FOR DEMO ONLY)
-  const user  = getUsers().find(u => u.email === email && u.password === pass);
-  if (!user) return authErr('Неверный email или пароль');
-  onAuth(user);
-  console.warn('⚠️ SECURITY: Using plaintext password comparison. Use bcrypt on production backend!');
+  try {
+    const r = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: pass })
+    });
+    const data = await r.json();
+    if (!r.ok) return authErr(data.error || 'Неверный email или пароль');
+    onAuth(data.user);
+  } catch(e) {
+    // Fallback to localStorage when API unavailable (local dev / offline)
+    const user = getUsers().find(u => u.email === email && (u.password === pass || u.password_hash === pass));
+    if (!user) return authErr('Неверный email или пароль');
+    onAuth(user);
+  }
 }
 
-function doRegister() {
+async function doRegister() {
   const name  = document.getElementById('r-name').value.trim();
   const email = document.getElementById('r-email').value.trim().toLowerCase();
   const pass  = document.getElementById('r-pass').value;
@@ -312,17 +330,31 @@ function doRegister() {
   if (!name || !email || !pass) return authErr('Заполните обязательные поля');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return authErr('Введите корректный email');
   if (pass.length < 6) return authErr('Пароль минимум 6 символов');
-  const users = getUsers();
-  if (users.find(u => u.email === email)) return authErr('Email уже зарегистрирован');
-  const user = { id: DB.uid(), email, password: pass, name, department: dept, role: 'user' };
-  users.push(user);
-  saveUsers(users);
-  onAuth(user);
+  try {
+    const r = await fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, email, password: pass, department: dept })
+    });
+    const data = await r.json();
+    if (!r.ok) return authErr(data.error || 'Ошибка регистрации');
+    onAuth(data.user);
+  } catch(e) {
+    // Fallback: localStorage only when API unavailable
+    const users = getUsers();
+    if (users.find(u => u.email === email)) return authErr('Email уже зарегистрирован');
+    const user = { id: DB.uid(), email, password: pass, name, department: dept, role: 'user' };
+    users.push(user);
+    saveUsers(users);
+    onAuth(user);
+  }
 }
 
 async function onAuth(user) {
   currentUser = user;
-  DB.set('session', user.id);
+  // Store full user object (without password) so session survives page reload
+  const { password, password_hash, ...safeUser } = user;
+  DB.set('session', safeUser);
   document.getElementById('auth-screen').style.display = 'none';
   const _appEl = document.getElementById('app');
   _appEl.style.display = 'flex';
@@ -396,8 +428,42 @@ function applyUserUI() {
 /* ═══════════════════════════════════════════════════════
    INIT
 ═══════════════════════════════════════════════════════ */
+/* ── D1 cloud sync ────────────────────────────────────────────────────────── */
+async function syncFromD1() {
+  try {
+    // 1. Fetch users (no passwords) → populate localStorage cache for admin UI
+    const ur = await fetch('/api/users');
+    if (ur.ok) {
+      const ud = await ur.json();
+      if (Array.isArray(ud.users)) {
+        localStorage.setItem('ws_users', JSON.stringify(ud.users));
+      }
+    }
+    // 2. Sync all KV buckets
+    const keys = ['coworkings', 'floors', 'spaces', 'bookings', 'workingSaturdays'];
+    await Promise.all(keys.map(async k => {
+      const r = await fetch('/api/kv/' + encodeURIComponent(k));
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d.value !== null && d.value !== undefined) {
+        // D1 has data → overwrite localStorage (truth comes from server)
+        localStorage.setItem('ws_' + k, JSON.stringify(d.value));
+      } else {
+        // D1 empty → push current localStorage value so other devices get it
+        const local = DB.get(k, null);
+        if (local) DB._push(k, local);
+      }
+    }));
+  } catch(e) {
+    console.warn('D1 sync skipped (offline or local dev):', e.message);
+  }
+}
+
 async function initApp() {
-  // Initialize only localStorage adapter (Supabase is optional)
+  // Sync from D1 first (overwrites localStorage with server truth)
+  await syncFromD1();
+
+  // Initialize optional Supabase adapter
   try {
     if (window.dataAdapter && window.dataAdapter.init) {
       await dataAdapter.init();
@@ -2254,11 +2320,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('l-pass').addEventListener('keydown', e => e.key==='Enter' && doLogin());
   document.getElementById('r-pass').addEventListener('keydown', e => e.key==='Enter' && doRegister());
 
-  // Restore session
-  const sid = DB.get('session', null);
-  if (sid) {
-    const u = getUsers().find(u=>u.id===sid);
-    if (u) { await onAuth(u); return; }
+  // Restore session (new format: full user object; legacy: user ID string)
+  const sessionData = DB.get('session', null);
+  if (sessionData) {
+    const u = (typeof sessionData === 'object' && sessionData.id)
+      ? sessionData                                    // new format
+      : getUsers().find(u => u.id === sessionData);   // legacy format
+    if (u && u.id) { await onAuth(u); return; }
   }
 });
 

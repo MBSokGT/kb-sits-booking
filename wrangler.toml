@@ -1,0 +1,8 @@
+name = "kb-sits-booking"
+compatibility_date = "2024-09-23"
+pages_build_output_dir = "."
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kb-sits-db"
+database_id = "e501ba2e-9bbf-4f1d-80c5-fad567368933"
