@@ -46,11 +46,11 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .auth-card{position:relative;background:var(--white);border-radius:16px;width:420px;max-width:94vw;
   box-shadow:0 25px 80px rgba(0,0,0,.35);overflow:hidden;animation:fadeUp .4s ease}
 @keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
-.auth-head{background:var(--ink);padding:1.25rem 2rem;display:flex;align-items:center;
-  justify-content:center;position:relative;min-height:72px}
-.auth-head-logo{position:absolute;left:2rem;height:40px;width:auto}
-.auth-head-title{color:white;font-size:17px;font-weight:700;letter-spacing:-.3px;
-  text-align:center;line-height:1.25;padding:0 3.5rem}
+.auth-head{background:var(--ink);padding:1rem 1.5rem;display:flex;
+  flex-direction:column;align-items:flex-start;gap:.6rem}
+.auth-head-logo{height:36px;width:auto;flex-shrink:0}
+.auth-head-title{width:100%;text-align:center;color:white;font-size:16px;
+  font-weight:700;letter-spacing:-.3px;line-height:1.3}
 .auth-tabs{display:flex;border-bottom:1px solid var(--line)}
 .auth-tab{flex:1;padding:.875rem 1rem;text-align:center;font-size:13px;font-weight:600;cursor:pointer;
   color:var(--ink3);border-bottom:2px solid transparent;margin-bottom:-1px;transition:all .15s}
