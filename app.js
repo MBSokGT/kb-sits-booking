@@ -1,60 +1,4 @@
 /* ═══════════════════════════════════════════════════════
-   CLOUDFLARE TURNSTILE  (bot protection on login)
-   ── Setup (keys stored server-side, NOT in source) ───
-   Pages → Settings → Environment variables → add:
-     TURNSTILE_SITE_KEY = <your site key>   (public widget key)
-     TURNSTILE_SECRET   = <your secret key> (server verification)
-   Leave unset = Turnstile disabled.
-═══════════════════════════════════════════════════════ */
-let TURNSTILE_SITE_KEY = ''; // loaded from /api/config on init
-
-let _turnstileWidgetId = null;
-let _turnstileLibReady  = false; // turnstile.js script loaded
-let _turnstileKeyReady  = false; // site key fetched from /api/config
-let _turnstileToken     = '';    // set by widget callback (not read from DOM)
-
-function tryRenderTurnstile() {
-  if (!_turnstileLibReady || !_turnstileKeyReady) return;
-  if (!TURNSTILE_SITE_KEY) return;
-  if (_turnstileWidgetId !== null) return; // already rendered / attempted
-  try {
-    _turnstileWidgetId = window.turnstile.render('#cf-turnstile-widget', {
-      sitekey:           TURNSTILE_SITE_KEY,
-      theme:             'dark',
-      size:              'flexible',
-      callback:          (token) => { _turnstileToken = token; },
-      'expired-callback': ()     => { _turnstileToken = ''; },
-      'error-callback':   ()     => {
-        // widget error (hostname mismatch, network, etc.) — show friendly message
-        console.warn('[Turnstile] widget error — showing user message');
-        TURNSTILE_SITE_KEY = '';
-        _turnstileToken    = '';
-        authErr('Ошибка загрузки капчи. Обновите страницу или свяжитесь с администратором.');
-      },
-    }) ?? 'failed'; // render returns undefined on failure; store 'failed' so we don't retry
-    if (_turnstileWidgetId === 'failed') {
-      console.warn('[Turnstile] render returned undefined — disabling');
-      TURNSTILE_SITE_KEY = '';
-    }
-  } catch(e) {
-    console.warn('[Turnstile] render threw:', e);
-    TURNSTILE_SITE_KEY     = '';
-    _turnstileWidgetId     = 'failed';
-  }
-}
-
-function onTurnstileLoad() {
-  _turnstileLibReady = true;
-  tryRenderTurnstile();
-}
-
-function resetTurnstile() {
-  if (!TURNSTILE_SITE_KEY || _turnstileWidgetId === null) return;
-  try { window.turnstile.reset(_turnstileWidgetId); } catch(_) {}
-  _turnstileToken = '';
-}
-
-/* ═══════════════════════════════════════════════════════
    SECURITY UTILS
 ═══════════════════════════════════════════════════════ */
 function escapeHtml(text) {
@@ -362,20 +306,14 @@ async function doLogin() {
   const email = document.getElementById('l-email').value.trim().toLowerCase();
   const pass  = document.getElementById('l-pass').value;
 
-  // Collect Turnstile token (received via widget callback, not read from DOM)
-  const turnstileToken = _turnstileToken;
-  if (TURNSTILE_SITE_KEY && !turnstileToken) {
-    return authErr('Подтвердите, что вы не робот');
-  }
-
   try {
     const r = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password: pass, turnstileToken })
+      body: JSON.stringify({ email, password: pass })
     });
     const data = await r.json();
-    if (!r.ok) { resetTurnstile(); return authErr(data.error || 'Неверный email или пароль'); }
+    if (!r.ok) { return authErr(data.error || 'Неверный email или пароль'); }
     onAuth(data.user);
   } catch(e) {
     // Fallback to localStorage when API unavailable (local dev / offline)
@@ -2504,7 +2442,7 @@ function renderEditorForFloor() {
         <div class="panel-title">Новая зона</div>
         <div class="panel-field">
           <label>Название</label>
-          <input type="text" id="ez-label" placeholder="Кабинет 401" value="${editorNewZone.label}"
+          <input type="text" id="ez-label" placeholder="Кабинет 401" value="${escapeHtml(editorNewZone.label)}"
             oninput="editorNewZone.label=this.value">
         </div>
         <div class="panel-field">
@@ -2537,7 +2475,7 @@ function renderEditorForFloor() {
         <div class="panel-title">Настройки этажа</div>
         <div class="panel-field">
           <label>Название</label>
-          <input type="text" id="floor-name-inp" value="${floor.name}"
+          <input type="text" id="floor-name-inp" value="${escapeHtml(floor.name)}"
             onblur="renameFloor('${floor.id}',this.value)">
         </div>
         <button class="btn btn-danger btn-sm" onclick="deleteFloor('${floor.id}')">Удалить этаж</button>
@@ -2547,7 +2485,7 @@ function renderEditorForFloor() {
         <div class="panel-title">Настройки коворкинга</div>
         <div class="panel-field">
           <label>Название</label>
-          <input type="text" id="coworking-name-inp" value="${getCoworkings().find(c=>c.id===floor.coworkingId)?.name || ''}"
+          <input type="text" id="coworking-name-inp" value="${escapeHtml(getCoworkings().find(c=>c.id===floor.coworkingId)?.name || '')}"
             onblur="renameCoworking('${floor.coworkingId}',this.value)">
         </div>
         <button class="btn btn-danger btn-sm" onclick="deleteCoworking('${floor.coworkingId}')">Удалить коворкинг</button>
@@ -2829,13 +2767,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   initSidebarResize();
   // Enter key
   document.getElementById('l-pass').addEventListener('keydown', e => e.key==='Enter' && doLogin());
-
-  // Load public config (Turnstile site key, etc.) — key lives in CF env, not in source
-  fetch('/api/config').then(r => r.ok ? r.json() : {}).then(cfg => {
-    TURNSTILE_SITE_KEY = cfg.turnstileSiteKey || '';
-    _turnstileKeyReady = true;
-    tryRenderTurnstile();
-  }).catch(() => { _turnstileKeyReady = true; });
 
   // Restore session (new format: full user object; legacy: user ID string)
   const sessionData = DB.get('session', null);

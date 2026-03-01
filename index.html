@@ -8,8 +8,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css?v=1772185434">
-<!-- Cloudflare Turnstile — loaded only when TURNSTILE_SITE_KEY is set in app.js -->
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onTurnstileLoad&render=explicit" async defer></script>
 </head>
 <body>
 
@@ -30,8 +28,6 @@
         <div class="field"><label>Пароль</label>
           <input type="password" id="l-pass" placeholder="••••••" autocomplete="current-password">
         </div>
-        <!-- Cloudflare Turnstile widget (rendered by JS only if TURNSTILE_SITE_KEY is set) -->
-        <div id="cf-turnstile-widget" style="margin:.25rem 0"></div>
         <button class="auth-btn" type="button" onclick="doLogin()">Войти</button>
         <p class="auth-note" style="margin-top:.75rem">
           <a href="#" onclick="showForgotPasswordModal();return false;" style="color:var(--blue);text-decoration:none">Забыли пароль?</a>
