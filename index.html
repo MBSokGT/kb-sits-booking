@@ -142,12 +142,20 @@
             </div>
           </div>
         </div>
-        <!-- Legend -->
-        <div style="padding:.5rem 1.5rem;background:white;border-bottom:1px solid var(--line);
-          display:flex;gap:1.25rem;font-size:11.5px;color:var(--ink3)">
-          <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:2px;background:var(--status-free);display:inline-block"></span>Свободно</span>
-          <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:2px;background:var(--status-mine);display:inline-block"></span>Моё</span>
-          <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:2px;background:var(--status-busy);display:inline-block"></span>Занято</span>
+        <!-- Legend + day navigation -->
+        <div class="map-legend-row">
+          <div class="map-legend-items">
+            <span class="map-legend-item"><span class="map-legend-swatch" style="background:var(--status-free)"></span>Свободно</span>
+            <span class="map-legend-item"><span class="map-legend-swatch" style="background:var(--status-mine)"></span>Моё</span>
+            <span class="map-legend-item"><span class="map-legend-swatch" style="background:var(--status-busy)"></span>Занято</span>
+          </div>
+          <div class="map-day-nav">
+            <button class="map-day-btn" type="button" onclick="shiftSelectedDate(-1)" aria-label="Предыдущий день">&lt;</button>
+            <button class="map-day-current" type="button" onclick="jumpToTodayDate()" title="Клик: перейти на сегодня">
+              <span id="map-day-label">—</span>
+            </button>
+            <button class="map-day-btn" type="button" onclick="shiftSelectedDate(1)" aria-label="Следующий день">&gt;</button>
+          </div>
         </div>
         <div class="map-area" id="map-area"></div>
         <div class="list-area" id="list-area" style="display:none"></div>

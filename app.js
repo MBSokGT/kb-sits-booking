@@ -826,6 +826,21 @@ function jumpToTodayDate() {
   if (currentView === 'map') renderMapView();
 }
 
+function shiftSelectedDate(deltaDays) {
+  const base = selDates[0] || fmtDate(new Date());
+  const d = new Date(base + 'T12:00:00');
+  d.setDate(d.getDate() + Number(deltaDays || 0));
+  const ds = fmtDate(d);
+  selDates = [ds];
+  calAnchorDate = ds;
+  calViewYear = d.getFullYear();
+  calViewMonth = d.getMonth();
+  renderCalendar();
+  renderStats();
+  renderMiniBookings();
+  if (currentView === 'map') renderMapView();
+}
+
 function resetSelectedRange() {
   const today = new Date();
   const ds = fmtDate(today);
@@ -1152,6 +1167,8 @@ function renderMapView() {
 
   document.getElementById('map-title').textContent = floor?.name || 'Этаж';
   document.getElementById('map-sub').textContent   = `${selDates.length>1?selDates.length+' дней · ':fmtHuman(date)+' · '}${spaces.length} пространств`;
+  const dayLabelEl = document.getElementById('map-day-label');
+  if (dayLabelEl) dayLabelEl.textContent = fmtHuman(date);
   updateSlotBadge();
 
   if (displayMode === 'list') { renderListView(spaces, date, from, to); return; }

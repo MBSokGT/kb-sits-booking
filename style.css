@@ -526,6 +526,37 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 ═══════════════════════════════════════════════════════ */
 .map-area{flex:1;overflow:auto;padding:1.5rem;display:flex;align-items:flex-start;
   justify-content:center;background:var(--paper)}
+.map-legend-row{
+  padding:.5rem 1.5rem;
+  background:var(--white);
+  border-bottom:1px solid var(--line);
+  display:flex;
+  position:relative;
+  align-items:center;
+  justify-content:space-between;
+  gap:1rem;
+}
+.map-legend-items{display:flex;align-items:center;gap:1.25rem;font-size:11.5px;color:var(--ink3)}
+.map-legend-item{display:flex;align-items:center;gap:5px}
+.map-legend-swatch{width:10px;height:10px;border-radius:2px;display:inline-block}
+.map-day-nav{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  position:absolute;
+  left:50%;
+  transform:translateX(-50%);
+}
+.map-day-btn{
+  width:26px;height:26px;border:1px solid var(--line2);border-radius:6px;background:var(--white);
+  color:var(--ink2);font-weight:700;cursor:pointer;line-height:1;transition:all .12s
+}
+.map-day-btn:hover{border-color:var(--blue);color:var(--blue);background:var(--blue-l)}
+.map-day-current{
+  border:1px solid var(--line2);border-radius:999px;background:var(--white);padding:4px 10px;
+  color:var(--ink2);font-size:12px;font-weight:700;cursor:pointer;transition:all .12s
+}
+.map-day-current:hover{border-color:var(--status-mine);color:var(--status-mine);background:var(--status-mine-bg)}
 .floor-canvas-wrap{position:relative;background:white;box-shadow:var(--shadow-lg);
   border-radius:4px;overflow:hidden;flex-shrink:0}
 .floor-canvas-wrap img{display:block;max-width:800px;max-height:600px;width:100%;height:auto}
@@ -754,6 +785,9 @@ table.data-table tr:hover td{background:var(--paper)}
 
   /* Content-bar stacks on mobile */
   .content-bar{flex-direction:column;align-items:flex-start;gap:.5rem;padding:.75rem 1rem}
+  .map-legend-row{padding:.5rem 1rem;flex-wrap:wrap}
+  .map-legend-items{gap:.75rem}
+  .map-day-nav{position:static;transform:none;margin-left:auto}
 }
 
 /* ── Sidebar resize handle ───────────────────────────────── */
