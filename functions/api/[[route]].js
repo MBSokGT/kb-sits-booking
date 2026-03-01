@@ -978,10 +978,18 @@ export async function onRequest(context) {
         let skippedBusy = 0;
         let skippedUser = 0;
         let skippedDailyLimit = 0;
+        let skippedPast = 0;
+        const nowMs = Date.now();
 
         const next = [...bookings];
 
         for (const date of valid.dates) {
+          const endMs = parseMskDateTimeToUtcMs(date, valid.slotTo);
+          if (!Number.isFinite(endMs) || endMs <= nowMs) {
+            skippedPast++;
+            continue;
+          }
+
           const busy = active.find(b => b.spaceId === valid.spaceId && b.date === date &&
             timesOverlap(valid.slotFrom, valid.slotTo, b.slotFrom, b.slotTo));
           if (busy) { skippedBusy++; continue; }
@@ -1019,7 +1027,7 @@ export async function onRequest(context) {
 
         return {
           bookings: next,
-          meta: { created, skippedBusy, skippedUser, skippedDailyLimit },
+          meta: { created, skippedBusy, skippedUser, skippedDailyLimit, skippedPast },
         };
       });
 

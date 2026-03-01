@@ -1317,6 +1317,8 @@ function spaceClick(spaceId) {
   const isBusy  = bk && !isMine;
   const canCancelBusy = isBusy && canCancelBooking(bk);
   const targets = getAllowedBookingTargets();
+  // Always default to self when modal opens to avoid accidental booking for another user.
+  bookingForUserId = currentUser.id;
   if (!bookingForUserId || !targets.some(u=>sameId(u.id, bookingForUserId))) {
     bookingForUserId = currentUser.id;
   }
@@ -1418,11 +1420,17 @@ async function bookSpace(spaceId) {
   const skippedBusy = Number(data.skippedBusy || 0);
   const skippedDailyLimit = Number(data.skippedDailyLimit || 0);
   const skippedUser = Number(data.skippedUser || 0);
+  const skippedPast = Number(data.skippedPast || 0);
   const parts = [];
   if (skippedBusy) parts.push(`занято: ${skippedBusy}`);
   if (skippedDailyLimit) parts.push(`лимит 1 место в день: ${skippedDailyLimit}`);
   if (skippedUser) parts.push(`конфликт у сотрудника: ${skippedUser}`);
+  if (skippedPast) parts.push(`время уже прошло: ${skippedPast}`);
   const who = isCurrentUserId(targetUser.id) ? '' : ` для ${targetUser.name}`;
+  if (created === 0) {
+    const reason = parts.length ? ` (${parts.join(', ')})` : '';
+    return toast(`Бронь не создана${reason}`, 't-amber', '!');
+  }
   const msg = parts.length
     ? `Забронировано${who}: ${created} дн., пропущено (${parts.join(', ')})`
     : `Забронировано${who}: ${created} ${created===1?'день':'дней'}`;
