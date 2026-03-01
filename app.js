@@ -27,6 +27,9 @@ function safeImageUrl(url) {
 /* ═══════════════════════════════════════════════════════
    DATA LAYER  (localStorage — swap to fetch() later)
 ═══════════════════════════════════════════════════════ */
+// Declared here so DB._push can safely reference it during seed (avoids TDZ)
+let currentUser = null;
+
 const DB = {
   get(k, def){ 
     try{ 
@@ -196,7 +199,7 @@ function stopSessionCheck() {
 /* ═══════════════════════════════════════════════════════
    STATE
 ═══════════════════════════════════════════════════════ */
-let currentUser   = null;
+// currentUser declared above DB to avoid Temporal Dead Zone in DB._push
 let selCoworkingId = null;
 let selFloorId    = null;
 let selDates      = [];        // array of 'YYYY-MM-DD'
