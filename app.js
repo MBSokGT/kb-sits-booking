@@ -208,7 +208,8 @@ let calViewMonth  = 0;
 let calMode       = 'month';   // 'month' | 'year'
 let calAnchorDate = null;
 let includeWeekends = false;
-let workingSaturdays = [];  // array of 'YYYY-MM-DD' for bookable Saturdays
+let workingSaturdays = [];  // array of 'YYYY-MM-DD' (kept for D1 sync compat; logic now uses saturdayMode)
+let saturdayMode = false;   // true = all Saturdays are bookable
 let slotId        = 'full';
 let customFrom    = '09:00';
 let customTo      = '18:00';
@@ -359,6 +360,7 @@ function doLogout() {
   // Сброс настроек календаря (чтобы следующий пользователь не видел чужие)
   includeWeekends = false;
   workingSaturdays = [];
+  saturdayMode = false;
   calMode = 'month';
   const _logoutToday = new Date();
   calViewYear  = _logoutToday.getFullYear();
@@ -370,8 +372,6 @@ function doLogout() {
   // Сброс UI попапа календаря
   const _satInp = document.getElementById('opt-saturday');
   if (_satInp) _satInp.checked = false;
-  const _satPicker = document.getElementById('sat-picker');
-  if (_satPicker) _satPicker.style.display = 'none';
   const _wkInp = document.getElementById('opt-weekends');
   if (_wkInp) _wkInp.checked = false;
   document.getElementById('app').style.display = 'none';
@@ -385,7 +385,7 @@ function doLogout() {
 function applyUserUI() {
   const u = currentUser;
   document.getElementById('user-avatar').textContent    = userInitials(u.name);
-  document.getElementById('user-name-lbl').textContent  = u.name.split(' ')[0];
+  document.getElementById('user-name-lbl').textContent  = u.name;
   const rp = document.getElementById('role-pill');
   const labels = { user:'Сотрудник', manager:'Руководитель', admin:'Администратор' };
   rp.textContent = labels[u.role] || u.role;
@@ -522,12 +522,8 @@ function toggleWeekendSelection(checked) {
 }
 
 function toggleSaturdayMode(checked) {
+  saturdayMode = checked;
   if (!checked) workingSaturdays = [];
-  const picker = document.getElementById('sat-picker');
-  if (picker) {
-    picker.style.display = checked ? '' : 'none';
-    if (checked) renderSatPicker();
-  }
   renderCalendar();
 }
 
@@ -570,7 +566,7 @@ function isDateSelectable(ds) {
   if (isPastDate(ds)) return false;
   const dow = new Date(ds + 'T12:00:00').getDay();
   if (dow === 0) return includeWeekends;  // Sunday
-  if (dow === 6) return includeWeekends || workingSaturdays.includes(ds);  // Saturday
+  if (dow === 6) return includeWeekends || saturdayMode;  // Saturday
   return true;
 }
 
@@ -578,7 +574,7 @@ function isRangeDayAllowed(dateObj) {
   const dow = dateObj.getDay();
   if (includeWeekends) return true;
   if (dow === 0) return false;
-  if (dow === 6) return workingSaturdays.includes(fmtDate(dateObj));
+  if (dow === 6) return saturdayMode;
   return true;
 }
 
@@ -627,8 +623,8 @@ function updateRangeHint() {
   const modeHint = calMode === 'year' ? 'Годовой режим' : 'Месячный режим';
   const daysHint = includeWeekends
     ? 'включены сб и вс'
-    : workingSaturdays.length
-    ? `рабочих суббот: ${workingSaturdays.length}`
+    : saturdayMode
+    ? 'включены рабочие субботы'
     : 'только пн-пт';
 
   if (selDates.length > 1) {
@@ -1294,6 +1290,7 @@ function cancelBooking(id) {
   if (currentView === 'map') renderMapView();
   if (currentView === 'team') renderTeamView();
   if (currentView === 'admin') renderAdminView();
+  if (currentView === 'cabinet') renderCabinetView();
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -1318,8 +1315,9 @@ function switchView(view, btn) {
   // Close drawer if open
   closeFilterDrawer();
 
-  ['view-map','view-mybookings','view-team','view-admin'].forEach(id=>{
+  ['view-map','view-mybookings','view-team','view-admin','view-cabinet'].forEach(id=>{
     const el = document.getElementById(id);
+    if (!el) return;
     el.style.display  = 'none';
     el.style.flexFlow = '';
   });
@@ -1333,6 +1331,7 @@ function switchView(view, btn) {
   if (view === 'mybookings') { document.getElementById('view-mybookings').style.display = 'flex'; renderMyBookingsView(); }
   if (view === 'team')       { document.getElementById('view-team').style.display = 'flex';       renderTeamView(); }
   if (view === 'admin')      { document.getElementById('view-admin').style.display = 'flex';      renderAdminView(); }
+  if (view === 'cabinet')    { document.getElementById('view-cabinet').style.display = 'flex';    renderCabinetView(); }
 }
 
 function openFilterDrawer() {
@@ -1397,6 +1396,126 @@ function renderMyBookingsView() {
       }).join('')}
       </tbody></table></div></div>`}
   </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════
+   CABINET VIEW (personal account)
+═══════════════════════════════════════════════════════ */
+function renderCabinetView() {
+  purgeExpired();
+  const el = document.getElementById('view-cabinet');
+  if (!el) return;
+  const me = currentUser;
+  const spaces = getSpaces(); const floors = getFloors();
+  const myBks = getBookings().filter(b => b.userId === me.id)
+                              .sort((a, b) => a.date.localeCompare(b.date));
+  const isManager = me.role === 'manager' || me.role === 'admin';
+  const team = isManager
+    ? getUsers().filter(u => u.department === me.department && u.id !== me.id && u.role === 'user')
+    : [];
+  const teamBks = isManager
+    ? getBookings().filter(b => team.some(u => u.id === b.userId))
+                   .sort((a, b) => a.date.localeCompare(b.date))
+    : [];
+  const roleLabels = { user: 'Сотрудник', manager: 'Руководитель', admin: 'Администратор' };
+
+  el.innerHTML = `<div class="view-area">
+
+    <!-- Profile card -->
+    <div class="card" style="padding:1.5rem;display:flex;align-items:center;gap:1.25rem">
+      <div style="width:56px;height:56px;border-radius:50%;background:var(--blue);color:white;
+        display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;flex-shrink:0">
+        ${escapeHtml(userInitials(me.name))}
+      </div>
+      <div>
+        <div style="font-size:20px;font-weight:700;color:var(--ink)">${escapeHtml(me.name)}</div>
+        <div style="font-size:13px;color:var(--ink3);margin-top:4px">
+          ${escapeHtml(me.department || '—')} · ${roleLabels[me.role] || me.role}
+        </div>
+        <div style="font-size:12px;color:var(--ink4);margin-top:2px">${escapeHtml(me.email)}</div>
+      </div>
+    </div>
+
+    ${isManager ? `
+    <!-- Department bookings -->
+    <div class="card">
+      <div class="card-head">Отдел: ${escapeHtml(me.department)} · ${team.length} сотрудников</div>
+      <div style="padding:0"><table class="data-table">
+        <thead><tr><th>Сотрудник</th><th>Место</th><th>Дата</th><th>Время</th><th></th></tr></thead>
+        <tbody>${!teamBks.length
+          ? `<tr><td colspan="5" style="text-align:center;color:var(--ink4);padding:2rem">Нет активных бронирований</td></tr>`
+          : teamBks.map(b => {
+              const sp = spaces.find(s => s.id === b.spaceId);
+              const fl = floors.find(f => f.id === sp?.floorId);
+              return `<tr>
+                <td><strong>${escapeHtml(b.userName)}</strong></td>
+                <td>${escapeHtml(sp?.label || '?')}</td>
+                <td>${fmtHuman(b.date)}</td>
+                <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
+                <td><button class="btn btn-danger btn-sm"
+                  onclick="cancelBooking('${b.id}')">Отменить</button></td>
+              </tr>`;
+            }).join('')}
+        </tbody>
+      </table></div>
+    </div>` : ''}
+
+    <!-- My bookings -->
+    <div class="card">
+      <div class="card-head">Мои бронирования</div>
+      <div style="padding:0">
+        ${!myBks.length
+          ? `<div style="text-align:center;color:var(--ink4);padding:2rem;font-size:13px">Нет активных бронирований</div>`
+          : `<table class="data-table">
+              <thead><tr><th>Место</th><th>Этаж</th><th>Дата</th><th>Время</th><th></th></tr></thead>
+              <tbody>${myBks.map(b => {
+                const sp = spaces.find(s => s.id === b.spaceId);
+                const fl = floors.find(f => f.id === sp?.floorId);
+                return `<tr>
+                  <td><strong>${escapeHtml(sp?.label || '?')}</strong></td>
+                  <td>${escapeHtml(fl?.name || '?')}</td>
+                  <td>${fmtHuman(b.date)}</td>
+                  <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
+                  <td><button class="btn btn-danger btn-sm"
+                    onclick="cancelBooking('${b.id}')">Отменить</button></td>
+                </tr>`;
+              }).join('')}</tbody>
+            </table>`}
+      </div>
+    </div>
+
+    <!-- Change password -->
+    <div class="card">
+      <div class="card-head">Изменить пароль</div>
+      <div style="padding:1.25rem;display:flex;flex-direction:column;gap:.75rem;max-width:360px">
+        <div class="field">
+          <label>Текущий пароль</label>
+          <input type="password" id="cp-old" autocomplete="current-password">
+        </div>
+        <div class="field">
+          <label>Новый пароль <span style="color:var(--ink3);font-size:11px">(мин. 6 символов)</span></label>
+          <input type="password" id="cp-new" autocomplete="new-password">
+        </div>
+        <div class="field">
+          <label>Повторите новый пароль</label>
+          <input type="password" id="cp-confirm" autocomplete="new-password">
+        </div>
+        <div id="cp-err" style="color:var(--red);font-size:13px;display:none"></div>
+        <button class="btn btn-primary" style="align-self:flex-start" onclick="doChangePassword()">Сохранить пароль</button>
+      </div>
+    </div>
+
+    <!-- Logout at the very bottom -->
+    <div>
+      <button class="btn btn-danger" style="width:100%;padding:.75rem"
+        onclick="doLogout()">Выйти из аккаунта</button>
+    </div>
+
+  </div>`;
+
+  // Enter on last password field
+  const cpConfirm = document.getElementById('cp-confirm');
+  if (cpConfirm) cpConfirm.addEventListener('keydown', e => { if(e.key==='Enter') doChangePassword(); });
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -1643,7 +1762,16 @@ async function doChangePassword() {
     });
     const data = await r.json();
     if (!r.ok) return showErr(data.error || 'Ошибка');
-    closeModal();
+    // Close modal if open; otherwise we're in the cabinet view — just clear the fields
+    const overlay = document.getElementById('modal-overlay');
+    if (overlay && overlay.classList.contains('open')) {
+      closeModal();
+    } else {
+      const o = document.getElementById('cp-old'); if(o) o.value='';
+      const n = document.getElementById('cp-new'); if(n) n.value='';
+      const c = document.getElementById('cp-confirm'); if(c) c.value='';
+      const e = document.getElementById('cp-err'); if(e) e.style.display='none';
+    }
     toast('Пароль изменён', '', '✓');
   } catch(e) {
     showErr('Нет соединения с сервером');
@@ -2320,13 +2448,6 @@ function renderEditorForFloor() {
           <label>Мест</label>
           <input type="number" id="ez-seats" min="1" max="50" value="${editorNewZone.seats}"
             oninput="editorNewZone.seats=parseInt(this.value)||1">
-        </div>
-        <div class="panel-field">
-          <label>Цвет</label>
-          <div class="color-swatches">
-            ${COLORS.map(c=>`<div class="swatch ${c===editorNewZone.color?'active':''}" style="background:${c}"
-              onclick="pickColor('${c}')"></div>`).join('')}
-          </div>
         </div>
         <div class="hint">Нарисуй прямоугольник мышью на плане чтобы создать зону. Каждая зона будет кликабельной.</div>
       </div>

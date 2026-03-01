@@ -53,11 +53,10 @@
     </div>
     <div class="topbar-right">
       <span class="role-pill" id="role-pill"></span>
-      <div class="user-info" onclick="showChangePasswordModal()" title="Изменить пароль" style="cursor:pointer">
+      <div class="user-info" onclick="switchView('cabinet',null)" title="Личный кабинет" style="cursor:pointer">
         <div class="avatar" id="user-avatar"></div>
         <span class="user-name" id="user-name-lbl"></span>
       </div>
-      <button class="logout-btn" onclick="doLogout()">Выйти</button>
     </div>
   </div>
 
@@ -159,6 +158,9 @@
       <!-- ADMIN VIEW -->
       <div id="view-admin" style="display:none;flex:1;overflow:hidden"></div>
 
+      <!-- CABINET VIEW -->
+      <div id="view-cabinet" style="display:none;flex:1;overflow:hidden"></div>
+
     </div><!-- /content -->
   </div><!-- /main -->
 
@@ -250,7 +252,6 @@
           <input type="checkbox" id="opt-saturday" onchange="toggleSaturdayMode(this.checked)">
           <span class="cal-toggle-label">Рабочие субботы</span>
         </label>
-        <div class="sat-picker" id="sat-picker" style="display:none"></div>
       </div>
     </div>
   </div>
