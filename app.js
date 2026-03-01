@@ -29,6 +29,7 @@ function safeImageUrl(url) {
 ═══════════════════════════════════════════════════════ */
 // Declared here so DB._push can safely reference it during seed (avoids TDZ)
 let currentUser = null;
+let apiToken = '';
 
 const DB = {
   get(k, def){ 
@@ -47,15 +48,17 @@ const DB = {
       console.error('localStorage full or disabled:', e);
       alert('⚠️ Хранилище браузера переполнено или отключено. Данные не сохранены.');
     }
-    // Async push to D1 (skip auth keys; fire-and-forget)
-    if (k !== 'session' && k !== 'users') DB._push(k, v);
+    // Async push to D1 (skip auth/session/users and bookings: bookings use dedicated API)
+    if (k !== 'session' && k !== 'users' && k !== 'bookings') DB._push(k, v);
   },
   _push(k, v) {
-    if (!currentUser) return; // don't push before login
-    fetch('/api/kv/' + encodeURIComponent(k), {
+    if (!currentUser) return; // don't push before login/auth
+    apiFetch('/api/kv/' + encodeURIComponent(k), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value: v })
+    }).then(r => {
+      if (r.status === 401) requireRelogin();
     }).catch(() => {}); // silently ignore when offline
   },
   uid(){ return Date.now() + Math.random().toString(36).slice(2,7) }
@@ -144,13 +147,17 @@ function ensureDataIntegrity() {
 }
 
 function purgeExpired() {
-  // Optimize: Only purge every 5 minutes max
-  const now = Date.now();
-  if (now - lastPurgeTime < 5 * 60 * 1000) return;
-  lastPurgeTime = now;
-  
-  const timeNow = fmtDate(new Date()) + ' ' + p2(new Date().getHours()) + ':' + p2(new Date().getMinutes());
-  saveBookings(getBookings().filter(b => b.expiresAt > timeNow));
+  // Keep booking history for 1 year, then remove old records.
+  // Optimize: only run every 5 minutes max.
+  const nowUtcMs = Date.now();
+  if (nowUtcMs - lastPurgeTime < 5 * 60 * 1000) return;
+  lastPurgeTime = nowUtcMs;
+
+  const retentionMs = 365 * 24 * 60 * 60 * 1000;
+  saveBookings(getBookings().filter(b => {
+    const endMs = bookingEndUtcMs(b);
+    return Number.isFinite(endMs) && (nowUtcMs - endMs) <= retentionMs;
+  }));
 }
 
 function startPurgeTimer() {
@@ -228,6 +235,7 @@ let editorNewZone   = { label:'', seats:1, color:'#059669' };
 let lastPurgeTime   = 0;
 let purgeTimer      = null;
 let sessionCheckTimer = null;
+let cloudSyncTimer = null;
 let _sessionActivityHandler = null;  // single ref so we can removeEventListener
 
 const SLOTS = [
@@ -265,8 +273,50 @@ function timesOverlap(aFrom, aTo, bFrom, bTo) {
   return timeToMinutes(aFrom) < timeToMinutes(bTo) &&
          timeToMinutes(bFrom) < timeToMinutes(aTo);
 }
+function parseMskDateTimeToUtcMs(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return NaN;
+  const dm = String(dateStr).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const tm = String(timeStr).match(/^(\d{2}):(\d{2})$/);
+  if (!dm || !tm) return NaN;
+
+  const y = Number(dm[1]);
+  const mo = Number(dm[2]);
+  const d = Number(dm[3]);
+  const h = Number(tm[1]);
+  const mi = Number(tm[2]);
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d) ||
+      !Number.isFinite(h) || !Number.isFinite(mi)) {
+    return NaN;
+  }
+
+  // Moscow is UTC+3 without DST
+  return Date.UTC(y, mo - 1, d, h - 3, mi, 0, 0);
+}
+function bookingEndUtcMs(b) {
+  if (!b) return NaN;
+  if (typeof b.expiresAt === 'string') {
+    const m = b.expiresAt.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+    if (m) {
+      const t = parseMskDateTimeToUtcMs(m[1], m[2]);
+      if (Number.isFinite(t)) return t;
+    }
+  }
+  if (b.date && b.slotTo) {
+    const t = parseMskDateTimeToUtcMs(b.date, b.slotTo);
+    if (Number.isFinite(t)) return t;
+  }
+  return NaN;
+}
+function getActiveBookings(source = getBookings(), nowUtcMs = Date.now()) {
+  if (!Array.isArray(source)) return [];
+  return source.filter(b => {
+    if (b?.status === 'cancelled') return false;
+    const endMs = bookingEndUtcMs(b);
+    return Number.isFinite(endMs) && endMs > nowUtcMs;
+  });
+}
 function findBookingForSpace(spaceId, date, from, to) {
-  return getBookings().find(b =>
+  return getActiveBookings().find(b =>
     b.spaceId === spaceId &&
     b.date === date &&
     timesOverlap(from, to, b.slotFrom, b.slotTo)
@@ -296,6 +346,41 @@ function authErr(msg) {
   el.textContent = msg; el.style.display = 'block';
 }
 
+async function apiFetch(url, options = {}, authRequired = true) {
+  const headers = { ...(options.headers || {}) };
+  if (authRequired && apiToken) {
+    headers.Authorization = `Bearer ${apiToken}`;
+  }
+  return fetch(url, { ...options, headers, credentials: 'same-origin' });
+}
+
+function requireRelogin(msg = 'Сессия истекла. Войдите снова.') {
+  doLogout(true);
+  authErr(msg);
+}
+
+function showAuthTab(tab = 'login') {
+  const loginTab = document.getElementById('auth-tab-login');
+  const regTab = document.getElementById('auth-tab-register');
+  const loginForm = document.getElementById('aform-login');
+  const regForm = document.getElementById('aform-register');
+  const err = document.getElementById('auth-err');
+  if (!loginTab || !regTab || !loginForm || !regForm) return;
+
+  const isRegister = tab === 'register';
+  loginTab.classList.toggle('active', !isRegister);
+  regTab.classList.toggle('active', isRegister);
+  loginForm.style.display = isRegister ? 'none' : 'block';
+  regForm.style.display = isRegister ? 'block' : 'none';
+  if (err) err.style.display = 'none';
+
+  if (isRegister) {
+    document.getElementById('r-name')?.focus();
+  } else {
+    document.getElementById('l-email')?.focus();
+  }
+}
+
 function resetDemoData() {
   if (!confirm('Сбросить все локальные данные? Данные будут перезагружены из облака при следующем входе.')) return;
   ['coworkings','floors','spaces','bookings','departments','session'].forEach(k => localStorage.removeItem('ws_' + k));
@@ -310,23 +395,53 @@ async function doLogin() {
     const r = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
       body: JSON.stringify({ email, password: pass })
     });
     const data = await r.json();
     if (!r.ok) { return authErr(data.error || 'Неверный email или пароль'); }
-    onAuth(data.user);
+    if (!data?.user) return authErr('Ошибка авторизации');
+    await onAuth(data.user, data.token || '');
   } catch(e) {
-    // Fallback to localStorage when API unavailable (local dev / offline)
-    const user = getUsers().find(u => u.email === email && (u.password === pass || u.password_hash === pass));
-    if (!user) return authErr('Неверный email или пароль');
-    onAuth(user);
+    authErr('Нет соединения с сервером');
   }
 }
 
-async function onAuth(user) {
-  currentUser = user;
+async function doRegister() {
+  const name = document.getElementById('r-name')?.value.trim() || '';
+  const department = document.getElementById('r-dept')?.value.trim() || '';
+  const email = (document.getElementById('r-email')?.value || '').trim().toLowerCase();
+  const pass = document.getElementById('r-pass')?.value || '';
+
+  if (!name || !department || !email || !pass) {
+    return authErr('Заполните ФИО, отдел, email и пароль');
+  }
+  if (pass.length < 6) {
+    return authErr('Пароль минимум 6 символов');
+  }
+
+  try {
+    const r = await fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ name, department, email, password: pass }),
+    });
+    const data = await r.json();
+    if (!r.ok) return authErr(data.error || 'Не удалось зарегистрироваться');
+    if (!data?.user) return authErr('Ошибка регистрации');
+    await onAuth(data.user, data.token || '');
+  } catch (e) {
+    authErr('Нет соединения с сервером');
+  }
+}
+
+async function onAuth(user, token = '') {
+  apiToken = token || '';
+  currentUser = { ...user };
+  delete currentUser._token;
   // Store full user object (without password) so session survives page reload
-  const { password, password_hash, ...safeUser } = user;
+  const { password, password_hash, ...safeUser } = currentUser;
   DB.set('session', safeUser);
   document.getElementById('auth-screen').style.display = 'none';
   const _appEl = document.getElementById('app');
@@ -337,15 +452,25 @@ async function onAuth(user) {
     await initApp();
   } catch (error) {
     console.error('Ошибка инициализации:', error);
-    // Продолжаем работу с localStorage
+    requireRelogin('Не удалось загрузить данные. Войдите снова.');
+    return;
   }
   startExpiryWatcher();
+  startCloudSync();
 }
 
-function doLogout() {
+function doLogout(skipServerLogout = false) {
+  apiToken = '';
+  if (!skipServerLogout) {
+    fetch('/api/auth/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+    }).catch(() => {});
+  }
   currentUser = null;
   DB.set('session', null);
   stopExpiryWatcher();
+  stopCloudSync();
   stopPurgeTimer();
   stopSessionCheck();
   // Очищаем состояние
@@ -381,6 +506,11 @@ function doLogout() {
   // Clear auth form
   document.getElementById('l-email').value = '';
   document.getElementById('l-pass').value = '';
+  ['r-name', 'r-dept', 'r-email', 'r-pass'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  showAuthTab('login');
 }
 
 function applyUserUI() {
@@ -401,20 +531,30 @@ function applyUserUI() {
    INIT
 ═══════════════════════════════════════════════════════ */
 /* ── D1 cloud sync ────────────────────────────────────────────────────────── */
-async function syncFromD1() {
+async function syncFromD1({ bookingsOnly = false } = {}) {
+  if (!currentUser) return false;
   try {
+    if (bookingsOnly) {
+      return fetchBookingsFromApi();
+    }
+
+    let unauthorized = false;
     // 1. Fetch users (no passwords) → populate localStorage cache for admin UI
-    const ur = await fetch('/api/users');
+    const ur = await apiFetch('/api/users');
+    if (ur.status === 401) { requireRelogin(); return false; }
     if (ur.ok) {
       const ud = await ur.json();
       if (Array.isArray(ud.users)) {
         localStorage.setItem('ws_users', JSON.stringify(ud.users));
       }
     }
-    // 2. Sync all KV buckets
-    const keys = ['coworkings', 'floors', 'spaces', 'bookings', 'workingSaturdays', 'departments'];
+
+    // 2. Sync KV buckets (without bookings: bookings are in dedicated API)
+    const keys = ['coworkings', 'floors', 'spaces', 'workingSaturdays', 'departments'];
+
     await Promise.all(keys.map(async k => {
-      const r = await fetch('/api/kv/' + encodeURIComponent(k));
+      const r = await apiFetch('/api/kv/' + encodeURIComponent(k));
+      if (r.status === 401) { unauthorized = true; return; }
       if (!r.ok) return;
       const d = await r.json();
       if (d.value !== null && d.value !== undefined) {
@@ -426,14 +566,80 @@ async function syncFromD1() {
         if (local) DB._push(k, local);
       }
     }));
+    if (unauthorized) {
+      requireRelogin();
+      return false;
+    }
+    return fetchBookingsFromApi();
   } catch(e) {
     console.warn('D1 sync skipped (offline or local dev):', e.message);
+    return false;
   }
+}
+
+async function fetchBookingsFromApi() {
+  if (!currentUser) return false;
+  const r = await apiFetch('/api/bookings');
+  if (r.status === 401) { requireRelogin(); return false; }
+  if (!r.ok) return false;
+  const d = await r.json();
+  const bookings = Array.isArray(d.bookings) ? d.bookings : [];
+  localStorage.setItem('ws_bookings', JSON.stringify(bookings));
+  return true;
+}
+
+async function syncBookingsFromD1() {
+  if (!currentUser) return false;
+  const before = JSON.stringify(getBookings());
+  const ok = await fetchBookingsFromApi();
+  if (!ok) return false;
+  const after = JSON.stringify(getBookings());
+  if (before !== after) refreshActiveViewAfterExpiry();
+  return true;
+}
+
+async function replaceBookingsAsAdmin(nextBookings) {
+  if (currentUser?.role !== 'admin') {
+    saveBookings(nextBookings);
+    return true;
+  }
+  const r = await apiFetch('/api/bookings/replace-admin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bookings: nextBookings }),
+  });
+  if (r.status === 401) {
+    requireRelogin();
+    return false;
+  }
+  const data = await r.json();
+  if (!r.ok) {
+    toast(data.error || 'Не удалось обновить бронирования', 't-red', '✕');
+    return false;
+  }
+  saveBookings(Array.isArray(data.bookings) ? data.bookings : []);
+  return true;
+}
+
+function startCloudSync() {
+  stopCloudSync();
+  syncBookingsFromD1();
+  cloudSyncTimer = setInterval(() => {
+    if (!currentUser) return;
+    syncBookingsFromD1();
+  }, 10000);
+}
+
+function stopCloudSync() {
+  if (!cloudSyncTimer) return;
+  clearInterval(cloudSyncTimer);
+  cloudSyncTimer = null;
 }
 
 async function initApp() {
   // Sync from D1 first (overwrites localStorage with server truth)
-  await syncFromD1();
+  const synced = await syncFromD1();
+  if (!synced && !currentUser) throw new Error('D1 sync failed');
 
   // Initialize optional Supabase adapter
   try {
@@ -478,16 +684,20 @@ function refreshActiveViewAfterExpiry() {
   if (currentView === 'mybookings') renderMyBookingsView();
   if (currentView === 'team')       renderTeamView();
   if (currentView === 'admin')      renderAdminView();
+  if (currentView === 'cabinet')    renderCabinetView();
 }
 
 function startExpiryWatcher() {
   stopExpiryWatcher();
+  let lastActiveSignature = getActiveBookings(getBookings()).map(b => b.id).sort().join('|');
   expiryTimer = setInterval(() => {
-    const before = getBookings().length;
     purgeExpired();
     if (!currentUser) return;
-    const after = getBookings().length;
-    if (after !== before) refreshActiveViewAfterExpiry();
+    const nextSignature = getActiveBookings(getBookings()).map(b => b.id).sort().join('|');
+    if (nextSignature !== lastActiveSignature) {
+      lastActiveSignature = nextSignature;
+      refreshActiveViewAfterExpiry();
+    }
   }, 30000);
 }
 
@@ -733,7 +943,7 @@ function renderYearCalendar(grid, todayDs, bookings) {
 function renderCalendar() {
   const grid    = document.getElementById('cal-grid');
   const todayDs = fmtDate(new Date());
-  const bookings = getBookings().filter(b => b.userId === currentUser.id);
+  const bookings = getActiveBookings(getBookings()).filter(b => b.userId === currentUser.id);
   const modeBtn = document.getElementById('cal-mode-btn');
   const weekendsInp = document.getElementById('opt-weekends');
   const satInp = document.getElementById('opt-saturday');
@@ -939,7 +1149,7 @@ function renderStats() {
 ═══════════════════════════════════════════════════════ */
 function renderMiniBookings() {
   const el    = document.getElementById('mini-bk-list');
-  const mine  = getBookings().filter(b => b.userId === currentUser.id);
+  const mine  = getActiveBookings(getBookings()).filter(b => b.userId === currentUser.id);
   if (!mine.length) {
     el.innerHTML = `<div style="font-size:12px;color:var(--ink4);text-align:center;padding:1rem;
       border:1px dashed var(--line);border-radius:var(--radius)">Нет активных бронирований</div>`;
@@ -1102,7 +1312,7 @@ function canBookForUser(userId) {
 }
 
 function hasUserTimeConflict(bookings, userId, date, from, to) {
-  return bookings.find(b =>
+  return getActiveBookings(bookings).find(b =>
     b.userId === userId &&
     b.date === date &&
     timesOverlap(from, to, b.slotFrom, b.slotTo)
@@ -1111,6 +1321,9 @@ function hasUserTimeConflict(bookings, userId, date, from, to) {
 
 function canCancelBooking(booking) {
   if (!currentUser || !booking) return false;
+  if (booking.status === 'cancelled') return false;
+  const endMs = bookingEndUtcMs(booking);
+  if (!Number.isFinite(endMs) || endMs <= Date.now()) return false;
   if (currentUser.role === 'admin') return true;
   if (currentUser.role === 'user') return booking.userId === currentUser.id;
   if (currentUser.role === 'manager') {
@@ -1204,11 +1417,10 @@ function spaceClick(spaceId) {
   document.getElementById('modal-overlay').classList.add('open');
 }
 
-function bookSpace(spaceId) {
+async function bookSpace(spaceId) {
   const sp   = getSpaces().find(s=>s.id===spaceId);
   if (!sp) { toast('Помещение не найдено', 't-red', '✕'); return; }
   const from = slotFrom(), to = slotTo();
-  const bookings = getBookings();
   const targetId = document.getElementById('book-for-user')?.value || bookingForUserId || currentUser.id;
   if (!canBookForUser(targetId)) {
     toast('Нельзя бронировать за выбранного сотрудника', 't-red', '✕');
@@ -1216,44 +1428,29 @@ function bookSpace(spaceId) {
   }
   const targetUser = getUsers().find(u=>u.id===targetId) || currentUser;
   bookingForUserId = targetUser.id;
-  let created = 0, skippedBusy = 0, skippedUser = 0, skippedDailyLimit = 0;
-  const bookedInBatchByDate = new Set();
 
-  selDates.forEach(date => {
-    // Double-check availability right before adding (race condition prevention)
-    const freshBookings = getBookings();
-    const exists = freshBookings.find(b =>
-      b.spaceId === spaceId &&
-      b.date === date &&
-      timesOverlap(from, to, b.slotFrom, b.slotTo)
-    );
-    if (exists) { skippedBusy++; return; }
-
-    if (targetUser.role === 'user') {
-      const alreadyBookedThisDay =
-        bookedInBatchByDate.has(date) ||
-        freshBookings.some(b => b.userId === targetUser.id && b.date === date);
-      if (alreadyBookedThisDay) { skippedDailyLimit++; return; }
-    }
-
-    if (hasUserTimeConflict(freshBookings, targetUser.id, date, from, to)) { skippedUser++; return; }
-    freshBookings.push({
-      id:       DB.uid(),
-      userId:   targetUser.id,
-      userName: targetUser.name,
+  const r = await apiFetch('/api/bookings/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
       spaceId,
-      spaceName: sp.label,
-      date, slotFrom: from, slotTo: to,
-      expiresAt: `${date} ${to}`,
-      createdAt: new Date().toISOString()
-    });
-    bookings.push(freshBookings[freshBookings.length-1]);
-    bookedInBatchByDate.add(date);
-    created++;
+      dates: selDates,
+      slotFrom: from,
+      slotTo: to,
+      targetUserId: targetId,
+    }),
   });
-  saveBookings(bookings);
+  if (r.status === 401) return requireRelogin();
+  const data = await r.json();
+  if (!r.ok) return toast(data.error || 'Ошибка бронирования', 't-red', '✕');
+
+  saveBookings(Array.isArray(data.bookings) ? data.bookings : []);
   closeModal();
 
+  const created = Number(data.created || 0);
+  const skippedBusy = Number(data.skippedBusy || 0);
+  const skippedDailyLimit = Number(data.skippedDailyLimit || 0);
+  const skippedUser = Number(data.skippedUser || 0);
   const parts = [];
   if (skippedBusy) parts.push(`занято: ${skippedBusy}`);
   if (skippedDailyLimit) parts.push(`лимит 1 место в день: ${skippedDailyLimit}`);
@@ -1280,12 +1477,21 @@ function refreshView() {
   renderMiniBookings();
 }
 
-function cancelBooking(id) {
-  const bookings = getBookings();
-  const bk = bookings.find(b=>b.id===id);
+async function cancelBooking(id) {
+  const bk = getBookings().find(b=>b.id===id);
   if (!bk) return;
   if (!canCancelBooking(bk)) return toast('Недостаточно прав для отмены', 't-red', '✕');
-  saveBookings(bookings.filter(b=>b.id!==id));
+
+  const r = await apiFetch('/api/bookings/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+  if (r.status === 401) return requireRelogin();
+  const data = await r.json();
+  if (!r.ok) return toast(data.error || 'Ошибка отмены', 't-red', '✕');
+
+  saveBookings(Array.isArray(data.bookings) ? data.bookings : []);
   toast('Бронирование отменено', '', '✓');
   renderCalendar(); renderStats(); renderMiniBookings();
   if (currentView === 'map') renderMapView();
@@ -1368,7 +1574,7 @@ function setDisplay(mode, btn) {
 function renderMyBookingsView() {
   purgeExpired();
   const el     = document.getElementById('view-mybookings');
-  const mine   = getBookings().filter(b=>b.userId===currentUser.id)
+  const mine   = getActiveBookings(getBookings()).filter(b=>b.userId===currentUser.id)
                               .sort((a,b)=>a.date.localeCompare(b.date));
   const spaces = getSpaces(); const floors = getFloors();
 
@@ -1392,7 +1598,7 @@ function renderMyBookingsView() {
           <td>${fmtHuman(b.date)}</td>
           <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
           <td style="font-size:12px;color:var(--ink3)">${b.expiresAt}</td>
-          <td><button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}');renderMyBookingsView()">Отменить</button></td>
+          <td>${canCancelBooking(b) ? `<button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}')">Отменить</button>` : '<span style="color:var(--ink4)">—</span>'}</td>
         </tr>`;
       }).join('')}
       </tbody></table></div></div>`}
@@ -1408,14 +1614,15 @@ function renderCabinetView() {
   if (!el) return;
   const me = currentUser;
   const spaces = getSpaces(); const floors = getFloors();
-  const myBks = getBookings().filter(b => b.userId === me.id)
+  const activeBookings = getActiveBookings(getBookings());
+  const myBks = activeBookings.filter(b => b.userId === me.id)
                               .sort((a, b) => a.date.localeCompare(b.date));
   const isManager = me.role === 'manager' || me.role === 'admin';
   const team = isManager
     ? getUsers().filter(u => u.department === me.department && u.id !== me.id && u.role === 'user')
     : [];
   const teamBks = isManager
-    ? getBookings().filter(b => team.some(u => u.id === b.userId))
+    ? activeBookings.filter(b => team.some(u => u.id === b.userId))
                    .sort((a, b) => a.date.localeCompare(b.date))
     : [];
   const roleLabels = { user: 'Сотрудник', manager: 'Руководитель', admin: 'Администратор' };
@@ -1453,8 +1660,7 @@ function renderCabinetView() {
                 <td>${escapeHtml(sp?.label || '?')}</td>
                 <td>${fmtHuman(b.date)}</td>
                 <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
-                <td><button class="btn btn-danger btn-sm"
-                  onclick="cancelBooking('${b.id}')">Отменить</button></td>
+                <td>${canCancelBooking(b) ? `<button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}')">Отменить</button>` : '<span style="color:var(--ink4)">—</span>'}</td>
               </tr>`;
             }).join('')}
         </tbody>
@@ -1477,8 +1683,7 @@ function renderCabinetView() {
                   <td>${escapeHtml(fl?.name || '?')}</td>
                   <td>${fmtHuman(b.date)}</td>
                   <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
-                  <td><button class="btn btn-danger btn-sm"
-                    onclick="cancelBooking('${b.id}')">Отменить</button></td>
+                  <td>${canCancelBooking(b) ? `<button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}')">Отменить</button>` : '<span style="color:var(--ink4)">—</span>'}</td>
                 </tr>`;
               }).join('')}</tbody>
             </table>`}
@@ -1527,7 +1732,7 @@ function renderTeamView() {
   const el   = document.getElementById('view-team');
   const me   = currentUser;
   const team = getUsers().filter(u=>u.department===me.department && u.id!==me.id && u.role==='user');
-  const bks  = getBookings().filter(b => team.some(u=>u.id===b.userId))
+  const bks  = getActiveBookings(getBookings()).filter(b => team.some(u=>u.id===b.userId))
                              .sort((a,b)=>a.date.localeCompare(b.date));
   const spaces = getSpaces(); const floors = getFloors();
 
@@ -1551,7 +1756,7 @@ function renderTeamView() {
             <td>${escapeHtml(sp?.label||'?')}</td>
             <td>${fmtHuman(b.date)}</td>
             <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
-            <td><button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}');renderTeamView()">Отменить</button></td>
+            <td>${canCancelBooking(b) ? `<button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}')">Отменить</button>` : '<span style="color:var(--ink4)">—</span>'}</td>
           </tr>`;
         }).join('')}
       </tbody></table></div></div>
@@ -1756,11 +1961,15 @@ async function doChangePassword() {
   if (newPwd !== confirm)  return showErr('Пароли не совпадают');
 
   try {
-    const r = await fetch('/api/auth/change-password', {
+    const r = await apiFetch('/api/auth/change-password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: currentUser.email, oldPassword: oldPwd, newPassword: newPwd })
     });
+    if (r.status === 401) {
+      requireRelogin();
+      return;
+    }
     const data = await r.json();
     if (!r.ok) return showErr(data.error || 'Ошибка');
     // Close modal if open; otherwise we're in the cabinet view — just clear the fields
@@ -1806,16 +2015,16 @@ function _fpRenderStep1(prefillEmail) {
     <button class="btn btn-primary" onclick="doForgotPassword()">Получить код →</button>`;
 }
 
-function _fpRenderStep2(email, token) {
+function _fpRenderStep2(email, prefillToken = '') {
   document.getElementById('modal-title').textContent = 'Сброс пароля';
   document.getElementById('modal-body').innerHTML = `
-    <div style="background:var(--blue-l);border:1px solid rgba(59,130,246,.25);border-radius:10px;
-                padding:.85rem 1rem;margin-bottom:1.1rem">
-      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;
-                  color:var(--blue);margin-bottom:.35rem">Ваш код сброса</div>
-      <div style="font-size:22px;font-weight:800;letter-spacing:4px;color:var(--ink);
-                  font-family:var(--mono)">${token}</div>
-      <div style="font-size:11px;color:var(--ink3);margin-top:.3rem">действителен 1 час</div>
+    <div style="font-size:12px;color:var(--ink3);margin-bottom:.8rem">
+      Введите код сброса и новый пароль. Код действует 1 час.
+    </div>
+    <div class="field">
+      <label>Код сброса</label>
+      <input type="text" id="fp-code" autocomplete="one-time-code" placeholder="AB12CD34"
+             value="${escapeHtml(prefillToken)}">
     </div>
     <div class="field">
       <label>Новый пароль <span style="color:var(--ink3);font-size:11px">(мин. 6 символов)</span></label>
@@ -1824,13 +2033,13 @@ function _fpRenderStep2(email, token) {
     <div class="field">
       <label>Повторите пароль</label>
       <input type="password" id="fp-confirm" autocomplete="new-password" placeholder="••••••••"
-             onkeydown="if(event.key==='Enter') doResetPassword('${email}','${token}')">
+             onkeydown="if(event.key==='Enter') doResetPassword('${email}')">
     </div>
     <div id="fp-err2" style="color:var(--red);font-size:13px;display:none"></div>`;
   document.getElementById('modal-foot').innerHTML = `
     <button class="btn btn-ghost" onclick="_fpRenderStep1('${email}')">← Назад</button>
-    <button class="btn btn-primary" onclick="doResetPassword('${email}','${token}')">Сменить пароль</button>`;
-  requestAnimationFrame(() => { const i = document.getElementById('fp-new'); if(i) i.focus(); });
+    <button class="btn btn-primary" onclick="doResetPassword('${email}')">Сменить пароль</button>`;
+  requestAnimationFrame(() => { const i = document.getElementById('fp-code'); if(i) i.focus(); });
 }
 
 async function doForgotPassword() {
@@ -1848,18 +2057,20 @@ async function doForgotPassword() {
     });
     const data = await r.json();
     if (!r.ok) { if(btn){btn.disabled=false;btn.textContent='Получить код →';} return showE(data.error || 'Ошибка'); }
-    _fpRenderStep2(email, data.token);
+    _fpRenderStep2(email, data.token || '');
   } catch(e) {
     if(btn){btn.disabled=false;btn.textContent='Получить код →';}
     showE('Нет соединения с сервером');
   }
 }
 
-async function doResetPassword(email, token) {
+async function doResetPassword(email) {
+  const token = (document.getElementById('fp-code')?.value || '').trim().toUpperCase();
   const newPwd  = document.getElementById('fp-new')?.value || '';
   const confirm = document.getElementById('fp-confirm')?.value || '';
   const errEl   = document.getElementById('fp-err2');
   const showE   = msg => { errEl.textContent = msg; errEl.style.display = 'block'; };
+  if (!token)             return showE('Введите код сброса');
   if (!newPwd)             return showE('Введите новый пароль');
   if (newPwd.length < 6)  return showE('Пароль минимум 6 символов');
   if (newPwd !== confirm)  return showE('Пароли не совпадают');
@@ -1912,10 +2123,13 @@ function adminTab(tab, btn) {
 /* ── Admin: Users ─────────────────────────────────────────────────────────── */
 function renderAdminUsers(el) {
   const users = getUsers();
-  const bks   = getBookings();
+  const bks   = getActiveBookings(getBookings());
   const roles = { user:'Сотрудник', manager:'Руководитель', admin:'Администратор' };
 
-  el.innerHTML = `<div class="metrics" style="margin-bottom:1.25rem">
+  el.innerHTML = `<div style="margin-bottom:1rem;display:flex;justify-content:flex-end">
+    <button class="btn btn-primary" onclick="showAddUserModal()">+ Добавить аккаунт</button>
+  </div>
+  <div class="metrics" style="margin-bottom:1.25rem">
     <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${users.length}</div><div class="metric-l">Пользователей</div></div>
     <div class="metric mt-amber"><div class="metric-n" style="color:var(--amber)">${users.filter(u=>u.role==='manager').length}</div><div class="metric-l">Руководителей</div></div>
     <div class="metric mt-purple"><div class="metric-n" style="color:var(--purple)">${users.filter(u=>u.role==='admin').length}</div><div class="metric-l">Администраторов</div></div>
@@ -1943,20 +2157,83 @@ function renderAdminUsers(el) {
     </tbody></table></div></div>`;
 }
 
-function setUserRole(uid, role) {
-  if (!['user', 'manager', 'admin'].includes(role)) return;  // недопустимое значение
-  const users = getUsers();
-  const u = users.find(u=>u.id===uid);
-  if (!u) return;
-  u.role = role;
-  saveUsers(users);
-  toast(`Роль обновлена: ${escapeHtml(u.name)}`, 't-green', '✓');
+function showAddUserModal() {
+  document.getElementById('modal-title').textContent = 'Новый аккаунт';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="field"><label>ФИО</label><input type="text" id="au-name" placeholder="Иванов Иван Иванович"></div>
+    <div class="field"><label>Отдел</label><input type="text" id="au-dept" placeholder="Отдел"></div>
+    <div class="field"><label>Email</label><input type="email" id="au-email" placeholder="name@company.ru"></div>
+    <div class="field"><label>Пароль (мин. 6)</label><input type="password" id="au-pass" placeholder="••••••••"></div>
+    <div class="field"><label>Роль</label>
+      <select id="au-role" class="role-sel">
+        <option value="user">Сотрудник</option>
+        <option value="manager">Руководитель</option>
+        <option value="admin">Администратор</option>
+      </select>
+    </div>
+    <div id="au-err" style="display:none;color:var(--red);font-size:13px"></div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+    <button class="btn btn-primary" onclick="createAdminUser()">Создать</button>`;
+  document.getElementById('modal-overlay').classList.add('open');
 }
 
-function deleteUser(uid, name) {
+async function createAdminUser() {
+  const name = document.getElementById('au-name')?.value.trim() || '';
+  const department = document.getElementById('au-dept')?.value.trim() || '';
+  const email = (document.getElementById('au-email')?.value || '').trim().toLowerCase();
+  const password = document.getElementById('au-pass')?.value || '';
+  const role = document.getElementById('au-role')?.value || 'user';
+  const err = document.getElementById('au-err');
+  const showErr = (msg) => { if (err) { err.textContent = msg; err.style.display = 'block'; } };
+  if (!name || !department || !email || !password) return showErr('Заполните все поля');
+  if (password.length < 6) return showErr('Пароль минимум 6 символов');
+
+  const r = await apiFetch('/api/users/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, department, email, password, role }),
+  });
+  if (r.status === 401) return requireRelogin();
+  const data = await r.json();
+  if (!r.ok) return showErr(data.error || 'Не удалось создать аккаунт');
+  if (Array.isArray(data.users)) saveUsers(data.users);
+  closeModal();
+  toast('Аккаунт создан', '', '✓');
+  if (currentView === 'admin') renderAdminView();
+}
+
+async function setUserRole(uid, role) {
+  if (!['user', 'manager', 'admin'].includes(role)) return;
+  const r = await apiFetch('/api/users/role', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: uid, role }),
+  });
+  if (r.status === 401) return requireRelogin();
+  const data = await r.json();
+  if (!r.ok) {
+    toast(data.error || 'Не удалось обновить роль', 't-red', '✕');
+    if (currentView === 'admin') renderAdminView();
+    return;
+  }
+  if (Array.isArray(data.users)) saveUsers(data.users);
+  toast('Роль обновлена', 't-green', '✓');
+  if (currentView === 'admin') renderAdminView();
+}
+
+async function deleteUser(uid, name) {
   if (!confirm(`Удалить ${escapeHtml(name)}? Все брони будут удалены.`)) return;
-  saveUsers(getUsers().filter(u=>u.id!==uid));
-  saveBookings(getBookings().filter(b=>b.userId!==uid));
+  const r = await apiFetch('/api/users/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: uid }),
+  });
+  if (r.status === 401) return requireRelogin();
+  const data = await r.json();
+  if (!r.ok) return toast(data.error || 'Не удалось удалить пользователя', 't-red', '✕');
+  if (Array.isArray(data.users)) saveUsers(data.users);
+  if (Array.isArray(data.bookings)) saveBookings(data.bookings);
   toast(`${escapeHtml(name)} удалён`, '', '✓');
   renderAdminView();
 }
@@ -1964,7 +2241,8 @@ function deleteUser(uid, name) {
 /* ── Admin: All bookings ──────────────────────────────────────────────────── */
 function renderAdminBookings(el) {
   purgeExpired();
-  const bks    = getBookings().sort((a,b)=>a.date.localeCompare(b.date));
+  const bksAll = getBookings().sort((a,b)=>a.date.localeCompare(b.date));
+  const bks    = getActiveBookings(bksAll);
   const spaces = getSpaces();
   const floors = getFloors();
   const totalSpaces = spaces.length;
@@ -2014,7 +2292,7 @@ function renderAdminBookings(el) {
   el.innerHTML = `
     <div class="metrics" style="margin-bottom:1.25rem">
       <div class="metric mt-blue">
-        <div class="metric-n" style="color:var(--blue)">${bks.length}</div>
+        <div class="metric-n" style="color:var(--blue)">${bksAll.length}</div>
         <div class="metric-l">Всего бронирований</div>
       </div>
       <div class="metric mt-green">
@@ -2056,13 +2334,13 @@ function renderAdminBookings(el) {
     </div>
 
     <div class="card">
-      <div class="card-head">Все бронирования (${bks.length})
+      <div class="card-head">Все бронирования (${bksAll.length})
         <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇ CSV</button>
       </div>
       <div style="padding:0"><table class="data-table">
         <thead><tr><th>Место</th><th>Сотрудник</th><th>Отдел</th><th>Дата</th><th>Время</th><th>Истекает</th><th></th></tr></thead>
-        <tbody>${!bks.length ? `<tr><td colspan="7" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>` :
-          bks.map(b=>{
+        <tbody>${!bksAll.length ? `<tr><td colspan="7" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>` :
+          bksAll.map(b=>{
             const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
             return `<tr>
               <td><strong>${escapeHtml(sp?.label||'?')}</strong><br><span style="font-size:11px;color:var(--ink3)">${escapeHtml(fl?.name||'?')}</span></td>
@@ -2071,20 +2349,16 @@ function renderAdminBookings(el) {
               <td>${fmtHuman(b.date)}</td>
               <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
               <td style="font-size:11px;color:var(--ink3)">${b.expiresAt}</td>
-              <td><button class="btn btn-danger btn-xs" onclick="adminCancelBk('${b.id}')">Отменить</button></td>
+              <td>${canCancelBooking(b) ? `<button class="btn btn-danger btn-xs" onclick="adminCancelBk('${b.id}')">Отменить</button>` : '<span style="color:var(--ink4)">—</span>'}</td>
             </tr>`;
           }).join('')}
         </tbody></table></div>
     </div>`;
 }
 
-function adminCancelBk(id) {
-  const bk = getBookings().find(b=>b.id===id);
-  if (!bk) return;
-  if (!canCancelBooking(bk)) return toast('Недостаточно прав для отмены', 't-red', '✕');
-  saveBookings(getBookings().filter(b=>b.id!==id));
-  toast('Бронирование отменено', '', '✓');
-  renderStats(); renderMiniBookings(); renderAdminView();
+async function adminCancelBk(id) {
+  await cancelBooking(id);
+  if (currentView === 'admin') renderAdminView();
 }
 
 function exportCSV() {
@@ -2316,7 +2590,7 @@ function renameCoworking(id, name) {
   refreshAdminFloorsIfOpen();
 }
 
-function deleteCoworking(id) {
+async function deleteCoworking(id) {
   const coworkings = getCoworkings();
   if (coworkings.length <= 1) {
     toast('Нельзя удалить последний коворкинг', 't-red', '✕');
@@ -2332,7 +2606,8 @@ function deleteCoworking(id) {
   saveCoworkings(coworkings.filter(c=>c.id!==id));
   saveFloors(getFloors().filter(f=>f.coworkingId!==id));
   saveSpaces(getSpaces().filter(s=>!floorIds.includes(s.floorId)));
-  saveBookings(getBookings().filter(b=>!spaceIds.includes(b.spaceId)));
+  const ok = await replaceBookingsAsAdmin(getBookings().filter(b=>!spaceIds.includes(b.spaceId)));
+  if (!ok) return;
 
   const nextCoworking = getCoworkings()[0];
   editorCoworkingId = nextCoworking?.id || null;
@@ -2695,12 +2970,13 @@ function renameFloor(id, name) {
   if (currentView === 'map') renderMapView();
 }
 
-function deleteFloor(id) {
+async function deleteFloor(id) {
   if (!confirm('Удалить этаж и все его зоны?')) return;
   const removedSpaceIds = getSpaces().filter(s=>s.floorId===id).map(s=>s.id);
   saveFloors(getFloors().filter(f=>f.id!==id));
   saveSpaces(getSpaces().filter(s=>s.floorId!==id));
-  saveBookings(getBookings().filter(b => !removedSpaceIds.includes(b.spaceId)));
+  const ok = await replaceBookingsAsAdmin(getBookings().filter(b => !removedSpaceIds.includes(b.spaceId)));
+  if (!ok) return;
 
   const floors = getFloorsByCoworking(editorCoworkingId);
   editorFloorId = floors[0]?.id || null;
@@ -2765,16 +3041,22 @@ function initSidebarResize() {
 
 window.addEventListener('DOMContentLoaded', async () => {
   initSidebarResize();
+  showAuthTab('login');
   // Enter key
-  document.getElementById('l-pass').addEventListener('keydown', e => e.key==='Enter' && doLogin());
+  document.getElementById('l-pass')?.addEventListener('keydown', e => e.key==='Enter' && doLogin());
+  document.getElementById('r-pass')?.addEventListener('keydown', e => e.key==='Enter' && doRegister());
+  ['r-name', 'r-dept', 'r-email'].forEach(id => {
+    document.getElementById(id)?.addEventListener('keydown', e => { if (e.key === 'Enter') doRegister(); });
+  });
 
-  // Restore session (new format: full user object; legacy: user ID string)
+  // Restore user shell; actual auth validity is checked by API cookie on first sync.
   const sessionData = DB.get('session', null);
+  if (sessionData && typeof sessionData === 'object' && sessionData.id) {
+    await onAuth(sessionData, '');
+    return;
+  }
   if (sessionData) {
-    const u = (typeof sessionData === 'object' && sessionData.id)
-      ? sessionData                                    // new format
-      : getUsers().find(u => u.id === sessionData);   // legacy format
-    if (u && u.id) { await onAuth(u); return; }
+    DB.set('session', null); // drop legacy/invalid sessions
   }
 });
 

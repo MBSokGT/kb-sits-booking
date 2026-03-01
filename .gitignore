@@ -5,3 +5,5 @@ node_modules/
 *.log
 .vercel
 .claude/worktrees/
+
+.wrangler/

@@ -85,6 +85,13 @@ npx wrangler pages deploy . --project-name kb-sits
 npx wrangler d1 execute kb-sits-db --file=d1-schema.sql --remote
 ```
 
+## 🔐 Переменные окружения (Pages Functions)
+
+- `CORS_ORIGINS` — список разрешённых origin через запятую  
+  Пример: `https://kb-sits.pages.dev,https://your-domain.ru`
+- `RESET_TOKEN_PEPPER` — секрет для хеширования кодов сброса пароля
+- `RESET_DEBUG=1` — только для отладки, чтобы API возвращал код сброса в ответе
+
 ## 📱 Адаптивность
 
 - Desktop (1024px+): боковая панель фильтров
