@@ -9,18 +9,37 @@
 let TURNSTILE_SITE_KEY = ''; // loaded from /api/config on init
 
 let _turnstileWidgetId = null;
-let _turnstileLibReady = false; // turnstile.js script loaded
-let _turnstileKeyReady = false; // site key fetched from /api/config
+let _turnstileLibReady  = false; // turnstile.js script loaded
+let _turnstileKeyReady  = false; // site key fetched from /api/config
+let _turnstileToken     = '';    // set by widget callback (not read from DOM)
 
 function tryRenderTurnstile() {
   if (!_turnstileLibReady || !_turnstileKeyReady) return;
-  if (!TURNSTILE_SITE_KEY) return;                      // disabled
-  if (_turnstileWidgetId !== null) return;              // already rendered
-  _turnstileWidgetId = window.turnstile.render('#cf-turnstile-widget', {
-    sitekey: TURNSTILE_SITE_KEY,
-    theme:   'dark',
-    size:    'flexible',
-  });
+  if (!TURNSTILE_SITE_KEY) return;
+  if (_turnstileWidgetId !== null) return; // already rendered / attempted
+  try {
+    _turnstileWidgetId = window.turnstile.render('#cf-turnstile-widget', {
+      sitekey:           TURNSTILE_SITE_KEY,
+      theme:             'dark',
+      size:              'flexible',
+      callback:          (token) => { _turnstileToken = token; },
+      'expired-callback': ()     => { _turnstileToken = ''; },
+      'error-callback':   ()     => {
+        // widget error (network, hostname mismatch, etc.) — disable check so login still works
+        console.warn('[Turnstile] widget error — disabling captcha check');
+        TURNSTILE_SITE_KEY = '';
+        _turnstileToken    = '';
+      },
+    }) ?? 'failed'; // render returns undefined on failure; store 'failed' so we don't retry
+    if (_turnstileWidgetId === 'failed') {
+      console.warn('[Turnstile] render returned undefined — disabling');
+      TURNSTILE_SITE_KEY = '';
+    }
+  } catch(e) {
+    console.warn('[Turnstile] render threw:', e);
+    TURNSTILE_SITE_KEY     = '';
+    _turnstileWidgetId     = 'failed';
+  }
 }
 
 function onTurnstileLoad() {
@@ -29,9 +48,9 @@ function onTurnstileLoad() {
 }
 
 function resetTurnstile() {
-  if (TURNSTILE_SITE_KEY && _turnstileWidgetId !== null) {
-    try { window.turnstile.reset(_turnstileWidgetId); } catch(_) {}
-  }
+  if (!TURNSTILE_SITE_KEY || _turnstileWidgetId === null) return;
+  try { window.turnstile.reset(_turnstileWidgetId); } catch(_) {}
+  _turnstileToken = '';
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -342,12 +361,10 @@ async function doLogin() {
   const email = document.getElementById('l-email').value.trim().toLowerCase();
   const pass  = document.getElementById('l-pass').value;
 
-  // Collect Turnstile token if widget is active
-  let turnstileToken = '';
-  if (TURNSTILE_SITE_KEY) {
-    const tokenInput = document.querySelector('[name="cf-turnstile-response"]');
-    turnstileToken = tokenInput?.value || '';
-    if (!turnstileToken) return authErr('Подтвердите, что вы не робот');
+  // Collect Turnstile token (received via widget callback, not read from DOM)
+  const turnstileToken = _turnstileToken;
+  if (TURNSTILE_SITE_KEY && !turnstileToken) {
+    return authErr('Подтвердите, что вы не робот');
   }
 
   try {
