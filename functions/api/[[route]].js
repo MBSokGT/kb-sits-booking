@@ -66,6 +66,46 @@ export async function onRequest(context) {
       return json({ user: { id, email: emailClean, name: name.trim(), department: department.trim(), role: 'user' } });
     }
 
+    /* ── POST /auth/forgot-password ──────────────────── */
+    if (path === '/auth/forgot-password' && method === 'POST') {
+      const { email = '' } = await request.json();
+      const emailClean = email.trim().toLowerCase();
+      const row = await env.DB.prepare(
+        'SELECT id FROM users WHERE email = ?'
+      ).bind(emailClean).first();
+      if (!row) return json({ error: 'Аккаунт с таким email не найден' }, 404);
+      // 8-char alphanumeric token (uppercase)
+      const token = (Math.random().toString(36).slice(2, 6) +
+                     Math.random().toString(36).slice(2, 6)).toUpperCase();
+      const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO kv_store (k, v, updated_at) VALUES (?, ?, datetime('now'))"
+      ).bind('reset:' + emailClean, JSON.stringify({ token, expires })).run();
+      return json({ token });
+    }
+
+    /* ── POST /auth/reset-password ────────────────────── */
+    if (path === '/auth/reset-password' && method === 'POST') {
+      const { email = '', token = '', newPassword = '' } = await request.json();
+      if (!newPassword || newPassword.length < 6)
+        return json({ error: 'Пароль минимум 6 символов' }, 400);
+      const emailClean = email.trim().toLowerCase();
+      const kvRow = await env.DB.prepare(
+        'SELECT v FROM kv_store WHERE k = ?'
+      ).bind('reset:' + emailClean).first();
+      if (!kvRow) return json({ error: 'Код сброса не найден или уже использован' }, 400);
+      const { token: stored, expires } = JSON.parse(kvRow.v);
+      if (token.trim().toUpperCase() !== stored)
+        return json({ error: 'Неверный код сброса' }, 400);
+      if (new Date() > new Date(expires))
+        return json({ error: 'Код истёк — запросите новый' }, 400);
+      await env.DB.prepare('UPDATE users SET password = ? WHERE email = ?')
+        .bind(newPassword, emailClean).run();
+      await env.DB.prepare('DELETE FROM kv_store WHERE k = ?')
+        .bind('reset:' + emailClean).run();
+      return json({ ok: true });
+    }
+
     /* ── POST /auth/change-password ──────────────────── */
     if (path === '/auth/change-password' && method === 'POST') {
       const { email = '', oldPassword = '', newPassword = '' } = await request.json();

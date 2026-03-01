@@ -289,7 +289,7 @@ function toast(msg, cls='', icon='✓') {
 ═══════════════════════════════════════════════════════ */
 function authErr(msg) {
   const el = document.getElementById('auth-err');
-  el.textContent = msg; el.style.display = '';
+  el.textContent = msg; el.style.display = 'block';
 }
 
 function resetDemoData() {
@@ -1626,7 +1626,7 @@ async function doChangePassword() {
   const newPwd  = document.getElementById('cp-new').value;
   const confirm = document.getElementById('cp-confirm').value;
   const errEl   = document.getElementById('cp-err');
-  const showErr = msg => { errEl.textContent = msg; errEl.style.display = ''; };
+  const showErr = msg => { errEl.textContent = msg; errEl.style.display = 'block'; };
 
   if (!oldPwd || !newPwd) return showErr('Заполните все поля');
   if (newPwd.length < 6)  return showErr('Новый пароль минимум 6 символов');
@@ -1644,6 +1644,108 @@ async function doChangePassword() {
     toast('Пароль изменён', '', '✓');
   } catch(e) {
     showErr('Нет соединения с сервером');
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   FORGOT / RESET PASSWORD
+═══════════════════════════════════════════════════════ */
+function showForgotPasswordModal() {
+  _fpRenderStep1();
+  document.getElementById('modal-overlay').classList.add('open');
+  requestAnimationFrame(() => { const i = document.getElementById('fp-email'); if(i) i.focus(); });
+}
+
+function _fpRenderStep1(prefillEmail) {
+  document.getElementById('modal-title').textContent = 'Восстановление пароля';
+  document.getElementById('modal-body').innerHTML = `
+    <p style="font-size:13px;color:var(--ink2);margin-bottom:1.1rem;line-height:1.5">
+      Введите email вашего аккаунта — получите код для сброса пароля.
+    </p>
+    <div class="field">
+      <label>Email</label>
+      <input type="email" id="fp-email" placeholder="you@company.ru" autocomplete="email"
+             value="${prefillEmail || ''}"
+             onkeydown="if(event.key==='Enter') doForgotPassword()">
+    </div>
+    <div id="fp-err" style="color:var(--red);font-size:13px;display:none"></div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+    <button class="btn btn-primary" onclick="doForgotPassword()">Получить код →</button>`;
+}
+
+function _fpRenderStep2(email, token) {
+  document.getElementById('modal-title').textContent = 'Сброс пароля';
+  document.getElementById('modal-body').innerHTML = `
+    <div style="background:var(--blue-l);border:1px solid rgba(59,130,246,.25);border-radius:10px;
+                padding:.85rem 1rem;margin-bottom:1.1rem">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;
+                  color:var(--blue);margin-bottom:.35rem">Ваш код сброса</div>
+      <div style="font-size:22px;font-weight:800;letter-spacing:4px;color:var(--ink);
+                  font-family:var(--mono)">${token}</div>
+      <div style="font-size:11px;color:var(--ink3);margin-top:.3rem">действителен 1 час</div>
+    </div>
+    <div class="field">
+      <label>Новый пароль <span style="color:var(--ink3);font-size:11px">(мин. 6 символов)</span></label>
+      <input type="password" id="fp-new" autocomplete="new-password" placeholder="••••••••">
+    </div>
+    <div class="field">
+      <label>Повторите пароль</label>
+      <input type="password" id="fp-confirm" autocomplete="new-password" placeholder="••••••••"
+             onkeydown="if(event.key==='Enter') doResetPassword('${email}','${token}')">
+    </div>
+    <div id="fp-err2" style="color:var(--red);font-size:13px;display:none"></div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-ghost" onclick="_fpRenderStep1('${email}')">← Назад</button>
+    <button class="btn btn-primary" onclick="doResetPassword('${email}','${token}')">Сменить пароль</button>`;
+  requestAnimationFrame(() => { const i = document.getElementById('fp-new'); if(i) i.focus(); });
+}
+
+async function doForgotPassword() {
+  const email  = (document.getElementById('fp-email')?.value || '').trim();
+  const errEl  = document.getElementById('fp-err');
+  const showE  = msg => { errEl.textContent = msg; errEl.style.display = 'block'; };
+  if (!email) return showE('Введите email');
+  const btn = document.querySelector('#modal-foot .btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = 'Загрузка…'; }
+  try {
+    const r = await fetch('/api/auth/forgot-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    const data = await r.json();
+    if (!r.ok) { if(btn){btn.disabled=false;btn.textContent='Получить код →';} return showE(data.error || 'Ошибка'); }
+    _fpRenderStep2(email, data.token);
+  } catch(e) {
+    if(btn){btn.disabled=false;btn.textContent='Получить код →';}
+    showE('Нет соединения с сервером');
+  }
+}
+
+async function doResetPassword(email, token) {
+  const newPwd  = document.getElementById('fp-new')?.value || '';
+  const confirm = document.getElementById('fp-confirm')?.value || '';
+  const errEl   = document.getElementById('fp-err2');
+  const showE   = msg => { errEl.textContent = msg; errEl.style.display = 'block'; };
+  if (!newPwd)             return showE('Введите новый пароль');
+  if (newPwd.length < 6)  return showE('Пароль минимум 6 символов');
+  if (newPwd !== confirm)  return showE('Пароли не совпадают');
+  const btn = document.querySelector('#modal-foot .btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = 'Сохранение…'; }
+  try {
+    const r = await fetch('/api/auth/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, token, newPassword: newPwd })
+    });
+    const data = await r.json();
+    if (!r.ok) { if(btn){btn.disabled=false;btn.textContent='Сменить пароль';} return showE(data.error || 'Ошибка'); }
+    closeModal();
+    toast('Пароль изменён — войдите с новым паролем', '', '✓');
+  } catch(e) {
+    if(btn){btn.disabled=false;btn.textContent='Сменить пароль';}
+    showE('Нет соединения с сервером');
   }
 }
 
