@@ -2723,7 +2723,47 @@ function overlayClick(e) { if (e.target === document.getElementById('modal-overl
 /* ═══════════════════════════════════════════════════════
    BOOT
 ═══════════════════════════════════════════════════════ */
+/* ── Sidebar resize ───────────────────────────────────────────────────────── */
+function initSidebarResize() {
+  const handle  = document.getElementById('sidebar-resizer');
+  const sidebar = document.querySelector('.sidebar');
+  if (!handle || !sidebar) return;
+
+  // Restore saved width
+  const saved = localStorage.getItem('ws_sidebar_w');
+  if (saved) sidebar.style.width = saved + 'px';
+
+  let dragging = false, startX = 0, startW = 0;
+
+  handle.addEventListener('mousedown', e => {
+    dragging = true;
+    startX   = e.clientX;
+    startW   = sidebar.getBoundingClientRect().width;
+    handle.classList.add('dragging');
+    document.body.style.cursor     = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const w = Math.min(520, Math.max(200, startW + (e.clientX - startX)));
+    sidebar.style.width = w + 'px';
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.cursor     = '';
+    document.body.style.userSelect = '';
+    const w = parseInt(sidebar.style.width);
+    if (w) localStorage.setItem('ws_sidebar_w', w);
+  });
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
+  initSidebarResize();
   // Enter key
   document.getElementById('l-pass').addEventListener('keydown', e => e.key==='Enter' && doLogin());
 
