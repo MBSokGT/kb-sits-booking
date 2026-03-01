@@ -15,7 +15,7 @@ const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 const BOOKING_STATE_KEY = 'bookings_state';
 const LEGACY_BOOKINGS_KEY = 'bookings';
 const PASSWORD_HASH_PREFIX = 'pbkdf2_sha256';
-const PASSWORD_HASH_ITERATIONS = 120000;
+const PASSWORD_HASH_ITERATIONS = 100000;
 const PASSWORD_SALT_BYTES = 16;
 const AUTH_COOKIE_NAME = 'ws_session';
 const AUTH_COOKIE_MAX_AGE_SEC = SESSION_TTL_HOURS * 60 * 60;
@@ -231,19 +231,23 @@ function isHashedPassword(value) {
 async function pbkdf2Hex(password, saltHex, iterations) {
   const saltBytes = hexToBytes(saltHex);
   if (!saltBytes) return '';
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(String(password)),
-    'PBKDF2',
-    false,
-    ['deriveBits']
-  );
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', hash: 'SHA-256', salt: saltBytes, iterations },
-    key,
-    256
-  );
-  return bytesToHex(new Uint8Array(bits));
+  try {
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(String(password)),
+      'PBKDF2',
+      false,
+      ['deriveBits']
+    );
+    const bits = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', hash: 'SHA-256', salt: saltBytes, iterations },
+      key,
+      256
+    );
+    return bytesToHex(new Uint8Array(bits));
+  } catch {
+    return '';
+  }
 }
 
 async function hashPassword(password) {
@@ -263,8 +267,9 @@ async function verifyPassword(password, stored) {
   const iterations = Number(parts[1]);
   const saltHex = parts[2];
   const expectedHex = parts[3];
-  if (!Number.isInteger(iterations) || iterations < 50000 || !saltHex || !expectedHex) return false;
+  if (!Number.isInteger(iterations) || iterations < 50000 || iterations > 100000 || !saltHex || !expectedHex) return false;
   const actualHex = await pbkdf2Hex(password, saltHex, iterations);
+  if (!actualHex) return false;
   return timingSafeEqual(actualHex, expectedHex);
 }
 
@@ -583,36 +588,7 @@ export async function onRequest(context) {
 
     /* ── POST /auth/register (public) ─────────────────── */
     if (path === '/auth/register' && method === 'POST') {
-      const { name = '', email = '', password = '', department = '' } = await request.json();
-      const nameClean = String(name).trim();
-      const emailClean = email.trim().toLowerCase();
-      const departmentClean = String(department).trim();
-
-      if (!nameClean || !emailClean || !password || !departmentClean) {
-        return reply({ error: 'Заполните обязательные поля' }, 400);
-      }
-      if (!isValidEmail(emailClean)) {
-        return reply({ error: 'Некорректный email' }, 400);
-      }
-      if (password.length < 6) {
-        return reply({ error: 'Пароль минимум 6 символов' }, 400);
-      }
-
-      const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(emailClean).first();
-      if (existing) return reply({ error: 'Email уже зарегистрирован' }, 409);
-
-      const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-      const passwordHash = await hashPassword(password);
-      await env.DB.prepare(
-        'INSERT INTO users (id, email, password, name, department, role) VALUES (?, ?, ?, ?, ?, ?)'
-      ).bind(id, emailClean, passwordHash, nameClean, departmentClean, 'user').run();
-
-      const { token } = await createSession(env, id);
-      return reply(
-        { user: { id, email: emailClean, name: nameClean, department: departmentClean, role: 'user' } },
-        200,
-        { 'Set-Cookie': buildSessionCookie(token) }
-      );
+      return reply({ error: 'Саморегистрация отключена. Обратитесь к администратору.' }, 403);
     }
 
     /* ── POST /auth/forgot-password (public) ──────────── */

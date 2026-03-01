@@ -359,28 +359,6 @@ function requireRelogin(msg = 'Сессия истекла. Войдите сн�
   authErr(msg);
 }
 
-function showAuthTab(tab = 'login') {
-  const loginTab = document.getElementById('auth-tab-login');
-  const regTab = document.getElementById('auth-tab-register');
-  const loginForm = document.getElementById('aform-login');
-  const regForm = document.getElementById('aform-register');
-  const err = document.getElementById('auth-err');
-  if (!loginTab || !regTab || !loginForm || !regForm) return;
-
-  const isRegister = tab === 'register';
-  loginTab.classList.toggle('active', !isRegister);
-  regTab.classList.toggle('active', isRegister);
-  loginForm.style.display = isRegister ? 'none' : 'block';
-  regForm.style.display = isRegister ? 'block' : 'none';
-  if (err) err.style.display = 'none';
-
-  if (isRegister) {
-    document.getElementById('r-name')?.focus();
-  } else {
-    document.getElementById('l-email')?.focus();
-  }
-}
-
 function resetDemoData() {
   if (!confirm('Сбросить все локальные данные? Данные будут перезагружены из облака при следующем входе.')) return;
   ['coworkings','floors','spaces','bookings','departments','session'].forEach(k => localStorage.removeItem('ws_' + k));
@@ -403,35 +381,6 @@ async function doLogin() {
     if (!data?.user) return authErr('Ошибка авторизации');
     await onAuth(data.user, data.token || '');
   } catch(e) {
-    authErr('Нет соединения с сервером');
-  }
-}
-
-async function doRegister() {
-  const name = document.getElementById('r-name')?.value.trim() || '';
-  const department = document.getElementById('r-dept')?.value.trim() || '';
-  const email = (document.getElementById('r-email')?.value || '').trim().toLowerCase();
-  const pass = document.getElementById('r-pass')?.value || '';
-
-  if (!name || !department || !email || !pass) {
-    return authErr('Заполните ФИО, отдел, email и пароль');
-  }
-  if (pass.length < 6) {
-    return authErr('Пароль минимум 6 символов');
-  }
-
-  try {
-    const r = await fetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ name, department, email, password: pass }),
-    });
-    const data = await r.json();
-    if (!r.ok) return authErr(data.error || 'Не удалось зарегистрироваться');
-    if (!data?.user) return authErr('Ошибка регистрации');
-    await onAuth(data.user, data.token || '');
-  } catch (e) {
     authErr('Нет соединения с сервером');
   }
 }
@@ -506,11 +455,6 @@ function doLogout(skipServerLogout = false) {
   // Clear auth form
   document.getElementById('l-email').value = '';
   document.getElementById('l-pass').value = '';
-  ['r-name', 'r-dept', 'r-email', 'r-pass'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.value = '';
-  });
-  showAuthTab('login');
 }
 
 function applyUserUI() {
@@ -3041,13 +2985,8 @@ function initSidebarResize() {
 
 window.addEventListener('DOMContentLoaded', async () => {
   initSidebarResize();
-  showAuthTab('login');
   // Enter key
   document.getElementById('l-pass')?.addEventListener('keydown', e => e.key==='Enter' && doLogin());
-  document.getElementById('r-pass')?.addEventListener('keydown', e => e.key==='Enter' && doRegister());
-  ['r-name', 'r-dept', 'r-email'].forEach(id => {
-    document.getElementById(id)?.addEventListener('keydown', e => { if (e.key === 'Enter') doRegister(); });
-  });
 
   // Restore user shell; actual auth validity is checked by API cookie on first sync.
   const sessionData = DB.get('session', null);
