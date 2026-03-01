@@ -1,23 +1,37 @@
 /* ═══════════════════════════════════════════════════════
    CLOUDFLARE TURNSTILE  (bot protection on login)
-   ── Setup ────────────────────────────────────────────
-   1. Cloudflare Dashboard → Turnstile → Add site → copy Sitekey
-   2. Paste it below (replace the empty string)
-   3. Pages → Settings → Environment variables → add secret:
-        TURNSTILE_SECRET = <your secret key>
-   4. Re-deploy — done.  Leave empty = Turnstile disabled.
+   ── Setup (keys stored server-side, NOT in source) ───
+   Pages → Settings → Environment variables → add:
+     TURNSTILE_SITE_KEY = <your site key>   (public widget key)
+     TURNSTILE_SECRET   = <your secret key> (server verification)
+   Leave unset = Turnstile disabled.
 ═══════════════════════════════════════════════════════ */
-const TURNSTILE_SITE_KEY = ''; // ← paste sitekey here
+let TURNSTILE_SITE_KEY = ''; // loaded from /api/config on init
 
 let _turnstileWidgetId = null;
+let _turnstileLibReady = false; // turnstile.js script loaded
+let _turnstileKeyReady = false; // site key fetched from /api/config
 
-function onTurnstileLoad() {
-  if (!TURNSTILE_SITE_KEY) return; // not configured — skip
+function tryRenderTurnstile() {
+  if (!_turnstileLibReady || !_turnstileKeyReady) return;
+  if (!TURNSTILE_SITE_KEY) return;                      // disabled
+  if (_turnstileWidgetId !== null) return;              // already rendered
   _turnstileWidgetId = window.turnstile.render('#cf-turnstile-widget', {
     sitekey: TURNSTILE_SITE_KEY,
     theme:   'dark',
     size:    'flexible',
   });
+}
+
+function onTurnstileLoad() {
+  _turnstileLibReady = true;
+  tryRenderTurnstile();
+}
+
+function resetTurnstile() {
+  if (TURNSTILE_SITE_KEY && _turnstileWidgetId !== null) {
+    try { window.turnstile.reset(_turnstileWidgetId); } catch(_) {}
+  }
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -343,7 +357,7 @@ async function doLogin() {
       body: JSON.stringify({ email, password: pass, turnstileToken })
     });
     const data = await r.json();
-    if (!r.ok) return authErr(data.error || 'Неверный email или пароль');
+    if (!r.ok) { resetTurnstile(); return authErr(data.error || 'Неверный email или пароль'); }
     onAuth(data.user);
   } catch(e) {
     // Fallback to localStorage when API unavailable (local dev / offline)
@@ -2797,6 +2811,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   initSidebarResize();
   // Enter key
   document.getElementById('l-pass').addEventListener('keydown', e => e.key==='Enter' && doLogin());
+
+  // Load public config (Turnstile site key, etc.) — key lives in CF env, not in source
+  fetch('/api/config').then(r => r.ok ? r.json() : {}).then(cfg => {
+    TURNSTILE_SITE_KEY = cfg.turnstileSiteKey || '';
+    _turnstileKeyReady = true;
+    tryRenderTurnstile();
+  }).catch(() => { _turnstileKeyReady = true; });
 
   // Restore session (new format: full user object; legacy: user ID string)
   const sessionData = DB.get('session', null);

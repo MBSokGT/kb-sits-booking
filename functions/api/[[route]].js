@@ -173,6 +173,12 @@ export async function onRequest(context) {
       return json({ ok: true, key });
     }
 
+    /* ── GET /config ──────────────────────────────────── */
+    // Returns public (non-secret) config — safe to expose to browser
+    if (path === '/config' && method === 'GET') {
+      return json({ turnstileSiteKey: env.TURNSTILE_SITE_KEY || '' });
+    }
+
     /* ── GET /health ──────────────────────────────────── */
     if (path === '/health') {
       const row = await env.DB.prepare("SELECT datetime('now') AS ts").first();
