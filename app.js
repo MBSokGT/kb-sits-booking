@@ -1,4 +1,26 @@
 /* ═══════════════════════════════════════════════════════
+   CLOUDFLARE TURNSTILE  (bot protection on login)
+   ── Setup ────────────────────────────────────────────
+   1. Cloudflare Dashboard → Turnstile → Add site → copy Sitekey
+   2. Paste it below (replace the empty string)
+   3. Pages → Settings → Environment variables → add secret:
+        TURNSTILE_SECRET = <your secret key>
+   4. Re-deploy — done.  Leave empty = Turnstile disabled.
+═══════════════════════════════════════════════════════ */
+const TURNSTILE_SITE_KEY = ''; // ← paste sitekey here
+
+let _turnstileWidgetId = null;
+
+function onTurnstileLoad() {
+  if (!TURNSTILE_SITE_KEY) return; // not configured — skip
+  _turnstileWidgetId = window.turnstile.render('#cf-turnstile-widget', {
+    sitekey: TURNSTILE_SITE_KEY,
+    theme:   'dark',
+    size:    'flexible',
+  });
+}
+
+/* ═══════════════════════════════════════════════════════
    SECURITY UTILS
 ═══════════════════════════════════════════════════════ */
 function escapeHtml(text) {
@@ -305,11 +327,20 @@ function resetDemoData() {
 async function doLogin() {
   const email = document.getElementById('l-email').value.trim().toLowerCase();
   const pass  = document.getElementById('l-pass').value;
+
+  // Collect Turnstile token if widget is active
+  let turnstileToken = '';
+  if (TURNSTILE_SITE_KEY) {
+    const tokenInput = document.querySelector('[name="cf-turnstile-response"]');
+    turnstileToken = tokenInput?.value || '';
+    if (!turnstileToken) return authErr('Подтвердите, что вы не робот');
+  }
+
   try {
     const r = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password: pass })
+      body: JSON.stringify({ email, password: pass, turnstileToken })
     });
     const data = await r.json();
     if (!r.ok) return authErr(data.error || 'Неверный email или пароль');

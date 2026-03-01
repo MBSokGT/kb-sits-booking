@@ -32,7 +32,28 @@ export async function onRequest(context) {
   try {
     /* ── POST /auth/login ─────────────────────────────── */
     if (path === '/auth/login' && method === 'POST') {
-      const { email = '', password = '' } = await request.json();
+      const { email = '', password = '', turnstileToken = '' } = await request.json();
+
+      // Cloudflare Turnstile server-side verification (only if secret is configured)
+      if (env.TURNSTILE_SECRET) {
+        if (!turnstileToken) {
+          return json({ error: 'Требуется проверка безопасности' }, 400);
+        }
+        const verifyRes = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            secret: env.TURNSTILE_SECRET,
+            response: turnstileToken,
+            remoteip: request.headers.get('CF-Connecting-IP') || undefined,
+          }),
+        });
+        const verifyData = await verifyRes.json();
+        if (!verifyData.success) {
+          return json({ error: 'Проверка безопасности не пройдена' }, 403);
+        }
+      }
+
       const row = await env.DB.prepare(
         'SELECT id, email, name, department, role FROM users WHERE email = ? AND password = ?'
       ).bind(email.trim().toLowerCase(), password).first();
