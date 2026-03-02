@@ -9,7 +9,6 @@
 | Сервис | URL |
 |--------|-----|
 | Приложение | https://kb-sits.pages.dev |
-| GitHub Pages | https://mbsokgt.github.io/kb-sits-booking/ |
 | Репозиторий | https://github.com/MBSokGT/kb-sits-booking |
 
 ## ✨ Возможности
@@ -55,7 +54,7 @@
 - **Frontend:** Vanilla JavaScript (ES6+), HTML5, CSS3, SVG
 - **Backend:** Cloudflare Pages Functions (Edge Worker)
 - **База данных:** Cloudflare D1 (SQLite)
-- **Хостинг:** Cloudflare Pages + GitHub Pages
+- **Хостинг:** Cloudflare Pages
 - **CI/CD:** GitHub → Cloudflare Pages (auto-deploy при push в main)
 
 ## 🔒 Доступ
