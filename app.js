@@ -2317,10 +2317,56 @@ function renderAdminUsers(el) {
           : `<select class="role-sel" onchange="setUserRole('${u.id}',this.value)">
               ${['user','manager','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${roles[r]}</option>`).join('')}
              </select>`}</td>
-        <td>${isSelf ? '' : `<button class="btn btn-danger btn-xs" data-uid="${u.id}" data-name="${escapeHtml(u.name)}" onclick="deleteUser(this.dataset.uid, this.dataset.name)">Удалить</button>`}</td>
+        <td style="white-space:nowrap">
+          <button class="btn btn-ghost btn-xs" data-uid="${u.id}" onclick="showEditUserModal(this.dataset.uid)">✏️ Редактировать</button>
+          ${isSelf ? '' : `<button class="btn btn-danger btn-xs" data-uid="${u.id}" data-name="${escapeHtml(u.name)}" onclick="deleteUser(this.dataset.uid, this.dataset.name)">Удалить</button>`}
+        </td>
       </tr>`;
     }).join('')}
     </tbody></table></div></div>`;
+}
+
+function showEditUserModal(uid) {
+  const users = getUsers();
+  const u = users.find(u=>u.id===uid);
+  if (!u) return;
+  
+  document.getElementById('modal-title').textContent = `Редактировать: ${escapeHtml(u.name)}`;
+  document.getElementById('modal-body').innerHTML = `
+    <div class="field"><label>ФИО</label>
+      <input type="text" id="edit-user-name" value="${escapeHtml(u.name)}" maxlength="100">
+    </div>
+    <div class="field"><label>Email</label>
+      <input type="email" id="edit-user-email" value="${escapeHtml(u.email)}" maxlength="100">
+    </div>
+    <div class="field"><label>Отдел</label>
+      <input type="text" id="edit-user-dept" value="${escapeHtml(u.department||'')}" maxlength="100">
+    </div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-ghost" id="edit-cancel-btn">Отмена</button>
+    <button class="btn btn-primary" id="edit-save-btn">Сохранить</button>`;
+  
+  document.getElementById('edit-cancel-btn').addEventListener('click', closeModal);
+  document.getElementById('edit-save-btn').addEventListener('click', () => {
+    const name = document.getElementById('edit-user-name').value.trim();
+    const email = document.getElementById('edit-user-email').value.trim().toLowerCase();
+    const dept = document.getElementById('edit-user-dept').value.trim();
+    
+    if (!name || !email) { toast('Заполните обязательные поля', 't-red', '✕'); return; }
+    
+    const emailExists = users.find(x => x.id !== u.id && x.email === email);
+    if (emailExists) { toast('Email уже используется', 't-red', '✕'); return; }
+    
+    u.name = name;
+    u.email = email;
+    u.department = dept;
+    saveUsers(users);
+    closeModal();
+    renderAdminUsers(document.getElementById('admin-tab-content'));
+    toast(`Пользователь обновлён: ${escapeHtml(name)}`, 't-green', '✓');
+  });
+  
+  document.getElementById('modal-overlay').classList.add('open');
 }
 
 function updateUserDept(uid, dept) {
