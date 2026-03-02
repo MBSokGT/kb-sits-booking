@@ -1,9 +1,5 @@
 name = "kb-sits"
 compatibility_date = "2024-01-01"
-pages_build_output_dir = "."
-
-[site]
-bucket = "."
 
 # Uncomment when D1 is configured
 # [[d1_databases]]
