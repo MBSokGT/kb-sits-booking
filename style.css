@@ -456,7 +456,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .overlay.open{opacity:1;pointer-events:auto}
 
 .modal{background:white;border-radius:var(--radius-lg);width:520px;max-width:94vw;max-height:90vh;
-  box-shadow:var(--shadow-lg);display:flex;flex-direction:column;transform:scale(.95);transition:transform .2s}
+  box-shadow:var(--shadow-lg);display:flex;flex-direction:column;transform:scale(.95);transition:transform .2s;overflow:hidden}
 .overlay.open .modal{transform:scale(1)}
 
 .modal-head{padding:1.25rem 1.5rem;border-bottom:1px solid var(--line);display:flex;align-items:center;

@@ -2277,10 +2277,11 @@ function adminTab(tab, btn) {
   document.querySelectorAll('#admin-tabs .floor-tab-btn').forEach(b=>b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   const el = document.getElementById('admin-tab-content');
-  if (tab === 'users')       renderAdminUsers(el);
-  if (tab === 'floors')      renderAdminFloors(el);
-  if (tab === 'bookings')    renderAdminBookings(el);
-  if (tab === 'departments') renderAdminDepartments(el);
+  if (!el) return;
+  if (tab === 'users')       { renderAdminUsers(el); return; }
+  if (tab === 'floors')      { renderAdminFloors(el); return; }
+  if (tab === 'bookings')    { renderAdminBookings(el); return; }
+  if (tab === 'departments') { renderAdminDepartments(el); return; }
 }
 
 /* ── Admin: Users ─────────────────────────────────────────────────────────── */
@@ -2300,14 +2301,16 @@ function renderAdminUsers(el) {
   </div>
   <div class="card"><div class="card-head">Пользователи</div>
   <div style="padding:0"><table class="data-table">
-    <thead><tr><th>ФИО</th><th>Email</th><th>Отдел</th><th>Бронирований</th><th>Роль</th><th></th></tr></thead>
+    <thead><tr><th>ФИО</th><th>Email</th><th>Отдел</th><th>Пароль</th><th>Бронирований</th><th>Роль</th><th></th></tr></thead>
     <tbody>${users.map(u => {
       const cnt = bks.filter(b=>sameId(b.userId, u.id)).length;
       const isSelf = isCurrentUserId(u.id);
       return `<tr>
         <td><strong>${escapeHtml(u.name)}</strong></td>
         <td style="color:var(--ink3)">${escapeHtml(u.email)}</td>
-        <td>${escapeHtml(u.department||'—')}</td>
+        <td><input type="text" class="role-sel" value="${escapeHtml(u.department||'')}" 
+          onblur="updateUserDept('${u.id}',this.value)" placeholder="Отдел" style="min-width:100px"></td>
+        <td><button class="btn btn-ghost btn-xs" data-uid="${u.id}" onclick="showPasswordModal(this.dataset.uid)">🔑 Пароль</button></td>
         <td><span class="badge badge-blue">${cnt}</span></td>
         <td>${isSelf
           ? `<span class="badge badge-amber">Вы</span>`
@@ -2318,6 +2321,47 @@ function renderAdminUsers(el) {
       </tr>`;
     }).join('')}
     </tbody></table></div></div>`;
+}
+
+function updateUserDept(uid, dept) {
+  const users = getUsers();
+  const u = users.find(u=>u.id===uid);
+  if (!u) return;
+  u.department = dept.trim();
+  saveUsers(users);
+  toast(`Отдел обновлён: ${escapeHtml(u.name)}`, 't-green', '✓');
+}
+
+function showPasswordModal(uid) {
+  const users = getUsers();
+  const u = users.find(u=>u.id===uid);
+  if (!u) return;
+  
+  document.getElementById('modal-title').textContent = `Пароль: ${escapeHtml(u.name)}`;
+  document.getElementById('modal-body').innerHTML = `
+    <div class="field"><label>Текущий пароль</label>
+      <input type="text" readonly value="${escapeHtml(u.password)}" style="background:var(--paper);font-family:'DM Mono',monospace">
+    </div>
+    <div class="field"><label>Новый пароль</label>
+      <input type="text" id="new-password-input" placeholder="Минимум 6 символов" maxlength="50">
+    </div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-ghost" id="pwd-cancel-btn">Отмена</button>
+    <button class="btn btn-primary" id="pwd-save-btn">Сохранить</button>`;
+  
+  document.getElementById('pwd-cancel-btn').addEventListener('click', closeModal);
+  document.getElementById('pwd-save-btn').addEventListener('click', () => {
+    const newPwd = document.getElementById('new-password-input').value.trim();
+    if (!newPwd) { closeModal(); return; }
+    if (newPwd.length < 6) { toast('Минимум 6 символов', 't-red', '✕'); return; }
+    u.password = newPwd;
+    saveUsers(users);
+    closeModal();
+    toast(`Пароль обновлён для ${escapeHtml(u.name)}`, 't-green', '✓');
+  });
+  
+  document.getElementById('modal-overlay').classList.add('open');
+}
 }
 
 function showAddUserModal() {

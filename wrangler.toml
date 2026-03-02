@@ -1,8 +1,12 @@
-name = "kb-sits-booking"
-compatibility_date = "2024-09-23"
+name = "kb-sits"
+compatibility_date = "2024-01-01"
 pages_build_output_dir = "."
 
-[[d1_databases]]
-binding = "DB"
-database_name = "kb-sits-db"
-database_id = "e501ba2e-9bbf-4f1d-80c5-fad567368933"
+[site]
+bucket = "."
+
+# Uncomment when D1 is configured
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "kb-sits-db"
+# database_id = "YOUR_DATABASE_ID_HERE"

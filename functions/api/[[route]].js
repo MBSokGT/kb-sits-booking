@@ -453,11 +453,23 @@ async function sendPasswordChangedEmail(env, requestUrl, payload) {
   }
 
   const appUrl = String(env.APP_BASE_URL || new URL(requestUrl).origin);
+  let methodLabel = 'через смену в профиле';
+  if (payload.method === 'forgot_reset') methodLabel = 'через сброс пароля';
+  if (payload.method === 'admin_reset') methodLabel = 'изменён администратором';
+
+  const includePassword = String(env.EMAIL_INCLUDE_PASSWORD || '0') === '1';
+  const adminPasswordLine = payload.method === 'admin_reset'
+    ? (includePassword && payload.newPassword
+        ? `Новый пароль: ${payload.newPassword}`
+        : 'Новый пароль задаётся администратором. Получите его по защищённому каналу.')
+    : null;
+
   const text = [
     `Здравствуйте, ${payload.name || 'пользователь'}!`,
     '',
     'Пароль от вашей учётной записи в КБ Ситс изменён.',
-    `Способ: ${payload.method === 'forgot_reset' ? 'через сброс пароля' : 'через смену в профиле'}`,
+    `Способ: ${methodLabel}`,
+    ...(adminPasswordLine ? [adminPasswordLine] : []),
     `Время (UTC): ${new Date().toISOString()}`,
     '',
     `Вход в систему: ${appUrl}`,
@@ -510,13 +522,49 @@ async function getAuthSession(env, request) {
   return { token, user };
 }
 
-async function getUsersMap(env) {
+async function getActiveSessionUserIds(env) {
+  const now = Date.now();
+  const activeUserIds = new Set();
+  const rows = await env.DB.prepare("SELECT k, v FROM kv_store WHERE k LIKE 'session:%'").all();
+  for (const row of (rows?.results || [])) {
+    const payload = parseJsonSafe(row.v, null);
+    const userId = String(payload?.userId || '').trim();
+    const expiresAt = payload?.expiresAt ? Date.parse(payload.expiresAt) : NaN;
+    if (!userId || !Number.isFinite(expiresAt) || expiresAt <= now) continue;
+    activeUserIds.add(userId);
+  }
+  return activeUserIds;
+}
+
+async function revokeUserSessions(env, userId, keepToken = '') {
+  const targetId = String(userId || '').trim();
+  if (!targetId) return 0;
+  const keepKey = keepToken ? sessionKey(keepToken) : '';
+  const rows = await env.DB.prepare("SELECT k, v FROM kv_store WHERE k LIKE 'session:%'").all();
+  let removed = 0;
+  for (const row of (rows?.results || [])) {
+    if (!row?.k || row.k === keepKey) continue;
+    const payload = parseJsonSafe(row.v, null);
+    if (String(payload?.userId || '').trim() !== targetId) continue;
+    await env.DB.prepare('DELETE FROM kv_store WHERE k = ?').bind(row.k).run();
+    removed++;
+  }
+  return removed;
+}
+
+async function getUsersMap(env, options = {}) {
   const { results } = await env.DB.prepare(
     'SELECT id, email, name, department, role FROM users ORDER BY role DESC, name'
   ).all();
+  const withSessionActive = !!options.withSessionActive;
+  const activeUserIds = withSessionActive ? await getActiveSessionUserIds(env) : null;
+  const list = (results || []).map(u => ({
+    ...u,
+    ...(withSessionActive ? { sessionActive: activeUserIds.has(u.id) } : {}),
+  }));
   const map = new Map();
-  for (const u of (results || [])) map.set(u.id, u);
-  return { list: results || [], map };
+  for (const u of list) map.set(u.id, u);
+  return { list, map };
 }
 
 async function getTargetUser(env, userId) {
@@ -847,7 +895,7 @@ export async function onRequest(context) {
 
     /* ── GET /users (auth) ────────────────────────────── */
     if (path === '/users' && method === 'GET') {
-      const { list } = await getUsersMap(env);
+      const { list } = await getUsersMap(env, { withSessionActive: auth.user.role === 'admin' });
       let users = [];
       if (auth.user.role === 'admin') {
         users = list;
@@ -913,8 +961,56 @@ export async function onRequest(context) {
       if (!target) return reply({ error: 'Пользователь не найден' }, 404);
       await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(roleClean, userId).run();
 
-      const { list } = await getUsersMap(env);
+      const { list } = await getUsersMap(env, { withSessionActive: true });
       return reply({ ok: true, users: list });
+    }
+
+    /* ── POST /users/department (admin) ───────────────── */
+    if (path === '/users/department' && method === 'POST') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const { id = '', department = '' } = await request.json();
+      const userId = String(id).trim();
+      const departmentClean = String(department).trim();
+      if (!userId || !departmentClean) return reply({ error: 'Укажите пользователя и отдел' }, 400);
+
+      const target = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(userId).first();
+      if (!target) return reply({ error: 'Пользователь не найден' }, 404);
+
+      await env.DB.prepare('UPDATE users SET department = ? WHERE id = ?').bind(departmentClean, userId).run();
+      const { list } = await getUsersMap(env, { withSessionActive: true });
+      return reply({ ok: true, users: list });
+    }
+
+    /* ── POST /users/password (admin) ─────────────────── */
+    if (path === '/users/password' && method === 'POST') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const { id = '', newPassword = '', sendNotifyEmail = true } = await request.json();
+      const userId = String(id).trim();
+      const pass = String(newPassword);
+      if (!userId) return reply({ error: 'Не указан пользователь' }, 400);
+      if (!pass || pass.length < 6) return reply({ error: 'Пароль минимум 6 символов' }, 400);
+
+      const target = await env.DB.prepare('SELECT id, email, name FROM users WHERE id = ?').bind(userId).first();
+      if (!target) return reply({ error: 'Пользователь не найден' }, 404);
+
+      const passwordHash = await hashPassword(pass);
+      await env.DB.prepare('UPDATE users SET password = ? WHERE id = ?').bind(passwordHash, userId).run();
+      const keepToken = sameId(userId, auth.user.id) ? auth.token : '';
+      const revokedSessions = await revokeUserSessions(env, userId, keepToken);
+
+      let mail = { sent: false, skipped: true, reason: 'disabled_by_request' };
+      if (sendNotifyEmail !== false) {
+        const sent = await sendPasswordChangedEmail(env, request.url, {
+          email: target.email || '',
+          name: target.name || '',
+          method: 'admin_reset',
+          newPassword: pass,
+        });
+        mail = { sent: !!sent.ok, skipped: !!sent.skipped, reason: sent.reason || null };
+      }
+
+      const { list } = await getUsersMap(env, { withSessionActive: true });
+      return reply({ ok: true, users: list, mail, revokedSessions });
     }
 
     /* ── POST /users/delete (admin) ───────────────────── */
@@ -946,8 +1042,9 @@ export async function onRequest(context) {
         return reply({ error: bookingResult.error || 'Не удалось обновить бронирования' }, bookingResult.status || 400);
       }
 
+      await revokeUserSessions(env, userId);
       await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId).run();
-      const { list } = await getUsersMap(env);
+      const { list } = await getUsersMap(env, { withSessionActive: true });
       return reply({ ok: true, users: list, bookings: bookingResult.bookings });
     }
 
