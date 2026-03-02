@@ -245,6 +245,8 @@ let displayMode   = 'map';     // 'map' | 'list'
 let currentView   = 'map';
 let expiryTimer   = null;
 let bookingForUserId = null;
+let calendarSinglePick = false;
+let selectedMyBookingIds = new Set();
 
 // Editor state
 let editorCoworkingId = null;
@@ -757,6 +759,18 @@ function isRangeDayAllowed(dateObj) {
 function calDayClick(ds, evt) {
   if (!isDateSelectable(ds)) return;
 
+  if (calendarSinglePick) {
+    selDates = [ds];
+    calAnchorDate = ds;
+    renderCalendar();
+    renderStats();
+    renderMiniBookings();
+    if (currentView === 'map') renderMapView();
+    updateRangeHint();
+    closeCalendar();
+    return;
+  }
+
   // Shift+click: quickly add a long range from anchor date.
   if (evt?.shiftKey && selDates.length) {
     const anchor = calAnchorDate || selDates[selDates.length - 1];
@@ -854,15 +868,32 @@ function resetSelectedRange() {
   if (currentView === 'map') renderMapView();
 }
 
-function openCalendar() {
+function openCalendar(singlePick = false) {
+  calendarSinglePick = !!singlePick;
+  const titleEl = document.getElementById('cal-popup-title');
+  const hintEl = document.getElementById('cal-hint-box');
+  if (titleEl) titleEl.textContent = calendarSinglePick ? 'Выбор дня' : 'Выбор дат';
+  if (hintEl) hintEl.style.display = calendarSinglePick ? 'none' : '';
+  renderCalendar();
   document.getElementById('cal-overlay').classList.add('active');
   document.getElementById('cal-popup').classList.add('active');
+  renderCalendarSlotControls();
   document.addEventListener('keydown', _calEscHandler);
+}
+
+function openCalendarForMapDate() {
+  const base = selDates[0] || fmtDate(new Date());
+  const d = new Date(base + 'T12:00:00');
+  calViewYear = d.getFullYear();
+  calViewMonth = d.getMonth();
+  renderCalendar();
+  openCalendar(true);
 }
 
 function closeCalendar() {
   document.getElementById('cal-overlay').classList.remove('active');
   document.getElementById('cal-popup').classList.remove('active');
+  calendarSinglePick = false;
   document.removeEventListener('keydown', _calEscHandler);
 }
 
@@ -1007,9 +1038,45 @@ function renderSlots() {
   document.getElementById('custom-time-picker').style.display = slotId === 'custom' ? '' : 'none';
 }
 
+function renderCalendarSlotControls() {
+  const sel = document.getElementById('cal-slot-select');
+  if (!sel) return;
+  sel.value = slotId;
+  const customWrap = document.getElementById('cal-slot-custom');
+  if (customWrap) customWrap.style.display = slotId === 'custom' ? '' : 'none';
+  const fromEl = document.getElementById('cal-ct-from');
+  const toEl = document.getElementById('cal-ct-to');
+  if (fromEl) fromEl.value = customFrom;
+  if (toEl) toEl.value = customTo;
+}
+
+function onCalendarSlotSelect(id) {
+  selectSlot(id);
+  renderCalendarSlotControls();
+}
+
+function applyCalendarCustomTime() {
+  const f = document.getElementById('cal-ct-from')?.value || '';
+  const t = document.getElementById('cal-ct-to')?.value || '';
+  if (!f || !t) return toast('Укажите оба времени', 't-red', '✕');
+  if (f >= t) return toast('Время конца должно быть позже времени начала', 't-red', '✕');
+  const fMin = timeToMinutes(f);
+  const tMin = timeToMinutes(t);
+  if (tMin - fMin < 30) return toast('Минимальная длительность 30 минут', 't-red', '✕');
+  customFrom = f;
+  customTo = t;
+  slotId = 'custom';
+  renderSlots();
+  renderCalendarSlotControls();
+  renderStats();
+  if (currentView === 'map') renderMapView();
+  updateSlotBadge();
+}
+
 function selectSlot(id) {
   slotId = id;
   renderSlots();
+  renderCalendarSlotControls();
   renderStats();
   if (currentView === 'map') renderMapView();
   updateSlotBadge();
@@ -1025,6 +1092,7 @@ function applyCustomTime() {
   if (tMin - fMin < 30) return toast('Минимальная длительность 30 минут', 't-red', '✕');
   customFrom = f; customTo = t;
   renderSlots();
+  renderCalendarSlotControls();
   renderStats();
   if (currentView === 'map') renderMapView();
   updateSlotBadge();
@@ -1496,9 +1564,78 @@ async function cancelBooking(id) {
   if (!r.ok) return toast(data.error || 'Ошибка отмены', 't-red', '✕');
 
   saveBookings(Array.isArray(data.bookings) ? data.bookings : []);
+  selectedMyBookingIds.delete(id);
   toast('Бронирование отменено', '', '✓');
   renderCalendar(); renderStats(); renderMiniBookings();
   if (currentView === 'map') renderMapView();
+  if (currentView === 'mybookings') renderMyBookingsView();
+  if (currentView === 'team') renderTeamView();
+  if (currentView === 'admin') renderAdminView();
+  if (currentView === 'cabinet') renderCabinetView();
+}
+
+function toggleMyBookingSelection(id, checked) {
+  if (checked) selectedMyBookingIds.add(id);
+  else selectedMyBookingIds.delete(id);
+  if (currentView === 'mybookings') renderMyBookingsView();
+}
+
+function toggleMyBookingsSelectAll(checked) {
+  const mine = getActiveBookings(getBookings()).filter(b => isMineBooking(b) && canCancelBooking(b));
+  const ids = new Set(mine.map(b => b.id));
+  if (checked) {
+    ids.forEach(id => selectedMyBookingIds.add(id));
+  } else {
+    ids.forEach(id => selectedMyBookingIds.delete(id));
+  }
+  if (currentView === 'mybookings') renderMyBookingsView();
+}
+
+async function cancelSelectedMyBookings() {
+  const ids = [...selectedMyBookingIds];
+  if (!ids.length) return toast('Не выбраны брони для отмены', 't-amber', '!');
+  if (!confirm(`Отменить выбранные брони: ${ids.length}?`)) return;
+
+  let cancelled = 0;
+  let failed = 0;
+  for (const id of ids) {
+    const bk = getBookings().find(b => b.id === id);
+    if (!bk || !canCancelBooking(bk)) {
+      selectedMyBookingIds.delete(id);
+      failed++;
+      continue;
+    }
+    const r = await apiFetch('/api/bookings/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (r.status === 401) return requireRelogin();
+    const data = await r.json();
+    if (!r.ok) {
+      failed++;
+      continue;
+    }
+    if (Array.isArray(data.bookings)) saveBookings(data.bookings);
+    selectedMyBookingIds.delete(id);
+    cancelled++;
+  }
+
+  if (cancelled > 0) {
+    toast(
+      failed > 0 ? `Отменено: ${cancelled}, ошибок: ${failed}` : `Отменено бронирований: ${cancelled}`,
+      failed > 0 ? 't-amber' : 't-green',
+      failed > 0 ? '!' : '✓'
+    );
+  } else {
+    toast('Не удалось отменить выбранные брони', 't-red', '✕');
+  }
+
+  renderCalendar();
+  renderStats();
+  renderMiniBookings();
+  if (currentView === 'map') renderMapView();
+  if (currentView === 'mybookings') renderMyBookingsView();
   if (currentView === 'team') renderTeamView();
   if (currentView === 'admin') renderAdminView();
   if (currentView === 'cabinet') renderCabinetView();
@@ -1581,6 +1718,10 @@ function renderMyBookingsView() {
   const mine   = getActiveBookings(getBookings()).filter(b=>isMineBooking(b))
                               .sort((a,b)=>a.date.localeCompare(b.date));
   const spaces = getSpaces(); const floors = getFloors();
+  const cancelableIds = new Set(mine.filter(b => canCancelBooking(b)).map(b => b.id));
+  selectedMyBookingIds = new Set([...selectedMyBookingIds].filter(id => cancelableIds.has(id)));
+  const selectedCount = [...selectedMyBookingIds].filter(id => cancelableIds.has(id)).length;
+  const allSelected = cancelableIds.size > 0 && selectedCount === cancelableIds.size;
 
   el.innerHTML = `<div class="view-area">
     <div>
@@ -1591,18 +1732,36 @@ function renderMyBookingsView() {
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>
       </svg><p>Нет активных бронирований</p></div>` :
-    `<div class="card"><div style="padding:0"><table class="data-table">
-      <thead><tr><th>Место</th><th>Этаж</th><th>Дата</th><th>Время</th><th>Истекает</th><th></th></tr></thead>
+    `<div class="card">
+      <div style="padding:10px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink2);font-weight:600;cursor:pointer">
+          <input type="checkbox" ${allSelected ? 'checked' : ''} ${cancelableIds.size ? '' : 'disabled'}
+            onchange="toggleMyBookingsSelectAll(this.checked)">
+          Выбрать все
+        </label>
+        <button class="btn btn-danger btn-sm" onclick="cancelSelectedMyBookings()"
+          ${selectedCount ? '' : 'disabled'}
+          style="${selectedCount ? '' : 'opacity:.45;pointer-events:none'}">
+          Отменить выбранные (${selectedCount})
+        </button>
+      </div>
+      <div style="padding:0"><table class="data-table">
+      <thead><tr><th style="width:36px"></th><th>Место</th><th>Этаж</th><th>Дата</th><th>Время</th><th>Истекает</th><th></th></tr></thead>
       <tbody>${mine.map(b=>{
         const sp = spaces.find(s=>s.id===b.spaceId);
         const fl = floors.find(f=>f.id===sp?.floorId);
+        const canCancel = canCancelBooking(b);
+        const checked = selectedMyBookingIds.has(b.id) ? 'checked' : '';
         return `<tr>
+          <td style="text-align:center">
+            ${canCancel ? `<input type="checkbox" ${checked} onchange="toggleMyBookingSelection('${b.id}', this.checked)">` : ''}
+          </td>
           <td><strong>${escapeHtml(sp?.label||'?')}</strong></td>
           <td>${escapeHtml(fl?.name||'?')}</td>
           <td>${fmtHuman(b.date)}</td>
           <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
           <td style="font-size:12px;color:var(--ink3)">${b.expiresAt}</td>
-          <td>${canCancelBooking(b) ? `<button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}')">Отменить</button>` : '<span style="color:var(--ink4)">—</span>'}</td>
+          <td>${canCancel ? `<button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}')">Отменить</button>` : '<span style="color:var(--ink4)">—</span>'}</td>
         </tr>`;
       }).join('')}
       </tbody></table></div></div>`}

@@ -151,7 +151,7 @@
           </div>
           <div class="map-day-nav">
             <button class="map-day-btn" type="button" onclick="shiftSelectedDate(-1)" aria-label="Предыдущий день">&lt;</button>
-            <button class="map-day-current" type="button" onclick="jumpToTodayDate()" title="Клик: перейти на сегодня">
+            <button class="map-day-current" type="button" onclick="openCalendarForMapDate()" title="Клик: выбрать день в календаре">
               <span id="map-day-label">—</span>
             </button>
             <button class="map-day-btn" type="button" onclick="shiftSelectedDate(1)" aria-label="Следующий день">&gt;</button>
@@ -236,7 +236,7 @@
 <div class="cal-overlay" id="cal-overlay" onclick="closeCalendar()"></div>
 <div class="cal-popup" id="cal-popup">
   <div class="cal-popup-head">
-    <span class="cal-popup-title">Выбор дат</span>
+    <span class="cal-popup-title" id="cal-popup-title">Выбор дат</span>
     <button class="cal-popup-close" onclick="closeCalendar()">✕</button>
   </div>
   <div class="cal-popup-body">
@@ -250,7 +250,7 @@
     </div>
     <div class="cal-grid" id="cal-grid"></div>
     <div class="cal-range-hint" id="cal-range-hint"></div>
-    <div class="cal-hint-box">
+    <div class="cal-hint-box" id="cal-hint-box">
       <div class="cal-hint-row"><span class="cal-hint-icon">👆</span><span>Клик по дню — выбрать или убрать дату</span></div>
       <div class="cal-hint-row"><span class="cal-hint-icon">⇧</span><span>Shift + клик — выбрать диапазон дат</span></div>
     </div>
@@ -264,6 +264,24 @@
           <input type="checkbox" id="opt-saturday" onchange="toggleSaturdayMode(this.checked)">
           <span class="cal-toggle-label">Рабочие субботы</span>
         </label>
+      </div>
+    </div>
+    <div class="cal-slot-box">
+      <div class="cal-slot-title">Временной слот для просмотра</div>
+      <select class="cal-slot-select" id="cal-slot-select" onchange="onCalendarSlotSelect(this.value)">
+        <option value="morning">Утро (09:00–13:00)</option>
+        <option value="afternoon">День (13:00–17:00)</option>
+        <option value="evening">Вечер (17:00–21:00)</option>
+        <option value="full">Весь день (09:00–21:00)</option>
+        <option value="custom">Своё время</option>
+      </select>
+      <div class="cal-slot-custom" id="cal-slot-custom" style="display:none">
+        <div class="custom-time">
+          <input type="time" id="cal-ct-from" value="09:00">
+          <span style="display:flex;align-items:center;color:var(--ink3);font-size:13px">—</span>
+          <input type="time" id="cal-ct-to" value="18:00">
+          <button class="custom-apply" onclick="applyCalendarCustomTime()">OK</button>
+        </div>
       </div>
     </div>
   </div>
