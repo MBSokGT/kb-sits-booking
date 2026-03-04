@@ -277,12 +277,6 @@ function normalizeRole(role, fallback = 'user') {
   return ['user', 'manager', 'admin'].includes(role) ? role : fallback;
 }
 
-function roleLabelRu(role) {
-  if (role === 'admin') return 'Администратор';
-  if (role === 'manager') return 'Руководитель';
-  return 'Сотрудник';
-}
-
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email));
 }
@@ -345,142 +339,6 @@ async function checkRateLimit(env, key, limit, windowSec) {
   ).bind(key, JSON.stringify({ count, resetAt })).run();
 
   return { ok: true, retryAfterSec: 0 };
-}
-
-async function sha256Hex(text) {
-  const bytes = new TextEncoder().encode(String(text));
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-async function sendResendEmail(env, payload) {
-  const apiKey = String(env.RESEND_API_KEY || '').trim();
-  const from = String(env.EMAIL_FROM || '').trim();
-  if (!apiKey || !from) {
-    return { ok: false, skipped: true, reason: 'missing_email_config' };
-  }
-
-  try {
-    const resp = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from,
-        to: [payload.to],
-        subject: payload.subject,
-        text: payload.text,
-      }),
-    });
-
-    if (!resp.ok) {
-      const body = await resp.text();
-      console.error('[MAIL] resend failed', resp.status, body);
-      return { ok: false, skipped: false, reason: `resend_${resp.status}` };
-    }
-
-    return { ok: true, skipped: false };
-  } catch (err) {
-    console.error('[MAIL] resend exception', err);
-    return { ok: false, skipped: false, reason: 'resend_exception' };
-  }
-}
-
-async function sendAccountCreatedEmail(env, requestUrl, payload) {
-  const provider = String(env.EMAIL_PROVIDER || 'resend').trim().toLowerCase();
-  if (provider !== 'resend') {
-    return { ok: false, skipped: true, reason: 'provider_not_supported' };
-  }
-
-  const appUrl = String(env.APP_BASE_URL || new URL(requestUrl).origin);
-  const includePassword = String(env.EMAIL_INCLUDE_PASSWORD || '0') === '1';
-  const passwordLine = includePassword
-    ? `Пароль: ${payload.password}`
-    : 'Пароль выдаёт администратор по защищённому каналу.';
-
-  const text = [
-    `Здравствуйте, ${payload.name}!`,
-    '',
-    'Для вас создан аккаунт в системе бронирования КБ Ситс.',
-    `Логин: ${payload.email}`,
-    passwordLine,
-    `Роль: ${roleLabelRu(payload.role)}`,
-    `Отдел: ${payload.department}`,
-    '',
-    `Вход в систему: ${appUrl}`,
-    '',
-    `Аккаунт создан администратором: ${payload.createdBy}`,
-  ].join('\n');
-
-  return sendResendEmail(env, {
-    to: payload.email,
-    subject: 'Доступ к сервису КБ Ситс',
-    text,
-  });
-}
-
-async function sendPasswordResetCodeEmail(env, requestUrl, payload) {
-  const provider = String(env.EMAIL_PROVIDER || 'resend').trim().toLowerCase();
-  if (provider !== 'resend') {
-    return { ok: false, skipped: true, reason: 'provider_not_supported' };
-  }
-
-  const appUrl = String(env.APP_BASE_URL || new URL(requestUrl).origin);
-  const text = [
-    `Здравствуйте, ${payload.name || 'пользователь'}!`,
-    '',
-    'Вы запросили сброс пароля в системе КБ Ситс.',
-    `Код сброса: ${payload.token}`,
-    `Код действует до: ${payload.expiresLabel}`,
-    '',
-    `Откройте сервис: ${appUrl}`,
-    'Если это были не вы, просто проигнорируйте письмо.',
-  ].join('\n');
-
-  return sendResendEmail(env, {
-    to: payload.email,
-    subject: 'Код сброса пароля — КБ Ситс',
-    text,
-  });
-}
-
-async function sendPasswordChangedEmail(env, requestUrl, payload) {
-  const provider = String(env.EMAIL_PROVIDER || 'resend').trim().toLowerCase();
-  if (provider !== 'resend') {
-    return { ok: false, skipped: true, reason: 'provider_not_supported' };
-  }
-
-  const appUrl = String(env.APP_BASE_URL || new URL(requestUrl).origin);
-  let methodLabel = 'через смену в профиле';
-  if (payload.method === 'forgot_reset') methodLabel = 'через сброс пароля';
-  if (payload.method === 'admin_reset') methodLabel = 'изменён администратором';
-
-  const includePassword = String(env.EMAIL_INCLUDE_PASSWORD || '0') === '1';
-  const adminPasswordLine = payload.method === 'admin_reset'
-    ? (includePassword && payload.newPassword
-        ? `Новый пароль: ${payload.newPassword}`
-        : 'Новый пароль задаётся администратором. Получите его по защищённому каналу.')
-    : null;
-
-  const text = [
-    `Здравствуйте, ${payload.name || 'пользователь'}!`,
-    '',
-    'Пароль от вашей учётной записи в КБ Ситс изменён.',
-    `Способ: ${methodLabel}`,
-    ...(adminPasswordLine ? [adminPasswordLine] : []),
-    `Время (UTC): ${new Date().toISOString()}`,
-    '',
-    `Вход в систему: ${appUrl}`,
-    'Если это сделали не вы, срочно обратитесь к администратору.',
-  ].join('\n');
-
-  return sendResendEmail(env, {
-    to: payload.email,
-    subject: 'Пароль изменён — КБ Ситс',
-    text,
-  });
 }
 
 async function createSession(env, userId) {
@@ -765,93 +623,18 @@ export async function onRequest(context) {
 
     /* ── POST /auth/forgot-password (public) ──────────── */
     if (path === '/auth/forgot-password' && method === 'POST') {
-      const { email = '' } = await request.json();
-      const emailClean = email.trim().toLowerCase();
-      const ip = getClientIp(request);
-      const forgotLimit = await checkRateLimit(env, `rl:auth:forgot:${ip}`, 6, 60 * 60);
-      if (!forgotLimit.ok) {
-        return reply(
-          { error: 'Слишком много запросов на сброс. Повторите позже.' },
-          429,
-          { 'Retry-After': String(forgotLimit.retryAfterSec) }
-        );
-      }
-      const row = await env.DB.prepare('SELECT id, name, email FROM users WHERE email = ?').bind(emailClean).first();
-      if (!row) return reply({ ok: true });
-
-      const token = (Math.random().toString(36).slice(2, 6) + Math.random().toString(36).slice(2, 6)).toUpperCase();
-      const tokenHash = await sha256Hex(`${token}|${emailClean}|${env.RESET_TOKEN_PEPPER || ''}`);
-      const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-
-      await env.DB.prepare(
-        "INSERT OR REPLACE INTO kv_store (k, v, updated_at) VALUES (?, ?, datetime('now'))"
-      ).bind('reset:' + emailClean, JSON.stringify({ tokenHash, expires })).run();
-
-      const mail = await sendPasswordResetCodeEmail(env, request.url, {
-        email: row.email || emailClean,
-        name: row.name || '',
-        token,
-        expiresLabel: expires.replace('T', ' ').slice(0, 16) + ' UTC',
-      });
-      if (!mail.ok && !mail.skipped) {
-        console.error('[MAIL] forgot-password email not sent', mail.reason || 'unknown');
-      }
-
-      // For production do NOT expose token in API response.
-      if (env.RESET_DEBUG === '1') return reply({ ok: true, token });
-      return reply({ ok: true });
+      return reply(
+        { error: 'Восстановление пароля по email отключено. Обратитесь к администратору.' },
+        403
+      );
     }
 
     /* ── POST /auth/reset-password (public) ───────────── */
     if (path === '/auth/reset-password' && method === 'POST') {
-      const { email = '', token = '', newPassword = '' } = await request.json();
-      const ip = getClientIp(request);
-      const resetLimit = await checkRateLimit(env, `rl:auth:reset:${ip}`, 12, 60 * 60);
-      if (!resetLimit.ok) {
-        return reply(
-          { error: 'Слишком много попыток сброса. Повторите позже.' },
-          429,
-          { 'Retry-After': String(resetLimit.retryAfterSec) }
-        );
-      }
-      if (!newPassword || newPassword.length < 6) {
-        return reply({ error: 'Пароль минимум 6 символов' }, 400);
-      }
-
-      const emailClean = email.trim().toLowerCase();
-      const kvRow = await env.DB.prepare('SELECT v FROM kv_store WHERE k = ?').bind('reset:' + emailClean).first();
-      if (!kvRow) return reply({ error: 'Код сброса не найден или уже использован' }, 400);
-
-      const payload = parseJsonSafe(kvRow.v, null);
-      if (!payload?.tokenHash || !payload?.expires) {
-        return reply({ error: 'Код сброса повреждён' }, 400);
-      }
-
-      if (new Date() > new Date(payload.expires)) {
-        return reply({ error: 'Код истёк — запросите новый' }, 400);
-      }
-
-      const tokenHash = await sha256Hex(`${String(token).trim().toUpperCase()}|${emailClean}|${env.RESET_TOKEN_PEPPER || ''}`);
-      if (tokenHash !== payload.tokenHash) {
-        return reply({ error: 'Неверный код сброса' }, 400);
-      }
-
-      const userRow = await env.DB.prepare('SELECT id, email, name FROM users WHERE email = ?').bind(emailClean).first();
-      if (!userRow) return reply({ error: 'Пользователь не найден' }, 404);
-
-      const passwordHash = await hashPassword(newPassword);
-      await env.DB.prepare('UPDATE users SET password = ? WHERE id = ?').bind(passwordHash, userRow.id).run();
-      await env.DB.prepare('DELETE FROM kv_store WHERE k = ?').bind('reset:' + emailClean).run();
-
-      const mail = await sendPasswordChangedEmail(env, request.url, {
-        email: userRow.email || emailClean,
-        name: userRow.name || '',
-        method: 'forgot_reset',
-      });
-      if (!mail.ok && !mail.skipped) {
-        console.error('[MAIL] reset-password change notice not sent', mail.reason || 'unknown');
-      }
-      return reply({ ok: true });
+      return reply(
+        { error: 'Сброс пароля через email отключён. Обратитесь к администратору.' },
+        403
+      );
     }
 
     /* ── POST /auth/change-password (auth) ────────────── */
@@ -877,15 +660,6 @@ export async function onRequest(context) {
 
       const passwordHash = await hashPassword(newPassword);
       await env.DB.prepare('UPDATE users SET password = ? WHERE id = ?').bind(passwordHash, row.id).run();
-
-      const mail = await sendPasswordChangedEmail(env, request.url, {
-        email: row.email || emailClean,
-        name: row.name || '',
-        method: 'change_password',
-      });
-      if (!mail.ok && !mail.skipped) {
-        console.error('[MAIL] change-password notice not sent', mail.reason || 'unknown');
-      }
       return reply({ ok: true });
     }
 
@@ -910,7 +684,7 @@ export async function onRequest(context) {
     /* ── POST /users/create (admin) ───────────────────── */
     if (path === '/users/create' && method === 'POST') {
       if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
-      const { name = '', email = '', password = '', department = '', role = 'user', sendInviteEmail = true } = await request.json();
+      const { name = '', email = '', password = '', department = '', role = 'user' } = await request.json();
       const nameClean = String(name).trim();
       const emailClean = String(email).trim().toLowerCase();
       const departmentClean = String(department).trim();
@@ -931,21 +705,8 @@ export async function onRequest(context) {
         'INSERT INTO users (id, email, password, name, department, role) VALUES (?, ?, ?, ?, ?, ?)'
       ).bind(id, emailClean, passwordHash, nameClean, departmentClean, roleClean).run();
 
-      let mail = { sent: false, skipped: true, reason: 'disabled_by_request' };
-      if (sendInviteEmail !== false) {
-        const sent = await sendAccountCreatedEmail(env, request.url, {
-          name: nameClean,
-          email: emailClean,
-          password: String(password),
-          department: departmentClean,
-          role: roleClean,
-          createdBy: auth.user.name || auth.user.email || 'admin',
-        });
-        mail = { sent: !!sent.ok, skipped: !!sent.skipped, reason: sent.reason || null };
-      }
-
       const { list } = await getUsersMap(env);
-      return reply({ ok: true, users: list, mail });
+      return reply({ ok: true, users: list });
     }
 
     /* ── POST /users/role (admin) ─────────────────────── */
@@ -984,13 +745,13 @@ export async function onRequest(context) {
     /* ── POST /users/password (admin) ─────────────────── */
     if (path === '/users/password' && method === 'POST') {
       if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
-      const { id = '', newPassword = '', sendNotifyEmail = true } = await request.json();
+      const { id = '', newPassword = '' } = await request.json();
       const userId = String(id).trim();
       const pass = String(newPassword);
       if (!userId) return reply({ error: 'Не указан пользователь' }, 400);
       if (!pass || pass.length < 6) return reply({ error: 'Пароль минимум 6 символов' }, 400);
 
-      const target = await env.DB.prepare('SELECT id, email, name FROM users WHERE id = ?').bind(userId).first();
+      const target = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(userId).first();
       if (!target) return reply({ error: 'Пользователь не найден' }, 404);
 
       const passwordHash = await hashPassword(pass);
@@ -998,19 +759,8 @@ export async function onRequest(context) {
       const keepToken = String(userId) === String(auth.user.id) ? auth.token : '';
       const revokedSessions = await revokeUserSessions(env, userId, keepToken);
 
-      let mail = { sent: false, skipped: true, reason: 'disabled_by_request' };
-      if (sendNotifyEmail !== false) {
-        const sent = await sendPasswordChangedEmail(env, request.url, {
-          email: target.email || '',
-          name: target.name || '',
-          method: 'admin_reset',
-          newPassword: pass,
-        });
-        mail = { sent: !!sent.ok, skipped: !!sent.skipped, reason: sent.reason || null };
-      }
-
       const { list } = await getUsersMap(env, { withSessionActive: true });
-      return reply({ ok: true, users: list, mail, revokedSessions });
+      return reply({ ok: true, users: list, revokedSessions });
     }
 
     /* ── POST /users/delete (admin) ───────────────────── */

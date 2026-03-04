@@ -2146,104 +2146,7 @@ async function doChangePassword() {
    FORGOT / RESET PASSWORD
 ═══════════════════════════════════════════════════════ */
 function showForgotPasswordModal() {
-  _fpRenderStep1();
-  document.getElementById('modal-overlay').classList.add('open');
-  requestAnimationFrame(() => { const i = document.getElementById('fp-email'); if(i) i.focus(); });
-}
-
-function _fpRenderStep1(prefillEmail) {
-  document.getElementById('modal-title').textContent = 'Восстановление пароля';
-  document.getElementById('modal-body').innerHTML = `
-    <p style="font-size:13px;color:var(--ink2);margin-bottom:1.1rem;line-height:1.5">
-      Введите email вашего аккаунта — получите код для сброса пароля.
-    </p>
-    <div class="field">
-      <label>Email</label>
-      <input type="email" id="fp-email" placeholder="you@company.ru" autocomplete="email"
-             value="${prefillEmail || ''}"
-             onkeydown="if(event.key==='Enter') doForgotPassword()">
-    </div>
-    <div id="fp-err" style="color:var(--red);font-size:13px;display:none"></div>`;
-  document.getElementById('modal-foot').innerHTML = `
-    <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
-    <button class="btn btn-primary" onclick="doForgotPassword()">Получить код →</button>`;
-}
-
-function _fpRenderStep2(email, prefillToken = '') {
-  document.getElementById('modal-title').textContent = 'Сброс пароля';
-  document.getElementById('modal-body').innerHTML = `
-    <div style="font-size:12px;color:var(--ink3);margin-bottom:.8rem">
-      Введите код сброса и новый пароль. Код действует 1 час.
-    </div>
-    <div class="field">
-      <label>Код сброса</label>
-      <input type="text" id="fp-code" autocomplete="one-time-code" placeholder="AB12CD34"
-             value="${escapeHtml(prefillToken)}">
-    </div>
-    <div class="field">
-      <label>Новый пароль <span style="color:var(--ink3);font-size:11px">(мин. 6 символов)</span></label>
-      <input type="password" id="fp-new" autocomplete="new-password" placeholder="••••••••">
-    </div>
-    <div class="field">
-      <label>Повторите пароль</label>
-      <input type="password" id="fp-confirm" autocomplete="new-password" placeholder="••••••••"
-             onkeydown="if(event.key==='Enter') doResetPassword('${email}')">
-    </div>
-    <div id="fp-err2" style="color:var(--red);font-size:13px;display:none"></div>`;
-  document.getElementById('modal-foot').innerHTML = `
-    <button class="btn btn-ghost" onclick="_fpRenderStep1('${email}')">← Назад</button>
-    <button class="btn btn-primary" onclick="doResetPassword('${email}')">Сменить пароль</button>`;
-  requestAnimationFrame(() => { const i = document.getElementById('fp-code'); if(i) i.focus(); });
-}
-
-async function doForgotPassword() {
-  const email  = (document.getElementById('fp-email')?.value || '').trim();
-  const errEl  = document.getElementById('fp-err');
-  const showE  = msg => { errEl.textContent = msg; errEl.style.display = 'block'; };
-  if (!email) return showE('Введите email');
-  const btn = document.querySelector('#modal-foot .btn-primary');
-  if (btn) { btn.disabled = true; btn.textContent = 'Загрузка…'; }
-  try {
-    const r = await fetch('/api/auth/forgot-password', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email })
-    });
-    const data = await r.json();
-    if (!r.ok) { if(btn){btn.disabled=false;btn.textContent='Получить код →';} return showE(data.error || 'Ошибка'); }
-    _fpRenderStep2(email, data.token || '');
-  } catch(e) {
-    if(btn){btn.disabled=false;btn.textContent='Получить код →';}
-    showE('Нет соединения с сервером');
-  }
-}
-
-async function doResetPassword(email) {
-  const token = (document.getElementById('fp-code')?.value || '').trim().toUpperCase();
-  const newPwd  = document.getElementById('fp-new')?.value || '';
-  const confirm = document.getElementById('fp-confirm')?.value || '';
-  const errEl   = document.getElementById('fp-err2');
-  const showE   = msg => { errEl.textContent = msg; errEl.style.display = 'block'; };
-  if (!token)             return showE('Введите код сброса');
-  if (!newPwd)             return showE('Введите новый пароль');
-  if (newPwd.length < 6)  return showE('Пароль минимум 6 символов');
-  if (newPwd !== confirm)  return showE('Пароли не совпадают');
-  const btn = document.querySelector('#modal-foot .btn-primary');
-  if (btn) { btn.disabled = true; btn.textContent = 'Сохранение…'; }
-  try {
-    const r = await fetch('/api/auth/reset-password', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, token, newPassword: newPwd })
-    });
-    const data = await r.json();
-    if (!r.ok) { if(btn){btn.disabled=false;btn.textContent='Сменить пароль';} return showE(data.error || 'Ошибка'); }
-    closeModal();
-    toast('Пароль изменён — войдите с новым паролем', '', '✓');
-  } catch(e) {
-    if(btn){btn.disabled=false;btn.textContent='Сменить пароль';}
-    showE('Нет соединения с сервером');
-  }
+  authErr('Восстановление пароля по email отключено. Обратитесь к администратору.');
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -2415,12 +2318,6 @@ function showAddUserModal() {
         <option value="admin">Администратор</option>
       </select>
     </div>
-    <div class="field">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-        <input type="checkbox" id="au-send-email" checked>
-        Отправить письмо с доступом
-      </label>
-    </div>
     <div id="au-err" style="display:none;color:var(--red);font-size:13px"></div>`;
   document.getElementById('modal-foot').innerHTML = `
     <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
@@ -2434,7 +2331,6 @@ async function createAdminUser() {
   const email = (document.getElementById('au-email')?.value || '').trim().toLowerCase();
   const password = document.getElementById('au-pass')?.value || '';
   const role = document.getElementById('au-role')?.value || 'user';
-  const sendInviteEmail = !!document.getElementById('au-send-email')?.checked;
   const err = document.getElementById('au-err');
   const showErr = (msg) => { if (err) { err.textContent = msg; err.style.display = 'block'; } };
   if (!name || !department || !email || !password) return showErr('Заполните все поля');
@@ -2443,21 +2339,14 @@ async function createAdminUser() {
   const r = await apiFetch('/api/users/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, department, email, password, role, sendInviteEmail }),
+    body: JSON.stringify({ name, department, email, password, role }),
   });
   if (r.status === 401) return requireRelogin();
   const data = await r.json();
   if (!r.ok) return showErr(data.error || 'Не удалось создать аккаунт');
   if (Array.isArray(data.users)) saveUsers(data.users);
   closeModal();
-  if (data?.mail?.sent) {
-    toast('Аккаунт создан, письмо отправлено', 't-green', '✓');
-  } else if (sendInviteEmail) {
-    const reason = data?.mail?.reason ? ` (${data.mail.reason})` : '';
-    toast(`Аккаунт создан, письмо не отправлено${reason}`, 't-amber', '!');
-  } else {
-    toast('Аккаунт создан', '', '✓');
-  }
+  toast('Аккаунт создан', 't-green', '✓');
   if (currentView === 'admin') renderAdminView();
 }
 

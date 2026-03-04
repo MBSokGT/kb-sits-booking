@@ -62,15 +62,6 @@ docker compose logs -f
 Безопасность:
 
 - `CORS_ORIGINS` — whitelist origin через запятую
-- `RESET_TOKEN_PEPPER` — секрет для токенов сброса пароля
-
-Почта (Resend):
-
-- `EMAIL_PROVIDER=resend`
-- `RESEND_API_KEY`
-- `EMAIL_FROM`
-- `APP_BASE_URL`
-- `EMAIL_INCLUDE_PASSWORD` (`0`/`1`)
 
 Первичный админ (рекомендуется на первом старте):
 
@@ -78,6 +69,11 @@ docker compose logs -f
 - `BOOTSTRAP_ADMIN_PASSWORD`
 - `BOOTSTRAP_ADMIN_NAME`
 - `BOOTSTRAP_ADMIN_DEPARTMENT`
+
+Примечание:
+
+- Email-рассылки и восстановление пароля по email отключены.
+- Сброс пароля выполняется администратором в разделе пользователей.
 
 ## Прод-деплой для `booking.cb.msk` (Ubuntu 24.04)
 
@@ -112,7 +108,6 @@ cp .env.example .env
 ```env
 HOST=127.0.0.1
 PORT=3000
-APP_BASE_URL=http://booking.cb.msk
 CORS_ORIGINS=http://booking.cb.msk
 # при HTTPS замените на https://booking.cb.msk
 ```
