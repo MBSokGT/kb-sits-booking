@@ -995,7 +995,7 @@ export async function onRequest(context) {
 
       const passwordHash = await hashPassword(pass);
       await env.DB.prepare('UPDATE users SET password = ? WHERE id = ?').bind(passwordHash, userId).run();
-      const keepToken = sameId(userId, auth.user.id) ? auth.token : '';
+      const keepToken = String(userId) === String(auth.user.id) ? auth.token : '';
       const revokedSessions = await revokeUserSessions(env, userId, keepToken);
 
       let mail = { sent: false, skipped: true, reason: 'disabled_by_request' };
