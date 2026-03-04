@@ -94,8 +94,7 @@
 - **База данных:** Cloudflare D1 (SQLite) — основная
 - **База данных:** Supabase (PostgreSQL) — схема есть, на случай миграции
 - **Хостинг:** Cloudflare Pages
-- **CI/CD:** GitHub → Cloudflare Pages (авто-деплой при push в main)
-- **Email:** Resend
+- **CI/CD:** GitHub → Cloudflare Pages
 
 ---
 
