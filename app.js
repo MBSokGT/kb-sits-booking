@@ -2302,7 +2302,6 @@ function showPasswordModal(uid) {
   
   document.getElementById('modal-overlay').classList.add('open');
 }
-}
 
 function showAddUserModal() {
   document.getElementById('modal-title').textContent = 'Новый аккаунт';
