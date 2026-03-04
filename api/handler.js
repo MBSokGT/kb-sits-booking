@@ -1,3 +1,5 @@
+import { Client as LdapClient } from 'ldapts';
+
 /**
  * КБ Ситс — API handler (catch-all)
  * Handles: /api/auth/*, /api/users, /api/kv/:key, /api/bookings*
@@ -19,6 +21,7 @@ const PASSWORD_HASH_ITERATIONS = 100000;
 const PASSWORD_SALT_BYTES = 16;
 const AUTH_COOKIE_NAME = 'ws_session';
 const AUTH_COOKIE_MAX_AGE_SEC = SESSION_TTL_HOURS * 60 * 60;
+const LDAP_EXTERNAL_PASSWORD_PREFIX = 'ldap_external$';
 
 const SAFE_KV_KEYS = new Set([
   'coworkings',
@@ -259,6 +262,7 @@ async function hashPassword(password) {
 async function verifyPassword(password, stored) {
   const saved = String(stored ?? '');
   if (!saved) return false;
+  if (isLdapExternalPassword(saved)) return false;
   if (!isHashedPassword(saved)) {
     return timingSafeEqual(password, saved);
   }
@@ -279,6 +283,217 @@ function normalizeRole(role, fallback = 'user') {
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email));
+}
+
+function isLdapExternalPassword(value) {
+  return typeof value === 'string' && value.startsWith(LDAP_EXTERNAL_PASSWORD_PREFIX);
+}
+
+function isLdapEnabled(env) {
+  return String(env.LDAP_ENABLED || '0').trim() === '1';
+}
+
+function parseBool(value, defaultValue = false) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return defaultValue;
+  return ['1', 'true', 'yes', 'on'].includes(normalized);
+}
+
+function normalizeLdapLogin(login) {
+  const raw = String(login || '').trim();
+  if (!raw) return '';
+  if (raw.includes('\\')) return raw.split('\\').pop().trim();
+  return raw;
+}
+
+function escapeLdapFilterValue(value) {
+  return String(value)
+    .replace(/\\/g, '\\5c')
+    .replace(/\*/g, '\\2a')
+    .replace(/\(/g, '\\28')
+    .replace(/\)/g, '\\29')
+    .replace(/\u0000/g, '\\00');
+}
+
+function ldapAttrFirstString(entry, key) {
+  const value = entry?.[key];
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === 'string' && item.trim()) return item.trim();
+      if (item && typeof item === 'object' && typeof item.toString === 'function') {
+        const text = item.toString();
+        if (text && text !== '[object Object]') return text.trim();
+      }
+    }
+    return '';
+  }
+  if (typeof value === 'string') return value.trim();
+  if (value && typeof value === 'object' && typeof value.toString === 'function') {
+    const text = value.toString();
+    if (text && text !== '[object Object]') return text.trim();
+  }
+  return '';
+}
+
+function ldapAttrStringArray(entry, key) {
+  const value = entry?.[key];
+  if (Array.isArray(value)) {
+    return value
+      .map(v => (typeof v === 'string' ? v.trim() : String(v || '').trim()))
+      .filter(Boolean);
+  }
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : [];
+  return [];
+}
+
+function normalizeDn(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function mapRoleFromLdapGroups(groups, env) {
+  const adminGroupDn = normalizeDn(env.LDAP_ROLE_ADMIN_GROUP_DN || '');
+  const managerGroupDn = normalizeDn(env.LDAP_ROLE_MANAGER_GROUP_DN || '');
+  const normalizedGroups = new Set((groups || []).map(normalizeDn).filter(Boolean));
+
+  if (adminGroupDn && normalizedGroups.has(adminGroupDn)) return 'admin';
+  if (managerGroupDn && normalizedGroups.has(managerGroupDn)) return 'manager';
+  return 'user';
+}
+
+function buildFallbackLdapEmail(login, env) {
+  const candidate = normalizeLdapLogin(login).toLowerCase();
+  if (!candidate) return '';
+  if (candidate.includes('@')) return candidate;
+  const domain = String(env.LDAP_FALLBACK_EMAIL_DOMAIN || 'ldap.local').trim().toLowerCase() || 'ldap.local';
+  return `${candidate}@${domain}`;
+}
+
+function buildLdapUserFilter(env, login) {
+  const escaped = escapeLdapFilterValue(login);
+  const rawTemplate = String(
+    env.LDAP_USER_FILTER ||
+    '(|(sAMAccountName={{login}})(userPrincipalName={{login}})(mail={{login}}))'
+  ).trim();
+  return rawTemplate.includes('{{login}}')
+    ? rawTemplate.replaceAll('{{login}}', escaped)
+    : rawTemplate;
+}
+
+function createLdapClient(env) {
+  const url = String(env.LDAP_URL || '').trim();
+  const rejectUnauthorized = parseBool(env.LDAP_TLS_REJECT_UNAUTHORIZED, true);
+  return new LdapClient({
+    url,
+    timeout: Number(env.LDAP_TIMEOUT_MS || 5000),
+    connectTimeout: Number(env.LDAP_CONNECT_TIMEOUT_MS || 5000),
+    tlsOptions: { rejectUnauthorized },
+  });
+}
+
+async function upsertLdapUser(env, profile) {
+  const existing = await env.DB.prepare(
+    'SELECT id, password, role FROM users WHERE email = ?'
+  ).bind(profile.email).first();
+
+  const ldapMarkerPassword = `${LDAP_EXTERNAL_PASSWORD_PREFIX}${profile.externalId}`;
+  let userId = '';
+
+  if (existing?.id) {
+    userId = existing.id;
+    const keepLocalAdminRole = existing.role === 'admin' && !isLdapExternalPassword(existing.password);
+    const nextRole = keepLocalAdminRole ? 'admin' : profile.role;
+    const nextPassword = isLdapExternalPassword(existing.password) ? ldapMarkerPassword : existing.password;
+
+    await env.DB.prepare(
+      'UPDATE users SET name = ?, department = ?, role = ?, password = ? WHERE id = ?'
+    ).bind(profile.name, profile.department, nextRole, nextPassword, userId).run();
+  } else {
+    userId = `ldap_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+    await env.DB.prepare(
+      'INSERT INTO users (id, email, password, name, department, role) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(userId, profile.email, ldapMarkerPassword, profile.name, profile.department, profile.role).run();
+  }
+
+  return env.DB.prepare(
+    'SELECT id, email, name, department, role FROM users WHERE id = ?'
+  ).bind(userId).first();
+}
+
+async function tryLdapLogin(env, loginInput, password) {
+  if (!isLdapEnabled(env)) return null;
+  const ldapUrl = String(env.LDAP_URL || '').trim();
+  const ldapBaseDn = String(env.LDAP_BASE_DN || '').trim();
+  if (!ldapUrl || !ldapBaseDn) return null;
+
+  const login = normalizeLdapLogin(loginInput);
+  if (!login || !password) return { ok: false };
+
+  const serviceBindDn = String(env.LDAP_BIND_DN || '').trim();
+  const serviceBindPassword = String(env.LDAP_BIND_PASSWORD || '');
+  const searchFilter = buildLdapUserFilter(env, login);
+
+  const serviceClient = createLdapClient(env);
+  let entry = null;
+  try {
+    if (serviceBindDn) {
+      await serviceClient.bind(serviceBindDn, serviceBindPassword);
+    }
+    const { searchEntries } = await serviceClient.search(ldapBaseDn, {
+      scope: 'sub',
+      filter: searchFilter,
+      attributes: ['dn', 'distinguishedName', 'displayName', 'cn', 'mail', 'department', 'memberOf', 'userPrincipalName'],
+      sizeLimit: 2,
+    });
+    if (!Array.isArray(searchEntries) || searchEntries.length < 1) {
+      return { ok: false };
+    }
+    entry = searchEntries[0];
+  } catch (error) {
+    console.error('[LDAP] search failed', error);
+    return { ok: false };
+  } finally {
+    try { await serviceClient.unbind(); } catch {}
+  }
+
+  const userDn = ldapAttrFirstString(entry, 'dn') || ldapAttrFirstString(entry, 'distinguishedName');
+  if (!userDn) return { ok: false };
+
+  const userClient = createLdapClient(env);
+  try {
+    await userClient.bind(userDn, String(password));
+  } catch {
+    return { ok: false };
+  } finally {
+    try { await userClient.unbind(); } catch {}
+  }
+
+  const groups = ldapAttrStringArray(entry, 'memberOf');
+  const role = mapRoleFromLdapGroups(groups, env);
+  const email =
+    ldapAttrFirstString(entry, 'mail').toLowerCase() ||
+    ldapAttrFirstString(entry, 'userPrincipalName').toLowerCase() ||
+    buildFallbackLdapEmail(login, env);
+  if (!email) return { ok: false };
+
+  const name =
+    ldapAttrFirstString(entry, 'displayName') ||
+    ldapAttrFirstString(entry, 'cn') ||
+    login;
+  const department =
+    ldapAttrFirstString(entry, 'department') ||
+    String(env.LDAP_DEFAULT_DEPARTMENT || 'Домен');
+  const externalId = userDn.toLowerCase();
+
+  const user = await upsertLdapUser(env, {
+    email,
+    name,
+    department,
+    role,
+    externalId,
+  });
+  if (!user) return { ok: false };
+
+  return { ok: true, user };
 }
 
 function parseAllowedOrigins(env) {
@@ -572,8 +787,9 @@ export async function onRequest(context) {
 
     /* ── POST /auth/login (public) ────────────────────── */
     if (path === '/auth/login' && method === 'POST') {
-      const { email = '', password = '' } = await request.json();
-      const emailClean = email.trim().toLowerCase();
+      const { email = '', login = '', password = '' } = await request.json();
+      const loginRaw = String(login || email || '').trim();
+      const loginLocalEmail = loginRaw.toLowerCase();
       const ip = getClientIp(request);
       const loginLimit = await checkRateLimit(env, `rl:auth:login:${ip}`, 20, 15 * 60);
       if (!loginLimit.ok) {
@@ -583,15 +799,26 @@ export async function onRequest(context) {
           { 'Retry-After': String(loginLimit.retryAfterSec) }
         );
       }
+
+      const ldapResult = await tryLdapLogin(env, loginRaw, password);
+      if (ldapResult?.ok && ldapResult.user) {
+        const { token } = await createSession(env, ldapResult.user.id);
+        return reply(
+          { user: ldapResult.user },
+          200,
+          { 'Set-Cookie': buildSessionCookie(token) }
+        );
+      }
+
       const row = await env.DB.prepare(
         'SELECT id, email, name, department, role, password FROM users WHERE email = ?'
-      ).bind(emailClean).first();
+      ).bind(loginLocalEmail).first();
 
-      if (!row) return reply({ error: 'Неверный email или пароль' }, 401);
+      if (!row) return reply({ error: 'Неверный логин или пароль' }, 401);
       const ok = await verifyPassword(password, row.password);
-      if (!ok) return reply({ error: 'Неверный email или пароль' }, 401);
+      if (!ok) return reply({ error: 'Неверный логин или пароль' }, 401);
 
-      if (!isHashedPassword(row.password)) {
+      if (!isHashedPassword(row.password) && !isLdapExternalPassword(row.password)) {
         const upgraded = await hashPassword(password);
         await env.DB.prepare('UPDATE users SET password = ? WHERE id = ?').bind(upgraded, row.id).run();
       }
@@ -655,6 +882,9 @@ export async function onRequest(context) {
         'SELECT id, email, name, password FROM users WHERE email = ?'
       ).bind(emailClean).first();
       if (!row) return reply({ error: 'Пользователь не найден' }, 404);
+      if (isLdapExternalPassword(row.password)) {
+        return reply({ error: 'Для доменного аккаунта пароль меняется в Active Directory.' }, 400);
+      }
       const ok = await verifyPassword(oldPassword, row.password);
       if (!ok) return reply({ error: 'Неверный текущий пароль' }, 401);
 
@@ -718,8 +948,11 @@ export async function onRequest(context) {
       if (!userId || !roleClean) return reply({ error: 'Некорректные данные' }, 400);
       if (userId === auth.user.id) return reply({ error: 'Нельзя менять роль текущего администратора' }, 400);
 
-      const target = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(userId).first();
+      const target = await env.DB.prepare('SELECT id, password FROM users WHERE id = ?').bind(userId).first();
       if (!target) return reply({ error: 'Пользователь не найден' }, 404);
+      if (isLdapExternalPassword(target.password)) {
+        return reply({ error: 'Это доменный аккаунт. Сброс пароля выполняется в Active Directory.' }, 400);
+      }
       await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(roleClean, userId).run();
 
       const { list } = await getUsersMap(env, { withSessionActive: true });

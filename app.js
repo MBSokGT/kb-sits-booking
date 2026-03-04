@@ -389,7 +389,7 @@ function resetDemoData() {
 }
 
 async function doLogin() {
-  const email = document.getElementById('l-email').value.trim().toLowerCase();
+  const login = document.getElementById('l-email').value.trim();
   const pass  = document.getElementById('l-pass').value;
 
   try {
@@ -397,10 +397,10 @@ async function doLogin() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ email, password: pass })
+      body: JSON.stringify({ email: login, login, password: pass })
     });
     const data = await r.json();
-    if (!r.ok) { return authErr(data.error || 'Неверный email или пароль'); }
+    if (!r.ok) { return authErr(data.error || 'Неверный логин или пароль'); }
     if (!data?.user) return authErr('Ошибка авторизации');
     await onAuth(data.user, data.token || '');
   } catch(e) {

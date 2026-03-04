@@ -156,3 +156,46 @@ sudo ufw allow from 192.168.0.0/16 to any port 80 proto tcp
 sudo ufw enable
 sudo ufw status verbose
 ```
+
+## LDAP / Active Directory (для ИТ)
+
+В проекте есть опциональный вход через домен (LDAP/LDAPS). OAuth не нужен.
+
+### Что нужно от ИТ
+
+1. Доступ сервера до контроллера домена по `636/tcp` (LDAPS).
+2. Сервисная учётка AD с правом чтения пользователей/групп.
+3. `BASE DN` и DNs групп ролей:
+   - админ: `KB-Booking-Admins`
+   - руководитель: `KB-Booking-Managers`
+4. Корневой сертификат вашего AD (если используется внутренний CA).
+
+### Переменные `.env`
+
+```env
+LDAP_ENABLED=1
+LDAP_URL=ldaps://dc1.company.local:636
+LDAP_BASE_DN=DC=company,DC=local
+LDAP_BIND_DN=CN=svc_kb_booking,OU=Service Accounts,DC=company,DC=local
+LDAP_BIND_PASSWORD=...
+LDAP_USER_FILTER=(|(sAMAccountName={{login}})(userPrincipalName={{login}})(mail={{login}}))
+LDAP_ROLE_ADMIN_GROUP_DN=CN=KB-Booking-Admins,OU=Groups,DC=company,DC=local
+LDAP_ROLE_MANAGER_GROUP_DN=CN=KB-Booking-Managers,OU=Groups,DC=company,DC=local
+LDAP_DEFAULT_DEPARTMENT=Домен
+LDAP_FALLBACK_EMAIL_DOMAIN=company.local
+LDAP_TLS_REJECT_UNAUTHORIZED=1
+```
+
+### Логика входа
+
+1. Сервис ищет пользователя в AD по `LDAP_USER_FILTER`.
+2. Затем делает bind от имени найденного пользователя с введённым паролем.
+3. Роль в сервисе назначается по группам AD.
+4. Профиль автоматически создаётся/обновляется в локальной БД.
+5. Если LDAP не прошёл, остаётся fallback на локальные аккаунты (например, аварийный админ).
+
+### Важно
+
+- Для доменных аккаунтов смена/сброс пароля выполняются только в AD.
+- Саморегистрация отключена.
+- Turnstile captcha в проекте не используется.
