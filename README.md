@@ -63,14 +63,6 @@ docker compose logs -f
 - `CORS_ORIGINS` — whitelist origin через запятую
 - `RESET_TOKEN_PEPPER` — секрет для токенов сброса пароля
 
-Почта (Resend):
-
-- `EMAIL_PROVIDER=resend`
-- `RESEND_API_KEY`
-- `EMAIL_FROM`
-- `APP_BASE_URL`
-- `EMAIL_INCLUDE_PASSWORD` (`0`/`1`)
-
 Первичный админ (рекомендуется):
 
 - `BOOTSTRAP_ADMIN_EMAIL`
