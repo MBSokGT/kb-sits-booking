@@ -1,0 +1,12 @@
+node_modules
+data
+.env
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Keep build context small
+.git
+.gitignore
+.DS_Store
+*.log
