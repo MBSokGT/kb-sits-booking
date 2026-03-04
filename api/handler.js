@@ -68,12 +68,38 @@ function sessionKey(token) {
   return `session:${token}`;
 }
 
-function buildSessionCookie(token, maxAgeSec = AUTH_COOKIE_MAX_AGE_SEC) {
-  return `${AUTH_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSec}`;
+function parseEnvBool(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return null;
 }
 
-function clearSessionCookie() {
-  return `${AUTH_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+function shouldUseSecureCookie(request, env) {
+  const forced = parseEnvBool(env.AUTH_COOKIE_SECURE);
+  if (forced !== null) return forced;
+
+  const xfp = String(request.headers.get('x-forwarded-proto') || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  if (xfp) return xfp === 'https';
+
+  try {
+    return new URL(request.url).protocol === 'https:';
+  } catch {
+    return true;
+  }
+}
+
+function buildSessionCookie(token, maxAgeSec = AUTH_COOKIE_MAX_AGE_SEC, secure = true) {
+  const secureAttr = secure ? '; Secure' : '';
+  return `${AUTH_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly${secureAttr}; SameSite=Lax; Max-Age=${maxAgeSec}`;
+}
+
+function clearSessionCookie(secure = true) {
+  const secureAttr = secure ? '; Secure' : '';
+  return `${AUTH_COOKIE_NAME}=; Path=/; HttpOnly${secureAttr}; SameSite=Lax; Max-Age=0`;
 }
 
 function makeSessionToken() {
@@ -803,10 +829,11 @@ export async function onRequest(context) {
       const ldapResult = await tryLdapLogin(env, loginRaw, password);
       if (ldapResult?.ok && ldapResult.user) {
         const { token } = await createSession(env, ldapResult.user.id);
+        const secureCookie = shouldUseSecureCookie(request, env);
         return reply(
           { user: ldapResult.user },
           200,
-          { 'Set-Cookie': buildSessionCookie(token) }
+          { 'Set-Cookie': buildSessionCookie(token, AUTH_COOKIE_MAX_AGE_SEC, secureCookie) }
         );
       }
 
@@ -824,11 +851,12 @@ export async function onRequest(context) {
       }
 
       const { token } = await createSession(env, row.id);
+      const secureCookie = shouldUseSecureCookie(request, env);
       const { password: _password, ...safeUser } = row;
       return reply(
         { user: safeUser },
         200,
-        { 'Set-Cookie': buildSessionCookie(token) }
+        { 'Set-Cookie': buildSessionCookie(token, AUTH_COOKIE_MAX_AGE_SEC, secureCookie) }
       );
     }
 
@@ -836,10 +864,11 @@ export async function onRequest(context) {
     if (path === '/auth/logout' && method === 'POST') {
       const token = getSessionToken(request);
       if (token) await deleteSession(env, token);
+      const secureCookie = shouldUseSecureCookie(request, env);
       return reply(
         { ok: true },
         200,
-        { 'Set-Cookie': clearSessionCookie() }
+        { 'Set-Cookie': clearSessionCookie(secureCookie) }
       );
     }
 

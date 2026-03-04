@@ -64,6 +64,7 @@ docker compose logs -f
 Безопасность:
 
 - `CORS_ORIGINS` — whitelist origin через запятую
+- `AUTH_COOKIE_SECURE` — принудительный `Secure` у cookie (`1`/`0`, по умолчанию авто)
 
 Первичный админ (рекомендуется на первом старте):
 
