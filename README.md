@@ -54,6 +54,7 @@ docker compose logs -f
 
 Основные:
 
+- `HOST` — интерфейс для bind (в проде лучше `127.0.0.1` за nginx)
 - `PORT` — порт HTTP сервера
 - `DB_FILE` — путь к SQLite файлу
 - `BODY_LIMIT` — лимит тела запроса
@@ -63,59 +64,100 @@ docker compose logs -f
 - `CORS_ORIGINS` — whitelist origin через запятую
 - `RESET_TOKEN_PEPPER` — секрет для токенов сброса пароля
 
-Первичный админ (рекомендуется):
+Почта (Resend):
+
+- `EMAIL_PROVIDER=resend`
+- `RESEND_API_KEY`
+- `EMAIL_FROM`
+- `APP_BASE_URL`
+- `EMAIL_INCLUDE_PASSWORD` (`0`/`1`)
+
+Первичный админ (рекомендуется на первом старте):
 
 - `BOOTSTRAP_ADMIN_EMAIL`
 - `BOOTSTRAP_ADMIN_PASSWORD`
 - `BOOTSTRAP_ADMIN_NAME`
 - `BOOTSTRAP_ADMIN_DEPARTMENT`
 
-## Прод-деплой на Linux (systemd)
+## Прод-деплой для `booking.cb.msk` (Ubuntu 24.04)
 
-Пример unit-файла `/etc/systemd/system/kb-sits.service`:
+Целевой профиль:
 
-```ini
-[Unit]
-Description=KB Sits Node Server
-After=network.target
+- Сервер: `Ubuntu 24.04`, `2 vCPU`, `4 GB RAM`, `40 GB HDD`
+- Домен: `booking.cb.msk`
+- Доступ: только из корпоративной сети / VPN
 
-[Service]
-Type=simple
-WorkingDirectory=/opt/kb-sits-booking
-ExecStart=/usr/bin/npm start
-Restart=always
-RestartSec=3
-Environment=NODE_ENV=production
-EnvironmentFile=/opt/kb-sits-booking/.env
-User=www-data
-Group=www-data
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Команды:
+### 1. Установка зависимостей
 
 ```bash
+sudo apt update
+sudo apt install -y nginx nodejs npm git ufw
+```
+
+### 2. Развертывание приложения
+
+```bash
+sudo mkdir -p /opt/kb-sits-booking
+sudo chown -R $USER:$USER /opt/kb-sits-booking
+git clone https://github.com/MBSokGT/kb-sits-booking.git /opt/kb-sits-booking
+cd /opt/kb-sits-booking
+npm ci
+cp .env.example .env
+```
+
+### 3. Настройка `.env` для внутреннего контура
+
+Минимально проверьте значения:
+
+```env
+HOST=127.0.0.1
+PORT=3000
+APP_BASE_URL=http://booking.cb.msk
+CORS_ORIGINS=http://booking.cb.msk
+# при HTTPS замените на https://booking.cb.msk
+```
+
+### 4. Systemd сервис
+
+```bash
+sudo cp deploy/systemd/kb-sits.service /etc/systemd/system/kb-sits.service
 sudo systemctl daemon-reload
 sudo systemctl enable kb-sits
-sudo systemctl start kb-sits
+sudo systemctl restart kb-sits
 sudo systemctl status kb-sits
 ```
 
-## Nginx reverse proxy (пример)
+Логи:
 
-```nginx
-server {
-    listen 80;
-    server_name kb.example.ru;
+```bash
+sudo journalctl -u kb-sits -f
+```
 
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
+### 5. Nginx
+
+```bash
+sudo cp deploy/nginx/booking.cb.msk.conf /etc/nginx/sites-available/booking.cb.msk.conf
+sudo ln -sf /etc/nginx/sites-available/booking.cb.msk.conf /etc/nginx/sites-enabled/booking.cb.msk.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+### 6. Ограничение доступа только из корпсети/VPN
+
+В `deploy/nginx/booking.cb.msk.conf` уже есть `allow/deny`. Обязательно замените CIDR на реальные подсети вашей компании.
+
+Дополнительно можно ограничить входящий трафик firewall:
+
+```bash
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow OpenSSH
+
+# Примеры, замените на реальные корпоративные CIDR:
+sudo ufw allow from 10.0.0.0/8 to any port 80 proto tcp
+sudo ufw allow from 172.16.0.0/12 to any port 80 proto tcp
+sudo ufw allow from 192.168.0.0/16 to any port 80 proto tcp
+
+sudo ufw enable
+sudo ufw status verbose
 ```

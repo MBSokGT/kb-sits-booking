@@ -1,0 +1,21 @@
+[Unit]
+Description=KB Sits Booking (Node.js)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/kb-sits-booking
+ExecStart=/usr/bin/node /opt/kb-sits-booking/server.js
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/kb-sits-booking/.env
+Restart=always
+RestartSec=3
+User=www-data
+Group=www-data
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/kb-sits-booking/data
+
+[Install]
+WantedBy=multi-user.target

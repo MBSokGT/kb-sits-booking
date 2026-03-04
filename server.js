@@ -14,6 +14,7 @@ const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = __dirname;
 const DB_FILE = path.resolve(PROJECT_ROOT, process.env.DB_FILE || './data/kb-sits.sqlite');
 const PORT = Number(process.env.PORT || 3000);
+const HOST = String(process.env.HOST || '0.0.0.0');
 const BODY_LIMIT = process.env.BODY_LIMIT || '10mb';
 
 fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
@@ -191,7 +192,7 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(PROJECT_ROOT, 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`[kb-sits] Node server started on :${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`[kb-sits] Node server started on ${HOST}:${PORT}`);
   console.log(`[kb-sits] SQLite DB: ${DB_FILE}`);
 });
