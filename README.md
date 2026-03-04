@@ -77,12 +77,6 @@ docker compose logs -f
 
 ## Прод-деплой для `booking.cb.msk` (Ubuntu 24.04)
 
-Целевой профиль:
-
-- Сервер: `Ubuntu 24.04`, `2 vCPU`, `4 GB RAM`, `40 GB HDD`
-- Домен: `booking.cb.msk`
-- Доступ: только из корпоративной сети / VPN
-
 ### 1. Установка зависимостей
 
 ```bash
@@ -139,7 +133,7 @@ sudo systemctl reload nginx
 
 ### 6. Ограничение доступа только из корпсети/VPN
 
-В `deploy/nginx/booking.cb.msk.conf` уже есть `allow/deny`. Обязательно замените CIDR на реальные подсети вашей компании.
+В `deploy/nginx/booking.cb.msk.conf` уже есть `allow/deny`.
 
 Дополнительно можно ограничить входящий трафик firewall:
 
@@ -148,7 +142,7 @@ sudo ufw default deny incoming
 sudo ufw default allow outgoing
 sudo ufw allow OpenSSH
 
-# Примеры, замените на реальные корпоративные CIDR:
+# Примеры
 sudo ufw allow from 10.0.0.0/8 to any port 80 proto tcp
 sudo ufw allow from 172.16.0.0/12 to any port 80 proto tcp
 sudo ufw allow from 192.168.0.0/16 to any port 80 proto tcp
@@ -157,9 +151,9 @@ sudo ufw enable
 sudo ufw status verbose
 ```
 
-## LDAP / Active Directory (для ИТ)
+## LDAP / Active Directory
 
-В проекте есть опциональный вход через домен (LDAP/LDAPS). OAuth не нужен.
+Как вариант, вход через домен (LDAP/LDAPS).
 
 ### Что нужно от ИТ
 
