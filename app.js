@@ -69,7 +69,7 @@ const DB = {
       console.error('localStorage full or disabled:', e);
       alert('⚠️ Хранилище браузера переполнено или отключено. Данные не сохранены.');
     }
-    // Async push to D1 (skip auth/session/users and bookings: bookings use dedicated API)
+    // Async push to server KV (skip auth/session/users and bookings: bookings use dedicated API)
     if (k !== 'session' && k !== 'users' && k !== 'bookings') DB._push(k, v);
   },
   _push(k, v) {
@@ -86,8 +86,8 @@ const DB = {
 };
 
 /* ── Initial seed ─────────────────────────────────────────────────────────── */
-// Users are managed server-side via D1 — no local seed needed.
-// Populated from /api/users on login via syncFromD1().
+// Users are managed server-side — no local seed needed.
+// Populated from /api/users on login via syncFromServer().
 if (!DB.get('coworkings', null)) {
   DB.set('coworkings', [{ id:'c1', name:'Главный коворкинг' }]);
 }
@@ -236,7 +236,7 @@ let calViewMonth  = 0;
 let calMode       = 'month';   // 'month' | 'year'
 let calAnchorDate = null;
 let includeWeekends = false;
-let workingSaturdays = [];  // array of 'YYYY-MM-DD' (kept for D1 sync compat; logic now uses saturdayMode)
+let workingSaturdays = [];  // array of 'YYYY-MM-DD' (kept for sync compatibility; logic now uses saturdayMode)
 let saturdayMode = false;   // true = all Saturdays are bookable
 let slotId        = 'full';
 let customFrom    = '09:00';
@@ -497,8 +497,8 @@ function applyUserUI() {
 /* ═══════════════════════════════════════════════════════
    INIT
 ═══════════════════════════════════════════════════════ */
-/* ── D1 cloud sync ────────────────────────────────────────────────────────── */
-async function syncFromD1({ bookingsOnly = false } = {}) {
+/* ── Server sync ───────────────────────────────────────────────────────────── */
+async function syncFromServer({ bookingsOnly = false } = {}) {
   if (!currentUser) return false;
   try {
     if (bookingsOnly) {
@@ -525,10 +525,10 @@ async function syncFromD1({ bookingsOnly = false } = {}) {
       if (!r.ok) return;
       const d = await r.json();
       if (d.value !== null && d.value !== undefined) {
-        // D1 has data → overwrite localStorage (truth comes from server)
+        // Server has data → overwrite localStorage (truth comes from server)
         localStorage.setItem('ws_' + k, JSON.stringify(d.value));
       } else {
-        // D1 empty → push current localStorage value so other devices get it
+        // Server bucket empty → push current localStorage value so other devices get it
         const local = DB.get(k, null);
         if (local) DB._push(k, local);
       }
@@ -539,7 +539,7 @@ async function syncFromD1({ bookingsOnly = false } = {}) {
     }
     return fetchBookingsFromApi();
   } catch(e) {
-    console.warn('D1 sync skipped (offline or local dev):', e.message);
+    console.warn('Server sync skipped (offline or local dev):', e.message);
     return false;
   }
 }
@@ -555,7 +555,7 @@ async function fetchBookingsFromApi() {
   return true;
 }
 
-async function syncBookingsFromD1() {
+async function syncBookingsFromServer() {
   if (!currentUser) return false;
   const before = JSON.stringify(getBookings());
   const ok = await fetchBookingsFromApi();
@@ -590,10 +590,10 @@ async function replaceBookingsAsAdmin(nextBookings) {
 
 function startCloudSync() {
   stopCloudSync();
-  syncBookingsFromD1();
+  syncBookingsFromServer();
   cloudSyncTimer = setInterval(() => {
     if (!currentUser) return;
-    syncBookingsFromD1();
+    syncBookingsFromServer();
   }, 10000);
 }
 
@@ -604,18 +604,9 @@ function stopCloudSync() {
 }
 
 async function initApp() {
-  // Sync from D1 first (overwrites localStorage with server truth)
-  const synced = await syncFromD1();
-  if (!synced && !currentUser) throw new Error('D1 sync failed');
-
-  // Initialize optional Supabase adapter
-  try {
-    if (window.dataAdapter && window.dataAdapter.init) {
-      await dataAdapter.init();
-    }
-  } catch (error) {
-    console.warn('Supabase adapter unavailable, using localStorage only:', error);
-  }
+  // Sync from server first (overwrites localStorage with server truth)
+  const synced = await syncFromServer();
+  if (!synced && !currentUser) throw new Error('Server sync failed');
   
   ensureDataIntegrity();
   purgeExpired();
@@ -3324,7 +3315,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 
 /* ═══════════════════════════════════════════════════════
-   REAL-TIME UPDATES (Supabase)
+   REAL-TIME UPDATES
 ═══════════════════════════════════════════════════════ */
 
 // Подписка на real-time обновления

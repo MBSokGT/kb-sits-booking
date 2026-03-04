@@ -1,7 +1,7 @@
 /**
- * КБ Ситс — Cloudflare Pages Function (catch-all)
+ * КБ Ситс — API handler (catch-all)
  * Handles: /api/auth/*, /api/users, /api/kv/:key, /api/bookings*
- * Binding: env.DB → D1 database "kb-sits-db"
+ * Expects: env.DB adapter with prepare().bind().first()/all()/run()
  */
 
 const BASE_CORS = {

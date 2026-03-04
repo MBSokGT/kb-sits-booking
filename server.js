@@ -22,7 +22,7 @@ const sqlite = new Database(DB_FILE);
 sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('foreign_keys = ON');
 
-const schemaPath = path.join(PROJECT_ROOT, 'd1-schema.sql');
+const schemaPath = path.join(PROJECT_ROOT, 'schema.sql');
 if (fs.existsSync(schemaPath)) {
   const schemaSql = fs.readFileSync(schemaPath, 'utf8');
   sqlite.exec(schemaSql);
@@ -68,7 +68,7 @@ function ensureBootstrapAdmin(db) {
 
 ensureBootstrapAdmin(sqlite);
 
-class D1StatementAdapter {
+class SqlStatementAdapter {
   constructor(db, sql) {
     this.db = db;
     this.sql = sql;
@@ -102,22 +102,22 @@ class D1StatementAdapter {
   }
 }
 
-class D1DatabaseAdapter {
+class SqlDatabaseAdapter {
   constructor(db) {
     this.db = db;
   }
 
   prepare(sql) {
-    return new D1StatementAdapter(this.db, sql);
+    return new SqlStatementAdapter(this.db, sql);
   }
 }
 
 const env = {
   ...process.env,
-  DB: new D1DatabaseAdapter(sqlite),
+  DB: new SqlDatabaseAdapter(sqlite),
 };
 
-const apiModuleUrl = pathToFileURL(path.join(PROJECT_ROOT, 'functions/api/[[route]].js')).href;
+const apiModuleUrl = pathToFileURL(path.join(PROJECT_ROOT, 'api/handler.js')).href;
 const { onRequest } = await import(apiModuleUrl);
 
 function buildRequestFromExpress(req) {
