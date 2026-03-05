@@ -1,0 +1,15 @@
+[Unit]
+Description=KB Sits SQLite Backup
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/kb-sits-booking
+EnvironmentFile=/opt/kb-sits-booking/.env
+ExecStart=/opt/kb-sits-booking/scripts/backup-sqlite.sh
+User=www-data
+Group=www-data
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/kb-sits-booking/data /opt/kb-sits-booking/backups

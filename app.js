@@ -51,6 +51,22 @@ function getStatusColors() {
 // Declared here so DB._push can safely reference it during seed (avoids TDZ)
 let currentUser = null;
 let apiToken = '';
+let serverRevs = {};
+
+function getServerRev(key) {
+  const rev = Number(serverRevs[key]);
+  return Number.isInteger(rev) && rev > 0 ? rev : null;
+}
+
+function setServerRev(key, rev) {
+  const clean = Number(rev);
+  if (!Number.isInteger(clean) || clean < 1) return;
+  serverRevs[key] = clean;
+}
+
+function clearServerRevs() {
+  serverRevs = {};
+}
 
 const DB = {
   get(k, def){ 
@@ -74,12 +90,23 @@ const DB = {
   },
   _push(k, v) {
     if (!currentUser) return; // don't push before login/auth
+    const payload = { value: v };
+    const rev = getServerRev(k);
+    if (rev) payload.rev = rev;
     apiFetch('/api/kv/' + encodeURIComponent(k), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value: v })
-    }).then(r => {
+      body: JSON.stringify(payload)
+    }).then(async r => {
       if (r.status === 401) requireRelogin();
+      if (r.status === 409) {
+        // Someone else updated shared config first; pull latest state.
+        await syncFromServer().catch(() => {});
+        return;
+      }
+      if (!r.ok) return;
+      const data = await r.json().catch(() => null);
+      if (Number.isInteger(Number(data?.rev))) setServerRev(k, Number(data.rev));
     }).catch(() => {}); // silently ignore when offline
   },
   uid(){ return Date.now() + Math.random().toString(36).slice(2,7) }
@@ -168,13 +195,13 @@ function ensureDataIntegrity() {
 }
 
 function purgeExpired() {
-  // Keep booking history for 1 year, then remove old records.
+  // Keep booking history for 2 years, then remove old records.
   // Optimize: only run every 5 minutes max.
   const nowUtcMs = Date.now();
   if (nowUtcMs - lastPurgeTime < 5 * 60 * 1000) return;
   lastPurgeTime = nowUtcMs;
 
-  const retentionMs = 365 * 24 * 60 * 60 * 1000;
+  const retentionMs = 2 * 365 * 24 * 60 * 60 * 1000;
   saveBookings(getBookings().filter(b => {
     const endMs = bookingEndUtcMs(b);
     return Number.isFinite(endMs) && (nowUtcMs - endMs) <= retentionMs;
@@ -236,7 +263,7 @@ let calViewMonth  = 0;
 let calMode       = 'month';   // 'month' | 'year'
 let calAnchorDate = null;
 let includeWeekends = false;
-let workingSaturdays = [];  // array of 'YYYY-MM-DD' (kept for sync compatibility; logic now uses saturdayMode)
+let workingSaturdays = [];  // array of 'YYYY-MM-DD' (персональные настройки пользователя)
 let saturdayMode = false;   // true = all Saturdays are bookable
 let slotId        = 'full';
 let customFrom    = '09:00';
@@ -271,6 +298,44 @@ const SLOTS = [
 const COLORS = ['#059669'];
 const MONTHS  = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
 const MONTHS_S= ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
+
+function calendarPrefsStorageKey() {
+  const uid = currentUser?.id ? String(currentUser.id).trim() : 'guest';
+  return `ws_calendar_prefs_${uid}`;
+}
+
+function loadCalendarPrefs() {
+  includeWeekends = false;
+  saturdayMode = false;
+  workingSaturdays = [];
+  if (!currentUser) return;
+
+  try {
+    const raw = localStorage.getItem(calendarPrefsStorageKey());
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    includeWeekends = !!parsed?.includeWeekends;
+    saturdayMode = !!parsed?.saturdayMode;
+    workingSaturdays = Array.isArray(parsed?.workingSaturdays)
+      ? Array.from(new Set(parsed.workingSaturdays.map(d => String(d).trim()).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)))).sort()
+      : [];
+  } catch {
+    includeWeekends = false;
+    saturdayMode = false;
+    workingSaturdays = [];
+  }
+}
+
+function saveCalendarPrefs() {
+  if (!currentUser) return;
+  try {
+    localStorage.setItem(calendarPrefsStorageKey(), JSON.stringify({
+      includeWeekends: !!includeWeekends,
+      saturdayMode: !!saturdayMode,
+      workingSaturdays: Array.from(new Set(workingSaturdays)).sort(),
+    }));
+  } catch {}
+}
 
 /* ═══════════════════════════════════════════════════════
    UTILS
@@ -410,6 +475,7 @@ async function doLogin() {
 
 async function onAuth(user, token = '') {
   apiToken = token || '';
+  clearServerRevs();
   currentUser = { ...user };
   delete currentUser._token;
   // Store full user object (without password) so session survives page reload
@@ -433,6 +499,7 @@ async function onAuth(user, token = '') {
 
 function doLogout(skipServerLogout = false) {
   apiToken = '';
+  clearServerRevs();
   if (!skipServerLogout) {
     fetch('/api/auth/logout', {
       method: 'POST',
@@ -516,14 +583,15 @@ async function syncFromServer({ bookingsOnly = false } = {}) {
       }
     }
 
-    // 2. Sync KV buckets (without bookings: bookings are in dedicated API)
-    const keys = ['coworkings', 'floors', 'spaces', 'workingSaturdays', 'departments'];
+    // 2. Sync shared KV buckets (without bookings: bookings are in dedicated API)
+    const keys = ['coworkings', 'floors', 'spaces', 'departments'];
 
     await Promise.all(keys.map(async k => {
       const r = await apiFetch('/api/kv/' + encodeURIComponent(k));
       if (r.status === 401) { unauthorized = true; return; }
       if (!r.ok) return;
       const d = await r.json();
+      if (Number.isInteger(Number(d?.rev))) setServerRev(k, Number(d.rev));
       if (d.value !== null && d.value !== undefined) {
         // Server has data → overwrite localStorage (truth comes from server)
         localStorage.setItem('ws_' + k, JSON.stringify(d.value));
@@ -620,6 +688,7 @@ async function initApp() {
   selDates     = [fmtDate(today)];
   calAnchorDate = selDates[0];
   bookingForUserId = currentUser?.id || null;
+  loadCalendarPrefs();
 
   const coworkings = getCoworkings();
   if (!selCoworkingId && coworkings.length) selCoworkingId = coworkings[0].id;
@@ -687,12 +756,14 @@ function toggleCalendarMode() {
 
 function toggleWeekendSelection(checked) {
   includeWeekends = !!checked;
+  saveCalendarPrefs();
   renderCalendar();
 }
 
 function toggleSaturdayMode(checked) {
   saturdayMode = checked;
   if (!checked) workingSaturdays = [];
+  saveCalendarPrefs();
   renderCalendar();
 }
 
@@ -702,6 +773,7 @@ function toggleWorkingSaturday(ds) {
   } else {
     workingSaturdays = [...workingSaturdays, ds].sort();
   }
+  saveCalendarPrefs();
   renderSatPicker();
   renderCalendar();
 }
@@ -735,15 +807,16 @@ function isDateSelectable(ds) {
   if (isPastDate(ds)) return false;
   const dow = new Date(ds + 'T12:00:00').getDay();
   if (dow === 0) return includeWeekends;  // Sunday
-  if (dow === 6) return includeWeekends || saturdayMode;  // Saturday
+  if (dow === 6) return includeWeekends || saturdayMode || workingSaturdays.includes(ds);  // Saturday
   return true;
 }
 
 function isRangeDayAllowed(dateObj) {
   const dow = dateObj.getDay();
+  const ds = fmtDate(new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate()));
   if (includeWeekends) return true;
   if (dow === 0) return false;
-  if (dow === 6) return saturdayMode;
+  if (dow === 6) return saturdayMode || workingSaturdays.includes(ds);
   return true;
 }
 
@@ -802,10 +875,13 @@ function updateRangeHint() {
   const todayLabel = `Сегодня: ${fmtHuman(today)}`;
   const todayLink = `<a href="#" onclick="jumpToTodayDate();return false;" style="font-weight:600;color:var(--status-mine);text-decoration:none">${todayLabel}</a>`;
   const modeHint = calMode === 'year' ? 'Годовой режим' : 'Месячный режим';
+  const satHint = workingSaturdays.length ? `, выбрано сб: ${workingSaturdays.length}` : '';
   const daysHint = includeWeekends
     ? 'включены сб и вс'
     : saturdayMode
-    ? 'включены рабочие субботы'
+    ? `включены все субботы${satHint}`
+    : workingSaturdays.length
+    ? `выбраны рабочие субботы (${workingSaturdays.length})`
     : 'только пн-пт';
 
   if (selDates.length > 1) {

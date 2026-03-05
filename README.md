@@ -77,6 +77,65 @@ docker compose logs -f
 
 - Email-рассылки и восстановление пароля по email отключены.
 - Сброс пароля выполняется администратором в разделе пользователей.
+- История бронирований хранится 2 года.
+- Настройки выбора выходных в календаре персональные для каждого пользователя (локально в браузере).
+
+## Резервные копии БД (каждые 6 часов)
+
+В репозитории есть:
+
+- `scripts/backup-sqlite.sh` — делает snapshot SQLite и gzip-архив.
+- `deploy/systemd/kb-sits-backup.service`
+- `deploy/systemd/kb-sits-backup.timer` — запуск в `00:00 / 06:00 / 12:00 / 18:00`.
+
+Ротация по умолчанию: `730` дней (2 года), настраивается через `BACKUP_RETENTION_DAYS`.
+
+Установка:
+
+```bash
+sudo cp deploy/systemd/kb-sits-backup.service /etc/systemd/system/kb-sits-backup.service
+sudo cp deploy/systemd/kb-sits-backup.timer /etc/systemd/system/kb-sits-backup.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now kb-sits-backup.timer
+sudo systemctl list-timers | grep kb-sits-backup
+```
+
+Ручной запуск:
+
+```bash
+sudo systemctl start kb-sits-backup.service
+sudo journalctl -u kb-sits-backup.service -n 50 --no-pager
+```
+
+## Автообновление из Git (ежедневная проверка)
+
+В репозитории есть:
+
+- `scripts/auto-update.sh` — проверяет `origin/main`, делает `git pull --ff-only`, перезапускает сервис и проверяет health.
+- `deploy/systemd/kb-sits-update.service`
+- `deploy/systemd/kb-sits-update.timer` — ежедневный запуск в `03:30` (с jitter до 15 минут).
+
+Важно:
+
+- Если есть локальные незакоммиченные изменения, обновление пропускается (защита от затирания ручных правок).
+- Режим задается через `AUTO_UPDATE_MODE` (`node` или `docker`).
+
+Установка:
+
+```bash
+sudo cp deploy/systemd/kb-sits-update.service /etc/systemd/system/kb-sits-update.service
+sudo cp deploy/systemd/kb-sits-update.timer /etc/systemd/system/kb-sits-update.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now kb-sits-update.timer
+sudo systemctl list-timers | grep kb-sits-update
+```
+
+Проверка вручную:
+
+```bash
+sudo systemctl start kb-sits-update.service
+sudo journalctl -u kb-sits-update.service -n 100 --no-pager
+```
 
 ## Прод-деплой для `booking.cb.msk` (Ubuntu 24.04)
 

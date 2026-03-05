@@ -13,21 +13,25 @@ const BASE_CORS = {
 };
 
 const SESSION_TTL_HOURS = 12;
-const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+const BOOKING_RETENTION_MS = 2 * 365 * 24 * 60 * 60 * 1000;
 const BOOKING_STATE_KEY = 'bookings_state';
 const LEGACY_BOOKINGS_KEY = 'bookings';
+const BOOKINGS_REV_KEY = 'bookings_rev';
+const DOMAIN_MIGRATION_KEY = 'domain_migration_v2';
+const DOMAIN_SCHEMA_MIGRATION_KEY = 'domain_schema_migration_v1';
+const DOMAIN_REV_PREFIX = 'rev:domain:';
 const PASSWORD_HASH_PREFIX = 'pbkdf2_sha256';
 const PASSWORD_HASH_ITERATIONS = 100000;
 const PASSWORD_SALT_BYTES = 16;
 const AUTH_COOKIE_NAME = 'ws_session';
 const AUTH_COOKIE_MAX_AGE_SEC = SESSION_TTL_HOURS * 60 * 60;
 const LDAP_EXTERNAL_PASSWORD_PREFIX = 'ldap_external$';
+let domainInitPromise = null;
 
 const SAFE_KV_KEYS = new Set([
   'coworkings',
   'floors',
   'spaces',
-  'workingSaturdays',
   'departments',
 ]);
 
@@ -213,7 +217,7 @@ function trimBookingsRetention(value) {
     .filter(Boolean)
     .filter(b => {
       const endMs = bookingEndUtcMs(b);
-      return Number.isFinite(endMs) && (now - endMs) <= ONE_YEAR_MS;
+      return Number.isFinite(endMs) && (now - endMs) <= BOOKING_RETENTION_MS;
     });
 }
 
@@ -695,69 +699,765 @@ function canCancelBooking(actor, booking, owner) {
 }
 
 async function getSpaceName(env, spaceId) {
-  const row = await env.DB.prepare('SELECT v FROM kv_store WHERE k = ?').bind('spaces').first();
-  const parsed = row ? parseJsonSafe(row.v, []) : [];
-  if (!Array.isArray(parsed)) return spaceId;
-  const sp = parsed.find(s => s && String(s.id) === String(spaceId));
-  return sp?.label ? String(sp.label) : String(spaceId);
+  const row = await env.DB.prepare('SELECT label FROM spaces WHERE id = ?').bind(String(spaceId)).first();
+  return row?.label ? String(row.label) : String(spaceId);
 }
 
-async function loadBookingState(env) {
-  let row = await env.DB.prepare('SELECT v FROM kv_store WHERE k = ?').bind(BOOKING_STATE_KEY).first();
+function sqlPlaceholders(count) {
+  return Array.from({ length: count }, () => '?').join(', ');
+}
 
-  if (!row) {
-    const legacy = await env.DB.prepare('SELECT v FROM kv_store WHERE k = ?').bind(LEGACY_BOOKINGS_KEY).first();
-    const legacyBookings = legacy ? trimBookingsRetention(parseJsonSafe(legacy.v, [])) : [];
-    const initState = { rev: 1, bookings: legacyBookings };
-    await env.DB.prepare(
-      "INSERT OR IGNORE INTO kv_store (k, v, updated_at) VALUES (?, ?, datetime('now'))"
-    ).bind(BOOKING_STATE_KEY, JSON.stringify(initState)).run();
-    row = await env.DB.prepare('SELECT v FROM kv_store WHERE k = ?').bind(BOOKING_STATE_KEY).first();
+async function runSql(env, sql, params = []) {
+  return env.DB.prepare(sql).bind(...params).run();
+}
+
+async function firstSql(env, sql, params = []) {
+  return env.DB.prepare(sql).bind(...params).first();
+}
+
+async function allSql(env, sql, params = []) {
+  return env.DB.prepare(sql).bind(...params).all();
+}
+
+async function getBookingsRev(env) {
+  const row = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', [BOOKINGS_REV_KEY]);
+  const rev = Number(row?.v);
+  return Number.isInteger(rev) && rev > 0 ? rev : 1;
+}
+
+async function setBookingsRev(env, rev) {
+  const clean = Number.isInteger(rev) && rev > 0 ? rev : 1;
+  await runSql(
+    env,
+    "INSERT OR REPLACE INTO kv_store (k, v, updated_at) VALUES (?, ?, datetime('now'))",
+    [BOOKINGS_REV_KEY, String(clean)]
+  );
+  return clean;
+}
+
+async function bumpBookingsRev(env) {
+  const next = (await getBookingsRev(env)) + 1;
+  return setBookingsRev(env, next);
+}
+
+function domainRevKey(key) {
+  return `${DOMAIN_REV_PREFIX}${key}`;
+}
+
+async function getDomainRev(env, key) {
+  const row = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', [domainRevKey(key)]);
+  const rev = Number(row?.v);
+  return Number.isInteger(rev) && rev > 0 ? rev : 1;
+}
+
+async function setDomainRev(env, key, rev) {
+  const clean = Number.isInteger(rev) && rev > 0 ? rev : 1;
+  await runSql(
+    env,
+    "INSERT OR REPLACE INTO kv_store (k, v, updated_at) VALUES (?, ?, datetime('now'))",
+    [domainRevKey(key), String(clean)]
+  );
+  return clean;
+}
+
+async function bumpDomainRev(env, key) {
+  const next = (await getDomainRev(env, key)) + 1;
+  return setDomainRev(env, key, next);
+}
+
+async function runInTransaction(env, action) {
+  await runSql(env, 'BEGIN IMMEDIATE');
+  try {
+    const result = await action();
+    await runSql(env, 'COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      await runSql(env, 'ROLLBACK');
+    } catch {}
+    throw error;
+  }
+}
+
+function normalizeHexColor(value, fallback = '#059669') {
+  const color = String(value || '').trim();
+  return /^#[0-9a-fA-F]{3,8}$/.test(color) ? color : fallback;
+}
+
+function normalizeCoworking(raw) {
+  const id = String(raw?.id || '').trim();
+  const name = String(raw?.name || '').trim();
+  if (!id || !name) return null;
+  return { id, name };
+}
+
+function normalizeFloor(raw) {
+  const id = String(raw?.id || '').trim();
+  const coworkingId = String(raw?.coworkingId || '').trim();
+  const name = String(raw?.name || '').trim();
+  if (!id || !coworkingId || !name) return null;
+  const sortOrderNum = Number(raw?.sortOrder);
+  const sortOrder = Number.isFinite(sortOrderNum) ? Math.round(sortOrderNum) : 0;
+  const imageUrl = raw?.imageUrl === undefined || raw?.imageUrl === null || raw?.imageUrl === '' ? null : String(raw.imageUrl);
+  const imageType = raw?.imageType === undefined || raw?.imageType === null || raw?.imageType === '' ? null : String(raw.imageType);
+  return { id, coworkingId, name, imageUrl, imageType, sortOrder };
+}
+
+function normalizeSpace(raw) {
+  const id = String(raw?.id || '').trim();
+  const floorId = String(raw?.floorId || '').trim();
+  const label = String(raw?.label || '').trim();
+  if (!id || !floorId || !label) return null;
+
+  const seatsNum = Number(raw?.seats);
+  const seats = Number.isFinite(seatsNum) && seatsNum > 0 ? Math.round(seatsNum) : 1;
+  const x = Number.isFinite(Number(raw?.x)) ? Number(raw.x) : 0;
+  const y = Number.isFinite(Number(raw?.y)) ? Number(raw.y) : 0;
+  const w = Number.isFinite(Number(raw?.w)) ? Number(raw.w) : 10;
+  const h = Number.isFinite(Number(raw?.h)) ? Number(raw.h) : 10;
+  const color = normalizeHexColor(raw?.color, '#059669');
+
+  return { id, floorId, label, seats, x, y, w, h, color };
+}
+
+function normalizeDepartment(raw) {
+  const id = String(raw?.id || '').trim();
+  const name = String(raw?.name || '').trim();
+  if (!id || !name) return null;
+  const headUserId = raw?.headUserId ? String(raw.headUserId).trim() : null;
+  const memberIds = Array.isArray(raw?.memberIds)
+    ? Array.from(new Set(raw.memberIds.map(v => String(v || '').trim()).filter(Boolean)))
+    : [];
+  return { id, name, headUserId: headUserId || null, memberIds };
+}
+
+function normalizeWorkingSaturday(raw) {
+  const date = String(raw || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : '';
+}
+
+async function replaceCoworkingsTable(env, value) {
+  if (!Array.isArray(value)) return { ok: false, status: 400, error: 'Некорректный формат данных' };
+  const rows = value.map(normalizeCoworking).filter(Boolean);
+  const { results: existingRows } = await allSql(env, 'SELECT id FROM coworkings');
+  const nextIds = new Set(rows.map(row => row.id));
+  const removedIds = (existingRows || []).map(row => String(row.id)).filter(id => !nextIds.has(id));
+  if (removedIds.length) {
+    const placeholders = sqlPlaceholders(removedIds.length);
+    const cutoffMs = Date.now() - BOOKING_RETENTION_MS;
+    const row = await firstSql(
+      env,
+      `SELECT COUNT(*) AS cnt
+       FROM bookings b
+       JOIN spaces s ON s.id = b.space_id
+       JOIN floors f ON f.id = s.floor_id
+       WHERE f.coworking_id IN (${placeholders}) AND b.end_utc_ms >= ?`,
+      [...removedIds, cutoffMs]
+    );
+    const cnt = Number(row?.cnt || 0);
+    if (cnt > 0) {
+      return { ok: false, status: 400, error: 'Нельзя удалить коворкинг, пока есть брони за последние 2 года.' };
+    }
+  }
+  await runInTransaction(env, async () => {
+    await runSql(env, 'DELETE FROM coworkings');
+    for (const row of rows) {
+      await runSql(
+        env,
+        "INSERT INTO coworkings (id, name, updated_at) VALUES (?, ?, datetime('now'))",
+        [row.id, row.name]
+      );
+    }
+  });
+  return { ok: true };
+}
+
+async function replaceFloorsTable(env, value) {
+  if (!Array.isArray(value)) return { ok: false, status: 400, error: 'Некорректный формат данных' };
+  const rows = value.map(normalizeFloor).filter(Boolean);
+  const { results } = await allSql(env, 'SELECT id FROM coworkings');
+  const coworkingIds = new Set((results || []).map(row => String(row.id)));
+  const invalid = rows.find(row => !coworkingIds.has(row.coworkingId));
+  if (invalid) {
+    return { ok: false, status: 400, error: `Не найден коворкинг для этажа: ${invalid.name}` };
   }
 
-  if (!row) {
-    const fallback = { rev: 1, bookings: [] };
-    return { ...fallback, raw: JSON.stringify(fallback) };
-  }
-
-  const parsed = parseJsonSafe(row.v, {});
-  const rev = Number.isInteger(parsed.rev) && parsed.rev > 0 ? parsed.rev : 1;
-  const bookings = trimBookingsRetention(parsed.bookings);
-  return { rev, bookings, raw: row.v };
-}
-
-async function saveBookingStateCAS(env, expectedRaw, nextState) {
-  const nextRaw = JSON.stringify(nextState);
-  const res = await env.DB.prepare(
-    "UPDATE kv_store SET v = ?, updated_at = datetime('now') WHERE k = ? AND v = ?"
-  ).bind(nextRaw, BOOKING_STATE_KEY, expectedRaw).run();
-
-  return !!(res?.meta?.changes === 1);
-}
-
-async function mutateBookings(env, mutator) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const current = await loadBookingState(env);
-    const base = current.bookings;
-    const outcome = await mutator(base);
-
-    if (outcome?.error) return outcome;
-
-    const nextBookings = trimBookingsRetention(outcome.bookings || base);
-    const nextState = { rev: current.rev + 1, bookings: nextBookings };
-
-    const ok = await saveBookingStateCAS(env, current.raw, nextState);
-    if (ok) {
-      return {
-        ok: true,
-        bookings: nextBookings,
-        rev: nextState.rev,
-        meta: outcome.meta || {},
-      };
+  const { results: existingRows } = await allSql(env, 'SELECT id FROM floors');
+  const nextIds = new Set(rows.map(row => row.id));
+  const removedIds = (existingRows || []).map(row => String(row.id)).filter(id => !nextIds.has(id));
+  if (removedIds.length) {
+    const placeholders = sqlPlaceholders(removedIds.length);
+    const cutoffMs = Date.now() - BOOKING_RETENTION_MS;
+    const row = await firstSql(
+      env,
+      `SELECT COUNT(*) AS cnt
+       FROM bookings b
+       JOIN spaces s ON s.id = b.space_id
+       WHERE s.floor_id IN (${placeholders}) AND b.end_utc_ms >= ?`,
+      [...removedIds, cutoffMs]
+    );
+    const cnt = Number(row?.cnt || 0);
+    if (cnt > 0) {
+      return { ok: false, status: 400, error: 'Нельзя удалить этаж, пока есть брони за последние 2 года.' };
     }
   }
 
-  return { error: 'Конфликт обновления. Повторите действие.', status: 409 };
+  await runInTransaction(env, async () => {
+    await runSql(env, 'DELETE FROM floors');
+    for (const row of rows) {
+      await runSql(
+        env,
+        "INSERT INTO floors (id, coworking_id, name, image_url, image_type, sort_order, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
+        [row.id, row.coworkingId, row.name, row.imageUrl, row.imageType, row.sortOrder]
+      );
+    }
+  });
+  return { ok: true };
+}
+
+async function replaceSpacesTable(env, value) {
+  if (!Array.isArray(value)) return { ok: false, status: 400, error: 'Некорректный формат данных' };
+  const rows = value.map(normalizeSpace).filter(Boolean);
+  const { results } = await allSql(env, 'SELECT id FROM floors');
+  const floorIds = new Set((results || []).map(row => String(row.id)));
+  const invalid = rows.find(row => !floorIds.has(row.floorId));
+  if (invalid) {
+    return { ok: false, status: 400, error: `Не найден этаж для зоны: ${invalid.label}` };
+  }
+
+  const { results: existingRows } = await allSql(env, 'SELECT id FROM spaces');
+  const nextIds = new Set(rows.map(row => row.id));
+  const removedIds = (existingRows || []).map(row => String(row.id)).filter(id => !nextIds.has(id));
+  if (removedIds.length) {
+    const placeholders = sqlPlaceholders(removedIds.length);
+    const cutoffMs = Date.now() - BOOKING_RETENTION_MS;
+    const row = await firstSql(
+      env,
+      `SELECT COUNT(*) AS cnt
+       FROM bookings
+       WHERE space_id IN (${placeholders}) AND end_utc_ms >= ?`,
+      [...removedIds, cutoffMs]
+    );
+    const cnt = Number(row?.cnt || 0);
+    if (cnt > 0) {
+      return { ok: false, status: 400, error: 'Нельзя удалить рабочее место, пока есть брони за последние 2 года.' };
+    }
+  }
+
+  await runInTransaction(env, async () => {
+    await runSql(env, 'DELETE FROM spaces');
+    for (const row of rows) {
+      await runSql(
+        env,
+        "INSERT INTO spaces (id, floor_id, label, seats, x, y, w, h, color, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+        [row.id, row.floorId, row.label, row.seats, row.x, row.y, row.w, row.h, row.color]
+      );
+    }
+  });
+  return { ok: true };
+}
+
+async function replaceDepartmentsTable(env, value) {
+  if (!Array.isArray(value)) return { ok: false, status: 400, error: 'Некорректный формат данных' };
+  const rows = value.map(normalizeDepartment).filter(Boolean);
+  await runInTransaction(env, async () => {
+    await runSql(env, 'DELETE FROM department_members');
+    await runSql(env, 'DELETE FROM departments');
+
+    for (const row of rows) {
+      await runSql(
+        env,
+        "INSERT INTO departments (id, name, head_user_id, updated_at) VALUES (?, ?, ?, datetime('now'))",
+        [row.id, row.name, row.headUserId]
+      );
+      for (const userId of row.memberIds) {
+        await runSql(
+          env,
+          "INSERT OR IGNORE INTO department_members (department_id, user_id) VALUES (?, ?)",
+          [row.id, userId]
+        );
+      }
+    }
+  });
+  return { ok: true };
+}
+
+async function replaceWorkingSaturdaysTable(env, value) {
+  if (!Array.isArray(value)) return { ok: false, status: 400, error: 'Некорректный формат данных' };
+  const dates = Array.from(new Set(value.map(normalizeWorkingSaturday).filter(Boolean))).sort();
+  await runInTransaction(env, async () => {
+    await runSql(env, 'DELETE FROM working_saturdays');
+    for (const date of dates) {
+      await runSql(env, 'INSERT OR IGNORE INTO working_saturdays (date) VALUES (?)', [date]);
+    }
+  });
+  return { ok: true };
+}
+
+async function readCoworkingsTable(env) {
+  const { results } = await allSql(env, 'SELECT id, name FROM coworkings ORDER BY created_at, name');
+  const rows = results || [];
+  if (!rows.length) return null;
+  return rows.map(row => ({ id: row.id, name: row.name }));
+}
+
+async function readFloorsTable(env) {
+  const { results } = await allSql(
+    env,
+    'SELECT id, coworking_id, name, image_url, image_type, sort_order FROM floors ORDER BY sort_order, name'
+  );
+  const rows = results || [];
+  if (!rows.length) return null;
+  return rows.map(row => ({
+    id: row.id,
+    coworkingId: row.coworking_id,
+    name: row.name,
+    imageUrl: row.image_url ?? null,
+    imageType: row.image_type ?? null,
+    sortOrder: Number.isFinite(Number(row.sort_order)) ? Number(row.sort_order) : 0,
+  }));
+}
+
+async function readSpacesTable(env) {
+  const { results } = await allSql(
+    env,
+    'SELECT id, floor_id, label, seats, x, y, w, h, color FROM spaces ORDER BY floor_id, label'
+  );
+  const rows = results || [];
+  if (!rows.length) return null;
+  return rows.map(row => ({
+    id: row.id,
+    floorId: row.floor_id,
+    label: row.label,
+    seats: Number.isFinite(Number(row.seats)) ? Number(row.seats) : 1,
+    x: Number.isFinite(Number(row.x)) ? Number(row.x) : 0,
+    y: Number.isFinite(Number(row.y)) ? Number(row.y) : 0,
+    w: Number.isFinite(Number(row.w)) ? Number(row.w) : 10,
+    h: Number.isFinite(Number(row.h)) ? Number(row.h) : 10,
+    color: normalizeHexColor(row.color, '#059669'),
+  }));
+}
+
+async function readDepartmentsTable(env) {
+  const { results } = await allSql(env, 'SELECT id, name, head_user_id FROM departments ORDER BY name');
+  const departments = results || [];
+  if (!departments.length) return null;
+  const { results: membersRows } = await allSql(
+    env,
+    'SELECT department_id, user_id FROM department_members ORDER BY department_id, user_id'
+  );
+
+  const membersByDepartment = new Map();
+  for (const row of (membersRows || [])) {
+    if (!membersByDepartment.has(row.department_id)) membersByDepartment.set(row.department_id, []);
+    membersByDepartment.get(row.department_id).push(String(row.user_id));
+  }
+
+  return departments.map(row => ({
+    id: row.id,
+    name: row.name,
+    headUserId: row.head_user_id || null,
+    memberIds: membersByDepartment.get(row.id) || [],
+  }));
+}
+
+async function readWorkingSaturdaysTable(env) {
+  const { results } = await allSql(env, 'SELECT date FROM working_saturdays ORDER BY date');
+  const rows = results || [];
+  if (!rows.length) return null;
+  return rows.map(row => row.date);
+}
+
+async function readDomainValue(env, key) {
+  if (key === 'coworkings') return readCoworkingsTable(env);
+  if (key === 'floors') return readFloorsTable(env);
+  if (key === 'spaces') return readSpacesTable(env);
+  if (key === 'departments') return readDepartmentsTable(env);
+  return null;
+}
+
+async function writeDomainValue(env, key, value) {
+  if (key === 'coworkings') return replaceCoworkingsTable(env, value);
+  if (key === 'floors') return replaceFloorsTable(env, value);
+  if (key === 'spaces') return replaceSpacesTable(env, value);
+  if (key === 'departments') return replaceDepartmentsTable(env, value);
+  return { ok: false, status: 400, error: 'Недопустимый ключ' };
+}
+
+async function insertBookingRecord(env, booking) {
+  const normalized = normalizeBooking(booking);
+  if (!normalized) return false;
+  const endUtcMs = parseMskDateTimeToUtcMs(normalized.date, normalized.slotTo);
+  if (!Number.isFinite(endUtcMs)) return false;
+
+  await runSql(
+    env,
+    `INSERT OR REPLACE INTO bookings
+      (id, user_id, user_name, space_id, space_name, date, slot_from, slot_to, expires_at, end_utc_ms, created_at, status, created_by, cancelled_at, cancelled_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      normalized.id,
+      normalized.userId,
+      normalized.userName,
+      normalized.spaceId,
+      normalized.spaceName,
+      normalized.date,
+      normalized.slotFrom,
+      normalized.slotTo,
+      normalized.expiresAt,
+      endUtcMs,
+      normalized.createdAt,
+      normalized.status,
+      normalized.createdBy,
+      normalized.cancelledAt,
+      normalized.cancelledBy,
+    ]
+  );
+  return true;
+}
+
+async function purgeOldBookings(env) {
+  const cutoffMs = Date.now() - BOOKING_RETENTION_MS;
+  await runSql(env, 'DELETE FROM bookings WHERE end_utc_ms < ?', [cutoffMs]);
+}
+
+async function loadBookings(env) {
+  await purgeOldBookings(env);
+  const cutoffMs = Date.now() - BOOKING_RETENTION_MS;
+  const { results } = await allSql(
+    env,
+    `SELECT
+      id,
+      user_id AS userId,
+      user_name AS userName,
+      space_id AS spaceId,
+      space_name AS spaceName,
+      date,
+      slot_from AS slotFrom,
+      slot_to AS slotTo,
+      expires_at AS expiresAt,
+      created_at AS createdAt,
+      status,
+      created_by AS createdBy,
+      cancelled_at AS cancelledAt,
+      cancelled_by AS cancelledBy
+     FROM bookings
+     WHERE end_utc_ms >= ?
+     ORDER BY date ASC, slot_from ASC, created_at ASC`,
+    [cutoffMs]
+  );
+  return (results || []).map(normalizeBooking).filter(Boolean);
+}
+
+async function loadActiveBookingsByDates(env, dates, nowMs = Date.now()) {
+  if (!Array.isArray(dates) || !dates.length) return [];
+  const placeholders = sqlPlaceholders(dates.length);
+  const { results } = await allSql(
+    env,
+    `SELECT
+      id,
+      user_id AS userId,
+      user_name AS userName,
+      space_id AS spaceId,
+      space_name AS spaceName,
+      date,
+      slot_from AS slotFrom,
+      slot_to AS slotTo,
+      expires_at AS expiresAt,
+      created_at AS createdAt,
+      status,
+      created_by AS createdBy,
+      cancelled_at AS cancelledAt,
+      cancelled_by AS cancelledBy
+     FROM bookings
+     WHERE status = 'active' AND end_utc_ms > ? AND date IN (${placeholders})
+     ORDER BY date ASC, slot_from ASC, created_at ASC`,
+    [nowMs, ...dates]
+  );
+  return (results || []).map(normalizeBooking).filter(Boolean);
+}
+
+async function createDomainTables(env) {
+  const statements = [
+    `CREATE TABLE IF NOT EXISTS coworkings (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS floors (
+      id TEXT PRIMARY KEY,
+      coworking_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      image_url TEXT,
+      image_type TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (coworking_id) REFERENCES coworkings(id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS spaces (
+      id TEXT PRIMARY KEY,
+      floor_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      seats INTEGER NOT NULL DEFAULT 1,
+      x REAL NOT NULL DEFAULT 0,
+      y REAL NOT NULL DEFAULT 0,
+      w REAL NOT NULL DEFAULT 10,
+      h REAL NOT NULL DEFAULT 10,
+      color TEXT NOT NULL DEFAULT '#059669',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (floor_id) REFERENCES floors(id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS departments (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      head_user_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS department_members (
+      department_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      PRIMARY KEY (department_id, user_id),
+      FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS working_saturdays (
+      date TEXT PRIMARY KEY
+    )`,
+    `CREATE TABLE IF NOT EXISTS bookings (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      user_name TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      space_name TEXT NOT NULL,
+      date TEXT NOT NULL,
+      slot_from TEXT NOT NULL,
+      slot_to TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      end_utc_ms INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      status TEXT NOT NULL DEFAULT 'active',
+      created_by TEXT,
+      cancelled_at TEXT,
+      cancelled_by TEXT
+    )`,
+    'CREATE INDEX IF NOT EXISTS idx_floors_coworking ON floors(coworking_id)',
+    'CREATE INDEX IF NOT EXISTS idx_spaces_floor ON spaces(floor_id)',
+    'CREATE INDEX IF NOT EXISTS idx_dept_members_dept ON department_members(department_id)',
+    'CREATE INDEX IF NOT EXISTS idx_dept_members_user ON department_members(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_bookings_status_end ON bookings(status, end_utc_ms)',
+    'CREATE INDEX IF NOT EXISTS idx_bookings_space_date ON bookings(space_id, date)',
+    'CREATE INDEX IF NOT EXISTS idx_bookings_user_date ON bookings(user_id, date)',
+  ];
+
+  for (const sql of statements) {
+    await runSql(env, sql);
+  }
+}
+
+async function migrateDomainSchemaToRelational(env) {
+  const marker = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', [DOMAIN_SCHEMA_MIGRATION_KEY]);
+  if (marker?.v === '1') return;
+
+  await runSql(env, 'PRAGMA foreign_keys = OFF');
+  try {
+    await runInTransaction(env, async () => {
+      await runSql(env, 'DROP TABLE IF EXISTS floors_old');
+      await runSql(env, 'DROP TABLE IF EXISTS spaces_old');
+      await runSql(env, 'DROP TABLE IF EXISTS department_members_old');
+
+      await runSql(env, 'ALTER TABLE floors RENAME TO floors_old');
+      await runSql(
+        env,
+        `CREATE TABLE floors (
+          id TEXT PRIMARY KEY,
+          coworking_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          image_url TEXT,
+          image_type TEXT,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY (coworking_id) REFERENCES coworkings(id) ON DELETE CASCADE
+        )`
+      );
+      await runSql(
+        env,
+        `INSERT INTO floors (id, coworking_id, name, image_url, image_type, sort_order, created_at, updated_at)
+         SELECT f.id, f.coworking_id, f.name, f.image_url, f.image_type, f.sort_order, f.created_at, f.updated_at
+         FROM floors_old f
+         JOIN coworkings c ON c.id = f.coworking_id`
+      );
+      await runSql(env, 'DROP TABLE floors_old');
+
+      await runSql(env, 'ALTER TABLE spaces RENAME TO spaces_old');
+      await runSql(
+        env,
+        `CREATE TABLE spaces (
+          id TEXT PRIMARY KEY,
+          floor_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          seats INTEGER NOT NULL DEFAULT 1,
+          x REAL NOT NULL DEFAULT 0,
+          y REAL NOT NULL DEFAULT 0,
+          w REAL NOT NULL DEFAULT 10,
+          h REAL NOT NULL DEFAULT 10,
+          color TEXT NOT NULL DEFAULT '#059669',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY (floor_id) REFERENCES floors(id) ON DELETE CASCADE
+        )`
+      );
+      await runSql(
+        env,
+        `INSERT INTO spaces (id, floor_id, label, seats, x, y, w, h, color, created_at, updated_at)
+         SELECT s.id, s.floor_id, s.label, s.seats, s.x, s.y, s.w, s.h, s.color, s.created_at, s.updated_at
+         FROM spaces_old s
+         JOIN floors f ON f.id = s.floor_id`
+      );
+      await runSql(env, 'DROP TABLE spaces_old');
+
+      await runSql(env, 'ALTER TABLE department_members RENAME TO department_members_old');
+      await runSql(
+        env,
+        `CREATE TABLE department_members (
+          department_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          PRIMARY KEY (department_id, user_id),
+          FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE CASCADE,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )`
+      );
+      await runSql(
+        env,
+        `INSERT INTO department_members (department_id, user_id)
+         SELECT dm.department_id, dm.user_id
+         FROM department_members_old dm
+         JOIN departments d ON d.id = dm.department_id
+         JOIN users u ON u.id = dm.user_id`
+      );
+      await runSql(env, 'DROP TABLE department_members_old');
+    });
+  } finally {
+    await runSql(env, 'PRAGMA foreign_keys = ON');
+  }
+
+  await runSql(env, 'CREATE INDEX IF NOT EXISTS idx_floors_coworking ON floors(coworking_id)');
+  await runSql(env, 'CREATE INDEX IF NOT EXISTS idx_spaces_floor ON spaces(floor_id)');
+  await runSql(env, 'CREATE INDEX IF NOT EXISTS idx_dept_members_dept ON department_members(department_id)');
+  await runSql(env, 'CREATE INDEX IF NOT EXISTS idx_dept_members_user ON department_members(user_id)');
+  await runSql(
+    env,
+    "INSERT OR REPLACE INTO kv_store (k, v, updated_at) VALUES (?, ?, datetime('now'))",
+    [DOMAIN_SCHEMA_MIGRATION_KEY, '1']
+  );
+}
+
+async function ensureDomainRevisions(env) {
+  for (const key of SAFE_KV_KEYS) {
+    const row = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', [domainRevKey(key)]);
+    if (!row?.v) {
+      await setDomainRev(env, key, 1);
+      continue;
+    }
+    const rev = Number(row.v);
+    if (!Number.isInteger(rev) || rev < 1) {
+      await setDomainRev(env, key, 1);
+    }
+  }
+}
+
+async function tableRowCount(env, tableName) {
+  const row = await firstSql(env, `SELECT COUNT(*) AS cnt FROM ${tableName}`);
+  return Number(row?.cnt || 0);
+}
+
+async function migrateLegacyDomainData(env) {
+  const marker = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', [DOMAIN_MIGRATION_KEY]);
+  if (marker?.v === '1') {
+    const rev = await getBookingsRev(env);
+    if (!Number.isInteger(rev) || rev < 1) await setBookingsRev(env, 1);
+    return;
+  }
+
+  if (await tableRowCount(env, 'coworkings') === 0) {
+    const row = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', ['coworkings']);
+    const parsed = row ? parseJsonSafe(row.v, null) : null;
+    if (Array.isArray(parsed) && parsed.length) await replaceCoworkingsTable(env, parsed);
+  }
+
+  if (await tableRowCount(env, 'floors') === 0) {
+    const row = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', ['floors']);
+    const parsed = row ? parseJsonSafe(row.v, null) : null;
+    if (Array.isArray(parsed) && parsed.length) await replaceFloorsTable(env, parsed);
+  }
+
+  if (await tableRowCount(env, 'spaces') === 0) {
+    const row = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', ['spaces']);
+    const parsed = row ? parseJsonSafe(row.v, null) : null;
+    if (Array.isArray(parsed) && parsed.length) await replaceSpacesTable(env, parsed);
+  }
+
+  if (await tableRowCount(env, 'departments') === 0) {
+    const row = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', ['departments']);
+    const parsed = row ? parseJsonSafe(row.v, null) : null;
+    if (Array.isArray(parsed) && parsed.length) await replaceDepartmentsTable(env, parsed);
+  }
+
+  if (await tableRowCount(env, 'working_saturdays') === 0) {
+    const row = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', ['workingSaturdays']);
+    const parsed = row ? parseJsonSafe(row.v, null) : null;
+    if (Array.isArray(parsed) && parsed.length) await replaceWorkingSaturdaysTable(env, parsed);
+  }
+
+  if (await tableRowCount(env, 'bookings') === 0) {
+    let rev = 1;
+    let legacyBookings = [];
+
+    const stateRow = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', [BOOKING_STATE_KEY]);
+    if (stateRow?.v) {
+      const parsed = parseJsonSafe(stateRow.v, {});
+      if (Number.isInteger(parsed?.rev) && parsed.rev > 0) rev = parsed.rev;
+      legacyBookings = trimBookingsRetention(parsed?.bookings);
+    }
+
+    if (!legacyBookings.length) {
+      const legacyRow = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', [LEGACY_BOOKINGS_KEY]);
+      if (legacyRow?.v) legacyBookings = trimBookingsRetention(parseJsonSafe(legacyRow.v, []));
+    }
+
+    for (const booking of legacyBookings) {
+      await insertBookingRecord(env, booking);
+    }
+    await setBookingsRev(env, rev);
+  } else {
+    const rev = await getBookingsRev(env);
+    if (!Number.isInteger(rev) || rev < 1) await setBookingsRev(env, 1);
+  }
+
+  await runSql(
+    env,
+    "INSERT OR REPLACE INTO kv_store (k, v, updated_at) VALUES (?, ?, datetime('now'))",
+    [DOMAIN_MIGRATION_KEY, '1']
+  );
+}
+
+async function ensureDomainTablesReady(env) {
+  if (!domainInitPromise) {
+    domainInitPromise = (async () => {
+      await createDomainTables(env);
+      await migrateDomainSchemaToRelational(env);
+      await migrateLegacyDomainData(env);
+      await ensureDomainRevisions(env);
+    })().catch(error => {
+      domainInitPromise = null;
+      throw error;
+    });
+  }
+  await domainInitPromise;
 }
 
 function validateCreatePayload(body) {
@@ -810,6 +1510,8 @@ export async function onRequest(context) {
       const row = await env.DB.prepare("SELECT datetime('now') AS ts").first();
       return reply({ ok: true, ts: row?.ts });
     }
+
+    await ensureDomainTablesReady(env);
 
     /* ── POST /auth/login (public) ────────────────────── */
     if (path === '/auth/login' && method === 'POST') {
@@ -1036,34 +1738,30 @@ export async function onRequest(context) {
       const target = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(userId).first();
       if (!target) return reply({ error: 'Пользователь не найден' }, 404);
 
-      const bookingResult = await mutateBookings(env, (bookings) => {
-        const now = Date.now();
-        const next = bookings.map(b => {
-          if (b.userId !== userId) return b;
-          if (!isBookingActive(b, now)) return b;
-          return {
-            ...b,
-            status: 'cancelled',
-            cancelledAt: new Date().toISOString(),
-            cancelledBy: auth.user.id,
-          };
-        });
-        return { bookings: next };
-      });
-      if (!bookingResult.ok) {
-        return reply({ error: bookingResult.error || 'Не удалось обновить бронирования' }, bookingResult.status || 400);
-      }
+      const nowIso = new Date().toISOString();
+      const cancelResult = await runSql(
+        env,
+        `UPDATE bookings
+         SET status = 'cancelled', cancelled_at = ?, cancelled_by = ?
+         WHERE user_id = ? AND status = 'active' AND end_utc_ms > ?`,
+        [nowIso, auth.user.id, userId, Date.now()]
+      );
+      const cancelledBookings = Number(cancelResult?.meta?.changes || 0);
+      let rev = await getBookingsRev(env);
+      if (cancelledBookings > 0) rev = await bumpBookingsRev(env);
 
       await revokeUserSessions(env, userId);
       await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId).run();
+      const bookings = await loadBookings(env);
       const { list } = await getUsersMap(env, { withSessionActive: true });
-      return reply({ ok: true, users: list, bookings: bookingResult.bookings });
+      return reply({ ok: true, users: list, bookings, rev, cancelledBookings });
     }
 
     /* ── GET /bookings (auth) ─────────────────────────── */
     if (path === '/bookings' && method === 'GET') {
-      const state = await loadBookingState(env);
-      return reply({ bookings: state.bookings, rev: state.rev });
+      const bookings = await loadBookings(env);
+      const rev = await getBookingsRev(env);
+      return reply({ bookings, rev });
     }
 
     /* ── POST /bookings/create (auth) ─────────────────── */
@@ -1079,92 +1777,114 @@ export async function onRequest(context) {
         return reply({ error: 'Недостаточно прав' }, 403);
       }
 
-      const spaceName = await getSpaceName(env, valid.spaceId);
+      const spaceRow = await firstSql(
+        env,
+        'SELECT id, label FROM spaces WHERE id = ?',
+        [valid.spaceId]
+      );
+      if (!spaceRow?.id) {
+        return reply({ error: 'Рабочее место не найдено или удалено. Обновите карту и выберите существующее место.' }, 400);
+      }
+      const spaceName = String(spaceRow.label || valid.spaceId);
+      const nowMs = Date.now();
+      const active = await loadActiveBookingsByDates(env, valid.dates, nowMs);
 
-      const result = await mutateBookings(env, (bookings) => {
-        const active = bookings.filter(b => isBookingActive(b));
-        let created = 0;
-        let skippedBusy = 0;
-        let skippedUser = 0;
-        let skippedDailyLimit = 0;
-        let skippedPast = 0;
-        const nowMs = Date.now();
-        const createdDates = [];
-        const skippedBusyDates = [];
-        const skippedUserConflictDates = [];
-        const skippedDailyLimitDates = [];
-        const skippedPastDates = [];
+      let created = 0;
+      let skippedBusy = 0;
+      let skippedUser = 0;
+      let skippedDailyLimit = 0;
+      let skippedPast = 0;
+      const createdDates = [];
+      const skippedBusyDates = [];
+      const skippedUserConflictDates = [];
+      const skippedDailyLimitDates = [];
+      const skippedPastDates = [];
 
-        const next = [...bookings];
-
-        for (const date of valid.dates) {
-          const endMs = parseMskDateTimeToUtcMs(date, valid.slotTo);
-          if (!Number.isFinite(endMs) || endMs <= nowMs) {
-            skippedPast++;
-            skippedPastDates.push(date);
-            continue;
-          }
-
-          const busy = active.find(b => b.spaceId === valid.spaceId && b.date === date &&
-            timesOverlap(valid.slotFrom, valid.slotTo, b.slotFrom, b.slotTo));
-          if (busy) { skippedBusy++; skippedBusyDates.push(date); continue; }
-
-          if (targetUser.role === 'user') {
-            const daily = active.find(b => b.userId === targetUser.id && b.date === date);
-            if (daily) { skippedDailyLimit++; skippedDailyLimitDates.push(date); continue; }
-          }
-
-          const userConflict = active.find(b => b.userId === targetUser.id && b.date === date &&
-            timesOverlap(valid.slotFrom, valid.slotTo, b.slotFrom, b.slotTo));
-          if (userConflict) { skippedUser++; skippedUserConflictDates.push(date); continue; }
-
-          const booking = {
-            id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-            userId: targetUser.id,
-            userName: targetUser.name,
-            spaceId: valid.spaceId,
-            spaceName,
-            date,
-            slotFrom: valid.slotFrom,
-            slotTo: valid.slotTo,
-            expiresAt: `${date} ${valid.slotTo}`,
-            createdAt: new Date().toISOString(),
-            status: 'active',
-            createdBy: auth.user.id,
-            cancelledAt: null,
-            cancelledBy: null,
-          };
-
-          next.push(booking);
-          active.push(booking);
-          created++;
-          createdDates.push(date);
+      for (const date of valid.dates) {
+        const endMs = parseMskDateTimeToUtcMs(date, valid.slotTo);
+        if (!Number.isFinite(endMs) || endMs <= nowMs) {
+          skippedPast++;
+          skippedPastDates.push(date);
+          continue;
         }
 
-        return {
-          bookings: next,
-          meta: {
-            created,
-            createdDates,
-            skippedBusy,
-            skippedBusyDates,
-            skippedUser,
-            skippedUserConflictDates,
-            skippedDailyLimit,
-            skippedDailyLimitDates,
-            skippedPast,
-            skippedPastDates,
-          },
+        const busy = active.find(b =>
+          b.spaceId === valid.spaceId &&
+          b.date === date &&
+          timesOverlap(valid.slotFrom, valid.slotTo, b.slotFrom, b.slotTo)
+        );
+        if (busy) {
+          skippedBusy++;
+          skippedBusyDates.push(date);
+          continue;
+        }
+
+        if (targetUser.role === 'user') {
+          const daily = active.find(b => b.userId === targetUser.id && b.date === date);
+          if (daily) {
+            skippedDailyLimit++;
+            skippedDailyLimitDates.push(date);
+            continue;
+          }
+        }
+
+        const userConflict = active.find(b =>
+          b.userId === targetUser.id &&
+          b.date === date &&
+          timesOverlap(valid.slotFrom, valid.slotTo, b.slotFrom, b.slotTo)
+        );
+        if (userConflict) {
+          skippedUser++;
+          skippedUserConflictDates.push(date);
+          continue;
+        }
+
+        const booking = {
+          id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+          userId: targetUser.id,
+          userName: targetUser.name,
+          spaceId: valid.spaceId,
+          spaceName,
+          date,
+          slotFrom: valid.slotFrom,
+          slotTo: valid.slotTo,
+          expiresAt: `${date} ${valid.slotTo}`,
+          createdAt: new Date().toISOString(),
+          status: 'active',
+          createdBy: auth.user.id,
+          cancelledAt: null,
+          cancelledBy: null,
         };
-      });
 
-      if (!result.ok) return reply({ error: result.error || 'Ошибка бронирования' }, result.status || 400);
+        const inserted = await insertBookingRecord(env, booking);
+        if (!inserted) {
+          skippedPast++;
+          skippedPastDates.push(date);
+          continue;
+        }
 
+        active.push(booking);
+        created++;
+        createdDates.push(date);
+      }
+
+      let rev = await getBookingsRev(env);
+      if (created > 0) rev = await bumpBookingsRev(env);
+      const bookings = await loadBookings(env);
       return reply({
         ok: true,
-        bookings: result.bookings,
-        rev: result.rev,
-        ...result.meta,
+        bookings,
+        rev,
+        created,
+        createdDates,
+        skippedBusy,
+        skippedBusyDates,
+        skippedUser,
+        skippedUserConflictDates,
+        skippedDailyLimit,
+        skippedDailyLimitDates,
+        skippedPast,
+        skippedPastDates,
       });
     }
 
@@ -1175,34 +1895,56 @@ export async function onRequest(context) {
       if (!bookingId) return reply({ error: 'Не указан ID брони' }, 400);
 
       const { map: usersMap } = await getUsersMap(env);
+      const row = await firstSql(
+        env,
+        `SELECT
+          id,
+          user_id AS userId,
+          user_name AS userName,
+          space_id AS spaceId,
+          space_name AS spaceName,
+          date,
+          slot_from AS slotFrom,
+          slot_to AS slotTo,
+          expires_at AS expiresAt,
+          created_at AS createdAt,
+          status,
+          created_by AS createdBy,
+          cancelled_at AS cancelledAt,
+          cancelled_by AS cancelledBy
+         FROM bookings
+         WHERE id = ?`,
+        [bookingId]
+      );
+      const current = normalizeBooking(row);
+      if (!current) return reply({ error: 'Бронирование не найдено' }, 404);
 
-      const result = await mutateBookings(env, (bookings) => {
-        const idx = bookings.findIndex(b => b.id === bookingId);
-        if (idx < 0) return { error: 'Бронирование не найдено', status: 404 };
+      const owner = usersMap.get(current.userId) || null;
+      if (current.status === 'cancelled') {
+        const canSeeCancelled = auth.user.role === 'admin' ||
+          current.userId === auth.user.id ||
+          (auth.user.role === 'manager' && owner && owner.role === 'user' && owner.department === auth.user.department);
+        if (!canSeeCancelled) return reply({ error: 'Недостаточно прав для отмены' }, 403);
+        const bookings = await loadBookings(env);
+        const rev = await getBookingsRev(env);
+        return reply({ ok: true, bookings, rev, cancelled: false, alreadyCancelled: true });
+      }
 
-        const current = bookings[idx];
-        const owner = usersMap.get(current.userId) || null;
-        if (!canCancelBooking(auth.user, current, owner)) {
-          return { error: 'Недостаточно прав для отмены', status: 403 };
-        }
+      if (!canCancelBooking(auth.user, current, owner)) {
+        return reply({ error: 'Недостаточно прав для отмены' }, 403);
+      }
 
-        if (current.status === 'cancelled') {
-          return { bookings, meta: { cancelled: false, alreadyCancelled: true } };
-        }
-
-        const next = [...bookings];
-        next[idx] = {
-          ...current,
-          status: 'cancelled',
-          cancelledAt: new Date().toISOString(),
-          cancelledBy: auth.user.id,
-        };
-
-        return { bookings: next, meta: { cancelled: true } };
-      });
-
-      if (!result.ok) return reply({ error: result.error || 'Ошибка отмены' }, result.status || 400);
-      return reply({ ok: true, bookings: result.bookings, rev: result.rev, ...result.meta });
+      const cancelledAt = new Date().toISOString();
+      const updateResult = await runSql(
+        env,
+        "UPDATE bookings SET status = 'cancelled', cancelled_at = ?, cancelled_by = ? WHERE id = ? AND status = 'active'",
+        [cancelledAt, auth.user.id, bookingId]
+      );
+      const changed = Number(updateResult?.meta?.changes || 0);
+      let rev = await getBookingsRev(env);
+      if (changed > 0) rev = await bumpBookingsRev(env);
+      const bookings = await loadBookings(env);
+      return reply({ ok: true, bookings, rev, cancelled: changed > 0, alreadyCancelled: changed === 0 });
     }
 
     /* ── POST /bookings/replace-admin (admin) ─────────── */
@@ -1211,9 +1953,14 @@ export async function onRequest(context) {
       const { bookings } = await request.json();
       if (!Array.isArray(bookings)) return reply({ error: 'Некорректный формат бронирований' }, 400);
 
-      const result = await mutateBookings(env, () => ({ bookings: trimBookingsRetention(bookings), meta: {} }));
-      if (!result.ok) return reply({ error: result.error || 'Ошибка обновления' }, result.status || 400);
-      return reply({ ok: true, bookings: result.bookings, rev: result.rev });
+      const nextBookings = trimBookingsRetention(bookings);
+      await runSql(env, 'DELETE FROM bookings');
+      for (const booking of nextBookings) {
+        await insertBookingRecord(env, booking);
+      }
+      const rev = await bumpBookingsRev(env);
+      const freshBookings = await loadBookings(env);
+      return reply({ ok: true, bookings: freshBookings, rev });
     }
 
     /* ── GET /kv/:key (auth) ──────────────────────────── */
@@ -1226,9 +1973,9 @@ export async function onRequest(context) {
         return reply({ error: 'Недопустимый ключ' }, 403);
       }
 
-      const row = await env.DB.prepare('SELECT v FROM kv_store WHERE k = ?').bind(key).first();
-      const value = row ? parseJsonSafe(row.v, null) : null;
-      return reply({ key, value });
+      const value = await readDomainValue(env, key);
+      const rev = await getDomainRev(env, key);
+      return reply({ key, value, rev });
     }
 
     /* ── PUT /kv/:key (auth) ──────────────────────────── */
@@ -1242,12 +1989,29 @@ export async function onRequest(context) {
 
       const body = await request.json();
       const value = body.value !== undefined ? body.value : body;
-
-      await env.DB.prepare(
-        "INSERT OR REPLACE INTO kv_store (k, v, updated_at) VALUES (?, ?, datetime('now'))"
-      ).bind(key, JSON.stringify(value)).run();
-
-      return reply({ ok: true, key });
+      const expectedRev = Number(body?.rev);
+      const hasExpectedRev = Number.isInteger(expectedRev) && expectedRev > 0;
+      const currentRev = await getDomainRev(env, key);
+      if (hasExpectedRev && expectedRev !== currentRev) {
+        const currentValue = await readDomainValue(env, key);
+        return reply(
+          { error: 'Конфликт обновления. Данные уже изменены другим пользователем.', key, rev: currentRev, value: currentValue },
+          409
+        );
+      }
+      let result;
+      try {
+        result = await writeDomainValue(env, key, value);
+      } catch (error) {
+        const msg = String(error?.message || '');
+        if (msg.includes('FOREIGN KEY') || msg.includes('constraint')) {
+          return reply({ error: 'Некорректная структура данных: проверьте связи между коворкингами, этажами и зонами.' }, 400);
+        }
+        throw error;
+      }
+      if (!result.ok) return reply({ error: result.error || 'Ошибка обновления' }, result.status || 400);
+      const rev = await bumpDomainRev(env, key);
+      return reply({ ok: true, key, rev });
     }
 
     return reply({ error: 'Not found', path }, 404);

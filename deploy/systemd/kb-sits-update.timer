@@ -1,0 +1,12 @@
+[Unit]
+Description=Run KB Sits auto update every day
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=kb-sits-update.service
+
+[Install]
+WantedBy=timers.target
+

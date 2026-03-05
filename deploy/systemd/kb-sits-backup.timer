@@ -1,0 +1,10 @@
+[Unit]
+Description=Run KB Sits backup every 6 hours
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:00:00
+Persistent=true
+Unit=kb-sits-backup.service
+
+[Install]
+WantedBy=timers.target
