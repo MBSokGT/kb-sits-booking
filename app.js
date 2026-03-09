@@ -162,7 +162,11 @@ const getBookings = ()  => {
   return Array.isArray(data) ? data : [];
 };
 const saveCoworkings = v => { if (Array.isArray(v)) DB.set('coworkings', v); };
-const saveUsers    = v  => { if (Array.isArray(v)) DB.set('users', v); };
+const saveUsers    = v  => {
+  if (!Array.isArray(v)) return;
+  DB.set('users', v);
+  syncCurrentUserProfile(v);
+};
 const saveFloors   = v  => { if (Array.isArray(v)) DB.set('floors', v); };
 const saveSpaces   = v  => { if (Array.isArray(v)) DB.set('spaces', v); };
 const saveBookings    = v  => { if (Array.isArray(v)) DB.set('bookings', v); };
@@ -270,6 +274,7 @@ let customFrom    = '09:00';
 let customTo      = '18:00';
 let displayMode   = 'map';     // 'map' | 'list'
 let currentView   = 'map';
+let adminActiveTab = 'floors';
 let expiryTimer   = null;
 let bookingForUserId = null;
 let calendarSinglePick = false;
@@ -559,6 +564,16 @@ function applyUserUI() {
     el.style.display = (u.role==='manager'||u.role==='admin') ? '' : 'none');
   document.querySelectorAll('.admin-only').forEach(el =>
     el.style.display = u.role==='admin' ? '' : 'none');
+}
+
+function syncCurrentUserProfile(users) {
+  if (!currentUser || !Array.isArray(users)) return;
+  const fresh = users.find(u => sameId(u.id, currentUser.id));
+  if (!fresh) return;
+  currentUser = { ...currentUser, ...fresh };
+  const { password, password_hash, ...safeUser } = currentUser;
+  DB.set('session', safeUser);
+  applyUserUI();
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -2228,30 +2243,38 @@ function showForgotPasswordModal() {
 /* ═══════════════════════════════════════════════════════
    ADMIN VIEW
 ═══════════════════════════════════════════════════════ */
-function renderAdminView() {
+function renderAdminView(activeTab = adminActiveTab) {
+  const allowedTabs = new Set(['users', 'floors', 'bookings', 'departments']);
+  adminActiveTab = allowedTabs.has(activeTab) ? activeTab : 'floors';
   const el = document.getElementById('view-admin');
   el.innerHTML = `<div class="view-area">
     <div><div class="view-head">Администрирование</div></div>
     <div class="floor-tabs" id="admin-tabs">
-      <button class="floor-tab-btn" onclick="adminTab('users',this)">Пользователи</button>
-      <button class="floor-tab-btn active" onclick="adminTab('floors',this)">Коворкинги и планировки</button>
-      <button class="floor-tab-btn" onclick="adminTab('bookings',this)">Все брони</button>
-      <button class="floor-tab-btn" onclick="adminTab('departments',this)">Департаменты</button>
+      <button class="floor-tab-btn ${adminActiveTab==='users'?'active':''}" data-admin-tab="users" onclick="adminTab('users',this)">Пользователи</button>
+      <button class="floor-tab-btn ${adminActiveTab==='floors'?'active':''}" data-admin-tab="floors" onclick="adminTab('floors',this)">Коворкинги и планировки</button>
+      <button class="floor-tab-btn ${adminActiveTab==='bookings'?'active':''}" data-admin-tab="bookings" onclick="adminTab('bookings',this)">Все брони</button>
+      <button class="floor-tab-btn ${adminActiveTab==='departments'?'active':''}" data-admin-tab="departments" onclick="adminTab('departments',this)">Департаменты</button>
     </div>
     <div id="admin-tab-content"></div>
   </div>`;
-  adminTab('floors', document.querySelector('#admin-tabs .floor-tab-btn:nth-child(2)'));
+  renderAdminTabContent(adminActiveTab);
 }
 
-function adminTab(tab, btn) {
-  document.querySelectorAll('#admin-tabs .floor-tab-btn').forEach(b=>b.classList.remove('active'));
-  if (btn) btn.classList.add('active');
+function renderAdminTabContent(tab) {
   const el = document.getElementById('admin-tab-content');
   if (!el) return;
   if (tab === 'users')       { renderAdminUsers(el); return; }
   if (tab === 'floors')      { renderAdminFloors(el); return; }
   if (tab === 'bookings')    { renderAdminBookings(el); return; }
   if (tab === 'departments') { renderAdminDepartments(el); return; }
+}
+
+function adminTab(tab, btn) {
+  adminActiveTab = tab;
+  document.querySelectorAll('#admin-tabs .floor-tab-btn').forEach(b=>b.classList.remove('active'));
+  const activeBtn = btn || document.querySelector(`#admin-tabs [data-admin-tab="${tab}"]`);
+  if (activeBtn) activeBtn.classList.add('active');
+  renderAdminTabContent(tab);
 }
 
 /* ── Admin: Users ─────────────────────────────────────────────────────────── */
@@ -2317,7 +2340,7 @@ function showEditUserModal(uid) {
     <button class="btn btn-primary" id="edit-save-btn">Сохранить</button>`;
   
   document.getElementById('edit-cancel-btn').addEventListener('click', closeModal);
-  document.getElementById('edit-save-btn').addEventListener('click', () => {
+  document.getElementById('edit-save-btn').addEventListener('click', async () => {
     const name = document.getElementById('edit-user-name').value.trim();
     const email = document.getElementById('edit-user-email').value.trim().toLowerCase();
     const dept = document.getElementById('edit-user-dept').value.trim();
@@ -2326,26 +2349,63 @@ function showEditUserModal(uid) {
     
     const emailExists = users.find(x => x.id !== u.id && x.email === email);
     if (emailExists) { toast('Email уже используется', 't-red', '✕'); return; }
-    
-    u.name = name;
-    u.email = email;
-    u.department = dept;
-    saveUsers(users);
-    closeModal();
-    renderAdminUsers(document.getElementById('admin-tab-content'));
-    toast(`Пользователь обновлён: ${escapeHtml(name)}`, 't-green', '✓');
+
+    try {
+      const r = await apiFetch('/api/users/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: u.id, name, email, department: dept }),
+      });
+      if (r.status === 401) return requireRelogin();
+      const data = await r.json();
+      if (!r.ok) {
+        toast(data.error || 'Не удалось обновить пользователя', 't-red', '✕');
+        return;
+      }
+      if (Array.isArray(data.users)) saveUsers(data.users);
+      closeModal();
+      if (currentView === 'admin') renderAdminView();
+      toast(`Пользователь обновлён: ${name}`, 't-green', '✓');
+    } catch {
+      toast('Нет соединения с сервером', 't-red', '✕');
+    }
   });
   
   document.getElementById('modal-overlay').classList.add('open');
 }
 
-function updateUserDept(uid, dept) {
+async function updateUserDept(uid, dept) {
   const users = getUsers();
   const u = users.find(u=>u.id===uid);
   if (!u) return;
-  u.department = dept.trim();
-  saveUsers(users);
-  toast(`Отдел обновлён: ${escapeHtml(u.name)}`, 't-green', '✓');
+  const nextDept = dept.trim();
+  if (!nextDept) {
+    toast('Укажите отдел', 't-red', '✕');
+    if (currentView === 'admin') renderAdminView();
+    return;
+  }
+  if (nextDept === String(u.department || '').trim()) return;
+
+  try {
+    const r = await apiFetch('/api/users/department', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: uid, department: nextDept }),
+    });
+    if (r.status === 401) return requireRelogin();
+    const data = await r.json();
+    if (!r.ok) {
+      toast(data.error || 'Не удалось обновить отдел', 't-red', '✕');
+      if (currentView === 'admin') renderAdminView();
+      return;
+    }
+    if (Array.isArray(data.users)) saveUsers(data.users);
+    if (currentView === 'admin') renderAdminView();
+    toast(`Отдел обновлён: ${u.name}`, 't-green', '✓');
+  } catch {
+    toast('Нет соединения с сервером', 't-red', '✕');
+    if (currentView === 'admin') renderAdminView();
+  }
 }
 
 function showPasswordModal(uid) {
@@ -2354,26 +2414,52 @@ function showPasswordModal(uid) {
   if (!u) return;
   
   document.getElementById('modal-title').textContent = `Пароль: ${escapeHtml(u.name)}`;
+  if (u.isLdap) {
+    document.getElementById('modal-body').innerHTML = `
+      <div style="padding:.85rem;background:var(--amber-l);border:1px solid rgba(217,119,6,.25);border-radius:var(--radius);font-size:13px;color:var(--amber)">
+        Для доменного аккаунта пароль меняется в Active Directory.
+      </div>`;
+    document.getElementById('modal-foot').innerHTML = `
+      <button class="btn btn-primary" id="pwd-close-btn">Закрыть</button>`;
+    document.getElementById('pwd-close-btn').addEventListener('click', closeModal);
+    document.getElementById('modal-overlay').classList.add('open');
+    return;
+  }
+
   document.getElementById('modal-body').innerHTML = `
-    <div class="field"><label>Текущий пароль</label>
-      <input type="text" readonly value="${escapeHtml(u.password)}" style="background:var(--paper);font-family:'DM Mono',monospace">
-    </div>
     <div class="field"><label>Новый пароль</label>
-      <input type="text" id="new-password-input" placeholder="Минимум 6 символов" maxlength="50">
-    </div>`;
+      <input type="password" id="new-password-input" placeholder="Минимум 6 символов" maxlength="50">
+    </div>
+    <div style="font-size:12px;color:var(--ink4)">Текущий пароль не отображается. Будет выполнен безопасный сброс.</div>`;
   document.getElementById('modal-foot').innerHTML = `
     <button class="btn btn-ghost" id="pwd-cancel-btn">Отмена</button>
     <button class="btn btn-primary" id="pwd-save-btn">Сохранить</button>`;
   
   document.getElementById('pwd-cancel-btn').addEventListener('click', closeModal);
-  document.getElementById('pwd-save-btn').addEventListener('click', () => {
+  document.getElementById('pwd-save-btn').addEventListener('click', async () => {
     const newPwd = document.getElementById('new-password-input').value.trim();
     if (!newPwd) { closeModal(); return; }
     if (newPwd.length < 6) { toast('Минимум 6 символов', 't-red', '✕'); return; }
-    u.password = newPwd;
-    saveUsers(users);
-    closeModal();
-    toast(`Пароль обновлён для ${escapeHtml(u.name)}`, 't-green', '✓');
+
+    try {
+      const r = await apiFetch('/api/users/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: uid, newPassword: newPwd }),
+      });
+      if (r.status === 401) return requireRelogin();
+      const data = await r.json();
+      if (!r.ok) {
+        toast(data.error || 'Не удалось обновить пароль', 't-red', '✕');
+        return;
+      }
+      if (Array.isArray(data.users)) saveUsers(data.users);
+      closeModal();
+      if (currentView === 'admin') renderAdminView();
+      toast(`Пароль обновлён для ${u.name}`, 't-green', '✓');
+    } catch {
+      toast('Нет соединения с сервером', 't-red', '✕');
+    }
   });
   
   document.getElementById('modal-overlay').classList.add('open');

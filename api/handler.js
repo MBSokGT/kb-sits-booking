@@ -657,12 +657,13 @@ async function revokeUserSessions(env, userId, keepToken = '') {
 
 async function getUsersMap(env, options = {}) {
   const { results } = await env.DB.prepare(
-    'SELECT id, email, name, department, role FROM users ORDER BY role DESC, name'
+    'SELECT id, email, name, department, role, password FROM users ORDER BY role DESC, name'
   ).all();
   const withSessionActive = !!options.withSessionActive;
   const activeUserIds = withSessionActive ? await getActiveSessionUserIds(env) : null;
-  const list = (results || []).map(u => ({
+  const list = (results || []).map(({ password, ...u }) => ({
     ...u,
+    isLdap: isLdapExternalPassword(password),
     ...(withSessionActive ? { sessionActive: activeUserIds.has(u.id) } : {}),
   }));
   const map = new Map();
@@ -1690,6 +1691,40 @@ export async function onRequest(context) {
       return reply({ ok: true, users: list });
     }
 
+    /* ── POST /users/update (admin) ───────────────────── */
+    if (path === '/users/update' && method === 'POST') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const { id = '', name = '', email = '', department = '' } = await request.json();
+      const userId = String(id).trim();
+      const nameClean = String(name).trim();
+      const emailClean = String(email).trim().toLowerCase();
+      const departmentClean = String(department).trim();
+      if (!userId || !nameClean || !emailClean || !departmentClean) {
+        return reply({ error: 'Заполните обязательные поля' }, 400);
+      }
+      if (!isValidEmail(emailClean)) return reply({ error: 'Некорректный email' }, 400);
+
+      const target = await env.DB.prepare(
+        'SELECT id, password FROM users WHERE id = ?'
+      ).bind(userId).first();
+      if (!target) return reply({ error: 'Пользователь не найден' }, 404);
+      if (isLdapExternalPassword(target.password)) {
+        return reply({ error: 'Это доменный аккаунт. Данные профиля обновляются в Active Directory.' }, 400);
+      }
+
+      const existing = await env.DB.prepare(
+        'SELECT id FROM users WHERE email = ? AND id <> ?'
+      ).bind(emailClean, userId).first();
+      if (existing) return reply({ error: 'Email уже зарегистрирован' }, 409);
+
+      await env.DB.prepare(
+        'UPDATE users SET name = ?, email = ?, department = ? WHERE id = ?'
+      ).bind(nameClean, emailClean, departmentClean, userId).run();
+
+      const { list } = await getUsersMap(env, { withSessionActive: true });
+      return reply({ ok: true, users: list });
+    }
+
     /* ── POST /users/department (admin) ───────────────── */
     if (path === '/users/department' && method === 'POST') {
       if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
@@ -1715,8 +1750,13 @@ export async function onRequest(context) {
       if (!userId) return reply({ error: 'Не указан пользователь' }, 400);
       if (!pass || pass.length < 6) return reply({ error: 'Пароль минимум 6 символов' }, 400);
 
-      const target = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(userId).first();
+      const target = await env.DB.prepare(
+        'SELECT id, password FROM users WHERE id = ?'
+      ).bind(userId).first();
       if (!target) return reply({ error: 'Пользователь не найден' }, 404);
+      if (isLdapExternalPassword(target.password)) {
+        return reply({ error: 'Для доменного аккаунта пароль меняется в Active Directory.' }, 400);
+      }
 
       const passwordHash = await hashPassword(pass);
       await env.DB.prepare('UPDATE users SET password = ? WHERE id = ?').bind(passwordHash, userId).run();
