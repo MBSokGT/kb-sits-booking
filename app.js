@@ -174,11 +174,7 @@ if (!DB.get('floors', null)) {
   ]);
 }
 if (!DB.get('bookings', null)) DB.set('bookings', []);
-if (!DB.get('departments', null)) {
-  const dnames = ['Закупка и логистика','Маркетинг','HR','Экспортное развитие',
-                  'Антелава','Программисты','Контроль качества','Офис менеджеры'];
-  DB.set('departments', dnames.map(name => ({ id: DB.uid(), name, headUserId: null, memberIds: [] })));
-}
+if (!DB.get('departments', null)) DB.set('departments', []);
 
 /* ── CRUD helpers ─────────────────────────────────────────────────────────── */
 const getCoworkings = ()  => {
@@ -2170,8 +2166,12 @@ function renderAdminDepartments(el) {
 
 function buildDeptCard(dept, users) {
   const head    = users.find(u => u.id === dept.headUserId);
-  const members = (dept.memberIds || []).map(id => users.find(u => u.id === id)).filter(Boolean);
-  const nonMembers = users.filter(u => !(dept.memberIds || []).includes(u.id));
+  // Members = users whose LDAP department matches, plus any manually-added memberIds
+  const ldapMemberIds = new Set(users.filter(u => u.department === dept.name).map(u => u.id));
+  const manualMemberIds = new Set((dept.memberIds || []).filter(id => !ldapMemberIds.has(id)));
+  const allMemberIds = new Set([...ldapMemberIds, ...manualMemberIds]);
+  const members = [...allMemberIds].map(id => users.find(u => u.id === id)).filter(Boolean);
+  const nonMembers = users.filter(u => !allMemberIds.has(u.id));
   const search = getDeptMemberSearch(dept.id);
   const filteredNonMembers = search
     ? nonMembers.filter(u => `${u.name} ${u.email} ${u.department || ''}`.toLowerCase().includes(search))
@@ -2188,8 +2188,8 @@ function buildDeptCard(dept, users) {
       <button class="btn btn-ghost btn-sm" style="color:var(--red);font-size:12px" onclick="deleteDepartment('${dept.id}')">Удалить</button>
     </div>
     <div class="dept-meta">
-      <label class="dept-label">Руководитель</label>
-      <select class="dept-select" onchange="setDeptHead('${dept.id}',this.value)">
+      <label class="dept-label" for="dept-head-${dept.id}">Руководитель</label>
+      <select id="dept-head-${dept.id}" class="dept-select" onchange="setDeptHead('${dept.id}',this.value)">
         <option value="">— не назначен —</option>
         ${users.map(u=>`<option value="${u.id}"${u.id===dept.headUserId?' selected':''}>${escapeHtml(u.name)}</option>`).join('')}
       </select>
@@ -2200,13 +2200,13 @@ function buildDeptCard(dept, users) {
         ${members.map(u=>`
           <span class="dept-member-chip">
             ${escapeHtml(u.name)}
-            <button onclick="removeMemberFromDept('${dept.id}','${u.id}')" title="Убрать">×</button>
+            ${manualMemberIds.has(u.id) ? `<button onclick="removeMemberFromDept('${dept.id}','${u.id}')" title="Убрать">×</button>` : ''}
           </span>`).join('')}
       </div>
       ${nonMembers.length ? `
         <div class="dept-add-row">
-          <input type="text" class="dept-search" placeholder="Поиск сотрудника..." value="${escapeHtml(deptMemberSearch[dept.id] || '')}"
-            oninput="setDeptMemberSearch('${dept.id}',this.value)">
+          <input type="text" id="dept-search-${dept.id}" name="dept-search-${dept.id}" class="dept-search" placeholder="Поиск сотрудника..." value="${escapeHtml(deptMemberSearch[dept.id] || '')}"
+            oninput="setDeptMemberSearch('${dept.id}',this.value)"  autocomplete="off">
           <select id="dept-add-sel-${dept.id}" class="dept-select">
             <option value="">Добавить сотрудника…</option>
             ${filteredNonMembers.map(u=>`<option value="${u.id}">${escapeHtml(u.name)}</option>`).join('')}
@@ -2221,8 +2221,8 @@ function addDepartment() {
   document.getElementById('modal-title').textContent = 'Новый отдел';
   document.getElementById('modal-body').innerHTML = `
     <div class="field">
-      <label>Название</label>
-      <input type="text" id="new-dept-name" placeholder="Например: Финансы">
+      <label for="new-dept-name">Название</label>
+      <input type="text" id="new-dept-name" name="new-dept-name" placeholder="Например: Финансы" autocomplete="off">
     </div>`;
   document.getElementById('modal-foot').innerHTML = `
     <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
@@ -2249,8 +2249,8 @@ function editDeptName(deptId) {
   document.getElementById('modal-title').textContent = 'Переименовать отдел';
   document.getElementById('modal-body').innerHTML = `
     <div class="field">
-      <label>Название</label>
-      <input type="text" id="edit-dept-name" value="${escapeHtml(dept.name)}">
+      <label for="edit-dept-name">Название</label>
+      <input type="text" id="edit-dept-name" name="edit-dept-name" value="${escapeHtml(dept.name)}" autocomplete="off">
     </div>`;
   document.getElementById('modal-foot').innerHTML = `
     <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
