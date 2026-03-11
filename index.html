@@ -157,6 +157,12 @@
             </button>
             <button class="map-day-btn" type="button" onclick="shiftSelectedDate(1)" aria-label="Следующий день">&gt;</button>
           </div>
+          <div class="map-zoom-controls">
+            <button class="btn btn-ghost btn-sm" id="map-zoom-reset" onclick="resetMapZoom()" title="Сбросить масштаб">↺</button>
+            <button class="btn btn-ghost btn-sm" id="map-zoom-out" onclick="changeMapZoom(-0.25)" title="Уменьшить">−</button>
+            <span id="map-zoom-label">100%</span>
+            <button class="btn btn-ghost btn-sm" id="map-zoom-in" onclick="changeMapZoom(0.25)" title="Увеличить">+</button>
+          </div>
         </div>
         <div class="map-area" id="map-area"></div>
         <div class="list-area" id="list-area" style="display:none"></div>

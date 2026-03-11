@@ -13,6 +13,8 @@ const BASE_CORS = {
 };
 
 const SESSION_TTL_HOURS = 12;
+const MAX_BOOKING_DATES_DEFAULT = 120;
+const MAX_BOOKING_DATES_ADMIN = 730; // two years, aligns with retention window
 const BOOKING_RETENTION_MS = 2 * 365 * 24 * 60 * 60 * 1000;
 const BOOKING_STATE_KEY = 'bookings_state';
 const LEGACY_BOOKINGS_KEY = 'bookings';
@@ -444,6 +446,8 @@ async function upsertLdapUser(env, profile) {
     ).bind(userId, profile.email, ldapMarkerPassword, profile.name, profile.department, profile.role).run();
   }
 
+  await ensureUserDepartmentMembership(env, userId, profile.department);
+
   return env.DB.prepare(
     'SELECT id, email, name, department, role FROM users WHERE id = ?'
   ).bind(userId).first();
@@ -669,6 +673,37 @@ async function getUsersMap(env, options = {}) {
   const map = new Map();
   for (const u of list) map.set(u.id, u);
   return { list, map };
+}
+
+function normalizeDepartmentName(name) {
+  return String(name || '').trim();
+}
+
+async function ensureUserDepartmentMembership(env, userId, departmentName) {
+  const cleanName = normalizeDepartmentName(departmentName);
+  if (!cleanName || !userId) return;
+
+  let row = await firstSql(
+    env,
+    'SELECT id FROM departments WHERE LOWER(name) = LOWER(?)',
+    [cleanName]
+  );
+  let departmentId = row?.id ? String(row.id) : '';
+  if (!departmentId) {
+    departmentId = `dep_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+    await runSql(
+      env,
+      "INSERT INTO departments (id, name, head_user_id, updated_at) VALUES (?, ?, NULL, datetime('now'))",
+      [departmentId, cleanName]
+    );
+  }
+
+  await runSql(env, 'DELETE FROM department_members WHERE user_id = ?', [userId]);
+  await runSql(
+    env,
+    'INSERT OR IGNORE INTO department_members (department_id, user_id) VALUES (?, ?)',
+    [departmentId, userId]
+  );
 }
 
 async function getTargetUser(env, userId) {
@@ -1470,7 +1505,6 @@ function validateCreatePayload(body) {
 
   if (!spaceId) return { error: 'Не указано место' };
   if (!dates.length) return { error: 'Не выбраны даты' };
-  if (dates.length > 120) return { error: 'Слишком много дат в одном запросе' };
   if (!isTime(slotFrom) || !isTime(slotTo) || timeToMinutes(slotFrom) >= timeToMinutes(slotTo)) {
     return { error: 'Некорректный временной слот' };
   }
@@ -1531,6 +1565,7 @@ export async function onRequest(context) {
 
       const ldapResult = await tryLdapLogin(env, loginRaw, password);
       if (ldapResult?.ok && ldapResult.user) {
+        await ensureUserDepartmentMembership(env, ldapResult.user.id, ldapResult.user.department);
         const { token } = await createSession(env, ldapResult.user.id);
         const secureCookie = shouldUseSecureCookie(request, env);
         return reply(
@@ -1553,6 +1588,7 @@ export async function onRequest(context) {
         await env.DB.prepare('UPDATE users SET password = ? WHERE id = ?').bind(upgraded, row.id).run();
       }
 
+      await ensureUserDepartmentMembership(env, row.id, row.department);
       const { token } = await createSession(env, row.id);
       const secureCookie = shouldUseSecureCookie(request, env);
       const { password: _password, ...safeUser } = row;
@@ -1667,6 +1703,8 @@ export async function onRequest(context) {
         'INSERT INTO users (id, email, password, name, department, role) VALUES (?, ?, ?, ?, ?, ?)'
       ).bind(id, emailClean, passwordHash, nameClean, departmentClean, roleClean).run();
 
+      await ensureUserDepartmentMembership(env, id, departmentClean);
+
       const { list } = await getUsersMap(env);
       return reply({ ok: true, users: list });
     }
@@ -1680,8 +1718,11 @@ export async function onRequest(context) {
       if (!userId || !roleClean) return reply({ error: 'Некорректные данные' }, 400);
       if (userId === auth.user.id) return reply({ error: 'Нельзя менять роль текущего администратора' }, 400);
 
-      const target = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(userId).first();
+      const target = await env.DB.prepare('SELECT id, password FROM users WHERE id = ?').bind(userId).first();
       if (!target) return reply({ error: 'Пользователь не найден' }, 404);
+      if (isLdapExternalPassword(target.password)) {
+        return reply({ error: 'Это доменный аккаунт. Роль назначается в Active Directory.' }, 400);
+      }
       await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(roleClean, userId).run();
 
       const { list } = await getUsersMap(env, { withSessionActive: true });
@@ -1718,6 +1759,8 @@ export async function onRequest(context) {
         'UPDATE users SET name = ?, email = ?, department = ? WHERE id = ?'
       ).bind(nameClean, emailClean, departmentClean, userId).run();
 
+      await ensureUserDepartmentMembership(env, userId, departmentClean);
+
       const { list } = await getUsersMap(env, { withSessionActive: true });
       return reply({ ok: true, users: list });
     }
@@ -1734,6 +1777,7 @@ export async function onRequest(context) {
       if (!target) return reply({ error: 'Пользователь не найден' }, 404);
 
       await env.DB.prepare('UPDATE users SET department = ? WHERE id = ?').bind(departmentClean, userId).run();
+      await ensureUserDepartmentMembership(env, userId, departmentClean);
       const { list } = await getUsersMap(env, { withSessionActive: true });
       return reply({ ok: true, users: list });
     }
@@ -1806,6 +1850,10 @@ export async function onRequest(context) {
       const body = await request.json();
       const valid = validateCreatePayload(body);
       if (valid.error) return reply({ error: valid.error }, 400);
+      const maxDates = auth.user.role === 'admin' ? MAX_BOOKING_DATES_ADMIN : MAX_BOOKING_DATES_DEFAULT;
+      if (valid.dates.length > maxDates) {
+        return reply({ error: `Слишком много дат в одном запросе (макс. ${maxDates})` }, 400);
+      }
 
       const targetUserId = valid.targetUserId || auth.user.id;
       const targetUser = await getTargetUser(env, targetUserId);

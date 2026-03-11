@@ -45,11 +45,40 @@ function getStatusColors() {
   };
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+const floorImageMetaCache = new Map();
+
+function getFloorImageRatio(floor, onReady) {
+  const url = safeImageUrl(floor?.imageUrl);
+  if (!url) return null;
+  const cached = floorImageMetaCache.get(url);
+  if (cached?.ratio) return cached.ratio;
+
+  const img = new Image();
+  img.onload = () => {
+    const ratio = img.naturalWidth && img.naturalHeight
+      ? img.naturalWidth / img.naturalHeight
+      : null;
+    floorImageMetaCache.set(url, { ratio: ratio || 760 / 520 });
+    if (typeof onReady === 'function') onReady();
+  };
+  img.onerror = () => {
+    floorImageMetaCache.set(url, { ratio: 760 / 520 });
+    if (typeof onReady === 'function') onReady();
+  };
+  img.src = url;
+  return null;
+}
+
 /* ═══════════════════════════════════════════════════════
    DATA LAYER  (localStorage — swap to fetch() later)
 ═══════════════════════════════════════════════════════ */
 // Declared here so DB._push can safely reference it during seed (avoids TDZ)
 let currentUser = null;
+const suppressPushKeys = new Set();
 let apiToken = '';
 let serverRevs = {};
 
@@ -86,7 +115,13 @@ const DB = {
       alert('⚠️ Хранилище браузера переполнено или отключено. Данные не сохранены.');
     }
     // Async push to server KV (skip auth/session/users and bookings: bookings use dedicated API)
-    if (k !== 'session' && k !== 'users' && k !== 'bookings') DB._push(k, v);
+    if (k !== 'session' && k !== 'users' && k !== 'bookings') {
+      if (suppressPushKeys.has(k)) {
+        suppressPushKeys.delete(k);
+      } else {
+        DB._push(k, v);
+      }
+    }
   },
   _push(k, v) {
     if (!currentUser) return; // don't push before login/auth
@@ -104,8 +139,13 @@ const DB = {
         await syncFromServer().catch(() => {});
         return;
       }
-      if (!r.ok) return;
       const data = await r.json().catch(() => null);
+      if (!r.ok) {
+        if (currentUser?.role === 'admin') {
+          toast(data?.error || 'Не удалось сохранить изменения на сервере', 't-red', '✕');
+        }
+        return;
+      }
       if (Number.isInteger(Number(data?.rev))) setServerRev(k, Number(data.rev));
     }).catch(() => {}); // silently ignore when offline
   },
@@ -281,18 +321,24 @@ let expiryTimer   = null;
 let bookingForUserId = null;
 let calendarSinglePick = false;
 let selectedMyBookingIds = new Set();
+let adminUserSearch = '';
+const deptMemberSearch = {};
 
 // Editor state
 let editorCoworkingId = null;
 let editorFloorId   = null;
 let editorSpaces    = [];
 let editorDrawing   = false;
+let editorDrag = null;
 let editorDrawStart = null;
 let editorNewZone   = { label:'', seats:1, color:'#059669' };
+let editorSelectedZoneId = null;
+let editorClipboardZone = null;
 let lastPurgeTime   = 0;
 let purgeTimer      = null;
 let sessionCheckTimer = null;
 let cloudSyncTimer = null;
+let cloudSyncFullTimer = null;
 let _sessionActivityHandler = null;  // single ref so we can removeEventListener
 
 const SLOTS = [
@@ -593,7 +639,7 @@ async function syncFromServer({ bookingsOnly = false } = {}) {
     if (ur.ok) {
       const ud = await ur.json();
       if (Array.isArray(ud.users)) {
-        localStorage.setItem('ws_users', JSON.stringify(ud.users));
+        saveUsers(ud.users);
       }
     }
 
@@ -622,6 +668,39 @@ async function syncFromServer({ bookingsOnly = false } = {}) {
     return fetchBookingsFromApi();
   } catch(e) {
     console.warn('Server sync skipped (offline or local dev):', e.message);
+    return false;
+  }
+}
+
+async function pushDomainKey(key, value) {
+  if (!currentUser) return false;
+  const payload = { value };
+  const rev = getServerRev(key);
+  if (rev) payload.rev = rev;
+  try {
+    const r = await apiFetch('/api/kv/' + encodeURIComponent(key), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (r.status === 401) {
+      requireRelogin();
+      return false;
+    }
+    const data = await r.json().catch(() => ({}));
+    if (r.status === 409) {
+      await syncFromServer().catch(() => {});
+      if (currentView === 'admin') renderAdminView(adminActiveTab);
+      toast('Конфликт обновления. Данные перезагружены — повторите сохранение.', 't-amber', '!');
+      return false;
+    }
+    if (!r.ok) {
+      toast(data.error || 'Не удалось сохранить изменения на сервере', 't-red', '✕');
+      return false;
+    }
+    if (Number.isInteger(Number(data?.rev))) setServerRev(key, Number(data.rev));
+    return true;
+  } catch (e) {
     return false;
   }
 }
@@ -677,12 +756,23 @@ function startCloudSync() {
     if (!currentUser) return;
     syncBookingsFromServer();
   }, 10000);
+  cloudSyncFullTimer = setInterval(() => {
+    if (!currentUser) return;
+    syncFromServer().then(synced => {
+      if (synced) refreshView();
+    }).catch(() => {});
+  }, 60000);
 }
 
 function stopCloudSync() {
-  if (!cloudSyncTimer) return;
-  clearInterval(cloudSyncTimer);
-  cloudSyncTimer = null;
+  if (cloudSyncTimer) {
+    clearInterval(cloudSyncTimer);
+    cloudSyncTimer = null;
+  }
+  if (cloudSyncFullTimer) {
+    clearInterval(cloudSyncFullTimer);
+    cloudSyncFullTimer = null;
+  }
 }
 
 async function initApp() {
@@ -1288,7 +1378,7 @@ function renderMiniBookings() {
   el.innerHTML = mine.sort((a,b)=>a.date.localeCompare(b.date)).map(b => {
     const sp = spaces.find(s=>s.id===b.spaceId);
     return `<div class="mini-booking">
-      <div class="mb-label">${escapeHtml(sp?.label||'?')}</div>
+      <div class="mb-label">${escapeHtml(sp?.label || b.spaceName || '?')}</div>
       <div class="mb-meta">${fmtHuman(b.date)} · ${b.slotFrom}–${b.slotTo}</div>
       <button class="mb-del" onclick="cancelBooking('${b.id}')">✕</button>
     </div>`;
@@ -1322,9 +1412,27 @@ function renderMapView() {
 
   if (displayMode === 'list') { renderListView(spaces, date, from, to); return; }
   const mapArea  = document.getElementById('map-area');
+  if (!mapArea) return;
+  updateMapZoomLabel();
+  const fallbackRatio = 760 / 520;
+  const ratio = getFloorImageRatio(floor, () => { if (currentView === 'map') renderMapView(); }) || fallbackRatio;
+  const areaW = mapArea?.clientWidth || 760;
+  const areaH = mapArea?.clientHeight || 520;
+  const pad = 32;
+  const maxW = Math.max(280, areaW - pad);
+  const maxH = Math.max(220, areaH - pad);
+  let W = maxW;
+  let H = Math.round(W / ratio);
+  if (H > maxH) {
+    H = maxH;
+    W = Math.round(H * ratio);
+  }
+  if (!Number.isFinite(W) || !Number.isFinite(H) || W <= 0 || H <= 0) {
+    W = 760;
+    H = 520;
+  }
 
   // Build SVG map
-  const W=760, H=520;
   const statusColors = getStatusColors();
   let zones = '';
   spaces.forEach(sp => {
@@ -1386,16 +1494,9 @@ function renderMapView() {
 
   const svgW = Math.round(W * mapZoom), svgH = Math.round(H * mapZoom);
   mapArea.innerHTML = `
-    <div style="position:sticky;top:0;z-index:10;background:var(--bg);display:flex;align-items:center;gap:6px;margin-bottom:8px;justify-content:flex-end;padding:4px 0">
-      <button class="btn btn-ghost btn-sm" onclick="resetMapZoom()" title="Сбросить масштаб" style="font-size:11px">↺</button>
-      <button class="btn btn-ghost btn-sm" onclick="changeMapZoom(-0.25)" title="Уменьшить" style="font-size:16px;padding:2px 8px;line-height:1">−</button>
-      <span style="font-size:12px;color:var(--ink3);min-width:36px;text-align:center">${Math.round(mapZoom*100)}%</span>
-      <button class="btn btn-ghost btn-sm" onclick="changeMapZoom(0.25)" title="Увеличить" style="font-size:16px;padding:2px 8px;line-height:1">+</button>
-    </div>
-    <div style="overflow:auto">
-      <div style="position:relative;display:inline-block">
-        <svg width="${svgW}" height="${svgH}" viewBox="0 0 ${W} ${H}"
-          style="display:block;box-shadow:var(--shadow-lg);border-radius:4px;overflow:hidden">
+    <div class="map-scroll">
+      <div class="map-canvas-wrap">
+        <svg width="${svgW}" height="${svgH}" viewBox="0 0 ${W} ${H}" aria-label="План этажа">
           ${bgPattern}${zones}
         </svg>
       </div>
@@ -1405,12 +1506,19 @@ function renderMapView() {
 function changeMapZoom(delta) {
   mapZoom = Math.min(2.0, Math.max(0.5, Math.round((mapZoom + delta) * 100) / 100));
   localStorage.setItem('mapZoom', mapZoom);
+  updateMapZoomLabel();
   renderMapView();
 }
 function resetMapZoom() {
   mapZoom = 1.0;
   localStorage.setItem('mapZoom', mapZoom);
+  updateMapZoomLabel();
   renderMapView();
+}
+
+function updateMapZoomLabel() {
+  const lbl = document.getElementById('map-zoom-label');
+  if (lbl) lbl.textContent = `${Math.round(mapZoom * 100)}%`;
 }
 
 function renderListView(spaces, date, from, to) {
@@ -1598,7 +1706,18 @@ async function bookSpace(spaceId) {
   });
   if (r.status === 401) return requireRelogin();
   const data = await r.json();
-  if (!r.ok) return toast(data.error || 'Ошибка бронирования', 't-red', '✕');
+  if (!r.ok) {
+    const errMsg = data.error || 'Ошибка бронирования';
+    const errLower = errMsg.toLowerCase();
+    if (errLower.includes('не найдено') || errLower.includes('удалено')) {
+      await syncFromServer().catch(() => {});
+      renderStats();
+      renderMiniBookings();
+      if (currentView === 'map') renderMapView();
+      return toast('Карта обновлена. Место было изменено или удалено — выберите снова.', 't-amber', '!');
+    }
+    return toast(errMsg, 't-red', '✕');
+  }
 
   saveBookings(Array.isArray(data.bookings) ? data.bookings : []);
   closeModal();
@@ -1858,7 +1977,7 @@ function renderMyBookingsView() {
           <td style="text-align:center">
             ${canCancel ? `<input type="checkbox" ${checked} onchange="toggleMyBookingSelection('${b.id}', this.checked)">` : ''}
           </td>
-          <td><strong>${escapeHtml(sp?.label||'?')}</strong></td>
+          <td><strong>${escapeHtml(sp?.label || b.spaceName || '?')}</strong></td>
           <td>${escapeHtml(fl?.name||'?')}</td>
           <td>${fmtHuman(b.date)}</td>
           <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
@@ -1922,7 +2041,7 @@ function renderCabinetView() {
               const fl = floors.find(f => f.id === sp?.floorId);
               return `<tr>
                 <td><strong>${escapeHtml(b.userName)}</strong></td>
-                <td>${escapeHtml(sp?.label || '?')}</td>
+                <td>${escapeHtml(sp?.label || b.spaceName || '?')}</td>
                 <td>${fmtHuman(b.date)}</td>
                 <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
                 <td>${canCancelBooking(b) ? `<button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}')">Отменить</button>` : '<span style="color:var(--ink4)">—</span>'}</td>
@@ -1944,7 +2063,7 @@ function renderCabinetView() {
                 const sp = spaces.find(s => s.id === b.spaceId);
                 const fl = floors.find(f => f.id === sp?.floorId);
                 return `<tr>
-                  <td><strong>${escapeHtml(sp?.label || '?')}</strong></td>
+                  <td><strong>${escapeHtml(sp?.label || b.spaceName || '?')}</strong></td>
                   <td>${escapeHtml(fl?.name || '?')}</td>
                   <td>${fmtHuman(b.date)}</td>
                   <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
@@ -2017,7 +2136,7 @@ function renderTeamView() {
           const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
           return `<tr>
             <td><strong>${escapeHtml(b.userName)}</strong></td>
-            <td>${escapeHtml(sp?.label||'?')}</td>
+            <td>${escapeHtml(sp?.label || b.spaceName || '?')}</td>
             <td>${fmtHuman(b.date)}</td>
             <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
             <td>${canCancelBooking(b) ? `<button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}')">Отменить</button>` : '<span style="color:var(--ink4)">—</span>'}</td>
@@ -2046,6 +2165,10 @@ function buildDeptCard(dept, users) {
   const head    = users.find(u => u.id === dept.headUserId);
   const members = (dept.memberIds || []).map(id => users.find(u => u.id === id)).filter(Boolean);
   const nonMembers = users.filter(u => !(dept.memberIds || []).includes(u.id));
+  const search = getDeptMemberSearch(dept.id);
+  const filteredNonMembers = search
+    ? nonMembers.filter(u => `${u.name} ${u.email} ${u.department || ''}`.toLowerCase().includes(search))
+    : nonMembers;
   return `
   <div class="dept-card" id="dept-${dept.id}">
     <div class="dept-card-head">
@@ -2075,9 +2198,11 @@ function buildDeptCard(dept, users) {
       </div>
       ${nonMembers.length ? `
         <div class="dept-add-row">
+          <input type="text" class="dept-search" placeholder="Поиск сотрудника..." value="${escapeHtml(deptMemberSearch[dept.id] || '')}"
+            oninput="setDeptMemberSearch('${dept.id}',this.value)">
           <select id="dept-add-sel-${dept.id}" class="dept-select">
             <option value="">Добавить сотрудника…</option>
-            ${nonMembers.map(u=>`<option value="${u.id}">${escapeHtml(u.name)}</option>`).join('')}
+            ${filteredNonMembers.map(u=>`<option value="${u.id}">${escapeHtml(u.name)}</option>`).join('')}
           </select>
           <button class="btn btn-ghost btn-sm" onclick="addMemberToDept('${dept.id}')">Добавить</button>
         </div>` : ''}
@@ -2296,13 +2421,36 @@ function adminTab(tab, btn) {
   renderAdminTabContent(tab);
 }
 
+function setAdminUserSearch(value) {
+  adminUserSearch = String(value || '').trim();
+  if (currentView === 'admin') renderAdminView('users');
+}
+
+function setDeptMemberSearch(deptId, value) {
+  deptMemberSearch[deptId] = String(value || '');
+  _refreshDeptTab();
+}
+
+function getDeptMemberSearch(deptId) {
+  return String(deptMemberSearch[deptId] || '').trim().toLowerCase();
+}
+
 /* ── Admin: Users ─────────────────────────────────────────────────────────── */
 function renderAdminUsers(el) {
   const users = getUsers();
   const bks   = getActiveBookings(getBookings());
   const roles = { user:'Сотрудник', manager:'Руководитель', admin:'Администратор' };
+  const search = adminUserSearch.trim().toLowerCase();
+  const filtered = search
+    ? users.filter(u => `${u.name} ${u.email} ${u.department || ''}`.toLowerCase().includes(search))
+    : users;
 
-  el.innerHTML = `<div style="margin-bottom:1rem;display:flex;justify-content:flex-end">
+  el.innerHTML = `<div style="margin-bottom:1rem;display:flex;justify-content:space-between;gap:.75rem;align-items:center;flex-wrap:wrap">
+    <div style="display:flex;gap:.5rem;align-items:center">
+      <input type="text" class="role-sel" placeholder="Поиск сотрудника..." value="${escapeHtml(adminUserSearch)}"
+        oninput="setAdminUserSearch(this.value)" style="min-width:220px">
+      <span style="font-size:12px;color:var(--ink4)">Найдено: ${filtered.length}</span>
+    </div>
     <button class="btn btn-primary" onclick="showAddUserModal()">+ Добавить аккаунт</button>
   </div>
   <div class="metrics" style="margin-bottom:1.25rem">
@@ -2314,7 +2462,7 @@ function renderAdminUsers(el) {
   <div class="card"><div class="card-head">Пользователи</div>
   <div style="padding:0"><table class="data-table">
     <thead><tr><th>ФИО</th><th>Email</th><th>Отдел</th><th>Пароль</th><th>Бронирований</th><th>Роль</th><th></th></tr></thead>
-    <tbody>${users.map(u => {
+    <tbody>${filtered.map(u => {
       const cnt = bks.filter(b=>sameId(b.userId, u.id)).length;
       const isSelf = isCurrentUserId(u.id);
       return `<tr>
@@ -2670,7 +2818,7 @@ function renderAdminBookings(el) {
           bks.map(b=>{
             const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
             return `<tr>
-              <td><strong>${escapeHtml(sp?.label||'?')}</strong><br><span style="font-size:11px;color:var(--ink3)">${escapeHtml(fl?.name||'?')}</span></td>
+              <td><strong>${escapeHtml(sp?.label || b.spaceName || '?')}</strong><br><span style="font-size:11px;color:var(--ink3)">${escapeHtml(fl?.name||'?')}</span></td>
               <td>${escapeHtml(b.userName)}</td>
               <td style="font-size:12px;color:var(--ink3)">${isMineBooking(b)?'<span class="badge badge-blue">Вы</span>':escapeHtml(getUsers().find(u=>u.id===b.userId)?.department||'—')}</td>
               <td>${fmtHuman(b.date)}</td>
@@ -2693,7 +2841,7 @@ function exportCSV() {
   const rows = [['Место','Этаж','Сотрудник','Дата','Слот от','Слот до','Истекает']];
   bks.forEach(b => {
     const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
-    rows.push([escapeCSV(sp?.label||'?'), escapeCSV(fl?.name||'?'), escapeCSV(b.userName), escapeCSV(b.date), escapeCSV(b.slotFrom), escapeCSV(b.slotTo), escapeCSV(b.expiresAt)]);
+    rows.push([escapeCSV(sp?.label || b.spaceName || '?'), escapeCSV(fl?.name||'?'), escapeCSV(b.userName), escapeCSV(b.date), escapeCSV(b.slotFrom), escapeCSV(b.slotTo), escapeCSV(b.expiresAt)]);
   });
   const csv = rows.map(r=>r.join(',')).join('\n');
   const a = document.createElement('a');
@@ -3043,7 +3191,7 @@ function renderEditorForFloor() {
         onmousemove="editorMouseMove(event)"
         onmouseup="editorMouseUp(event)">
         ${floor.imageUrl
-          ? `<img src="${floor.imageUrl}" id="floor-img" style="width:100%;height:auto;display:block;pointer-events:none">`
+          ? `<img src="${floor.imageUrl}" id="floor-img" style="width:100%;height:auto;display:block;pointer-events:none" onload="renderEditorZones()">`
           : `<div class="no-image">
               <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
                 <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
@@ -3087,7 +3235,9 @@ function renderEditorForFloor() {
               <div style="width:10px;height:10px;border-radius:2px;background:${safeCssColor(sp.color)};flex-shrink:0"></div>
               <span style="flex:1;font-weight:600">${escapeHtml(sp.label)}</span>
               <span style="color:var(--ink4)">${sp.seats} мест</span>
-              <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')">✕</button>
+              <button class="btn btn-ghost btn-xs" onclick="renameEditorZone('${sp.id}')" title="Переименовать">✏️</button>
+              <button class="btn btn-ghost btn-xs" onclick="duplicateEditorZone('${sp.id}')" title="Копировать">⧉</button>
+              <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')" title="Удалить">✕</button>
             </div>`).join('') :
             `<div style="font-size:12px;color:var(--ink4);text-align:center;padding:.75rem">Нет зон</div>`}
         </div>
@@ -3115,6 +3265,7 @@ function renderEditorForFloor() {
     </div>`;
 
   renderEditorZones();
+  updateEditorZonesList();
 }
 
 function renderEditorZones() {
@@ -3126,7 +3277,7 @@ function renderEditorZones() {
 
   zonesEl.innerHTML = editorSpaces.map(sp => {
     const x = sp.x/100*CW, y = sp.y/100*CH, w = sp.w/100*CW, h = sp.h/100*CH;
-    return `<div class="zone-rect" data-id="${sp.id}"
+    return `<div class="zone-rect${sp.id === editorSelectedZoneId ? ' selected' : ''}" data-id="${sp.id}" onmousedown="editorZoneMouseDown(event,'${sp.id}')"
       style="left:${x}px;top:${y}px;width:${w}px;height:${h}px;background:${safeCssColor(sp.color)}">
       <div class="zone-label">${escapeHtml(sp.label)}<br><span style="font-size:9px;opacity:.8">${sp.seats} мест</span></div>
       <button class="zone-del" onclick="deleteEditorZone('${sp.id}')">✕</button>
@@ -3137,8 +3288,10 @@ function renderEditorZones() {
 /* ── Drawing ──────────────────────────────────────────────────────────────── */
 let _drawRect = null;
 function editorMouseDown(e) {
+  if (editorDrag) return;
   if (e.target.classList.contains('zone-del')) return;
-  if (e.target.classList.contains('zone-rect')) return;
+  if (e.target.classList.contains('zone-rect') || e.target.closest?.('.zone-rect')) return;
+  clearEditorSelection();
   const canvas = document.getElementById('editor-canvas');
   const rect   = canvas.getBoundingClientRect();
   editorDrawing  = true;
@@ -3151,6 +3304,29 @@ function editorMouseDown(e) {
 }
 
 function editorMouseMove(e) {
+  if (editorDrag) {
+    const canvas = document.getElementById('editor-canvas');
+    if (!canvas) return;
+    const rect   = canvas.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) / editorZoom;
+    const cy = (e.clientY - rect.top) / editorZoom;
+    const sp = editorSpaces.find(s => s.id === editorDrag.id);
+    if (!sp) return;
+    const dxPct = (cx - editorDrag.startX) / editorDrag.cw * 100;
+    const dyPct = (cy - editorDrag.startY) / editorDrag.ch * 100;
+    sp.x = clamp(editorDrag.origX + dxPct, 0, 100 - sp.w);
+    sp.y = clamp(editorDrag.origY + dyPct, 0, 100 - sp.h);
+    const el = document.querySelector(`.zone-rect[data-id="${sp.id}"]`);
+    if (el) {
+      const CW = canvas.offsetWidth || 800;
+      const CH = document.getElementById('floor-img')?.offsetHeight || canvas.offsetHeight || 480;
+      const x = sp.x / 100 * CW;
+      const y = sp.y / 100 * CH;
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+    }
+    return;
+  }
   if (!editorDrawing) return;
   const canvas = document.getElementById('editor-canvas');
   const rect   = canvas.getBoundingClientRect();
@@ -3163,6 +3339,10 @@ function editorMouseMove(e) {
 }
 
 function editorMouseUp(e) {
+  if (editorDrag) {
+    editorDrag = null;
+    return;
+  }
   if (!editorDrawing) return;
   editorDrawing = false;
   const dr = document.getElementById('editor-drawing');
@@ -3209,7 +3389,89 @@ function createZoneFromModal(px,py,pw,ph,CW,CH) {
   editorSpaces.push(newSp);
   renderEditorZones();
   updateEditorZonesList();
+  selectEditorZone(newSp.id);
   toast(`Зона "${label}" добавлена — не забудь сохранить`, 't-green', '✓');
+}
+
+function selectEditorZone(zoneId) {
+  editorSelectedZoneId = zoneId || null;
+  document.querySelectorAll('.zone-rect.selected').forEach(el => el.classList.remove('selected'));
+  if (!zoneId) return;
+  const el = document.querySelector(`.zone-rect[data-id="${zoneId}"]`);
+  if (el) el.classList.add('selected');
+}
+
+function clearEditorSelection() {
+  editorSelectedZoneId = null;
+  document.querySelectorAll('.zone-rect.selected').forEach(el => el.classList.remove('selected'));
+}
+
+function editorZoneMouseDown(e, zoneId) {
+  e.preventDefault();
+  e.stopPropagation();
+  selectEditorZone(zoneId);
+  const canvas = document.getElementById('editor-canvas');
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  const sp = editorSpaces.find(s => s.id === zoneId);
+  if (!sp) return;
+  editorDrag = {
+    id: zoneId,
+    startX: (e.clientX - rect.left) / editorZoom,
+    startY: (e.clientY - rect.top) / editorZoom,
+    origX: sp.x,
+    origY: sp.y,
+    cw: canvas.offsetWidth || 800,
+    ch: document.getElementById('floor-img')?.offsetHeight || canvas.offsetHeight || 480,
+  };
+}
+
+function renameEditorZone(id) {
+  const sp = editorSpaces.find(s => s.id === id);
+  if (!sp) return;
+  document.getElementById('modal-title').textContent = 'Переименовать зону';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="field"><label>Название зоны</label>
+      <input type="text" id="zone-rename-input" value="${escapeHtml(sp.label)}">
+    </div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+    <button class="btn btn-primary" onclick="saveEditorZoneName('${sp.id}')">Сохранить</button>`;
+  document.getElementById('modal-overlay').classList.add('open');
+  requestAnimationFrame(() => {
+    const i = document.getElementById('zone-rename-input');
+    if (i) { i.focus(); i.select(); }
+  });
+}
+
+function saveEditorZoneName(id) {
+  const sp = editorSpaces.find(s => s.id === id);
+  if (!sp) return;
+  const name = document.getElementById('zone-rename-input')?.value.trim();
+  if (!name) return toast('Введите название', 't-red', '✕');
+  sp.label = name;
+  closeModal();
+  renderEditorZones();
+  updateEditorZonesList();
+  toast('Зона переименована — не забудь сохранить', 't-green', '✓');
+}
+
+function duplicateEditorZone(id) {
+  const sp = editorSpaces.find(s => s.id === id);
+  if (!sp) return;
+  const offset = 2;
+  const copy = {
+    ...sp,
+    id: DB.uid(),
+    label: `${sp.label} (копия)`,
+    x: clamp(sp.x + offset, 0, 100 - sp.w),
+    y: clamp(sp.y + offset, 0, 100 - sp.h),
+  };
+  editorSpaces.push(copy);
+  renderEditorZones();
+  updateEditorZonesList();
+  selectEditorZone(copy.id);
+  toast('Зона скопирована — не забудь сохранить', 't-green', '✓');
 }
 
 function pickColor(c) {
@@ -3236,15 +3498,21 @@ function updateEditorZonesList() {
       <div style="width:10px;height:10px;border-radius:2px;background:${safeCssColor(sp.color)};flex-shrink:0"></div>
       <span style="flex:1;font-weight:600">${escapeHtml(sp.label)}</span>
       <span style="color:var(--ink4)">${sp.seats} мест</span>
-      <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')">✕</button>
+      <button class="btn btn-ghost btn-xs" onclick="renameEditorZone('${sp.id}')" title="Переименовать">✏️</button>
+      <button class="btn btn-ghost btn-xs" onclick="duplicateEditorZone('${sp.id}')" title="Копировать">⧉</button>
+      <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')" title="Удалить">✕</button>
     </div>`).join('') :
     `<div style="font-size:12px;color:var(--ink4);text-align:center;padding:.75rem">Нет зон</div>`;
 }
 
-function saveEditorSpaces() {
+async function saveEditorSpaces() {
+  await syncFromServer().catch(() => {});
   const allSpaces   = getSpaces().filter(s=>s.floorId!==editorFloorId);
   const finalSpaces = [...allSpaces, ...editorSpaces];
+  suppressPushKeys.add('spaces');
   saveSpaces(finalSpaces);
+  const ok = await pushDomainKey('spaces', finalSpaces);
+  if (!ok) return;
   // Refresh floors/spaces in main view
   if (!selFloorId) selFloorId = editorFloorId;
   renderFloors(); renderStats(); renderMiniBookings();
@@ -3404,11 +3672,13 @@ function initSidebarResize() {
     document.body.style.userSelect = '';
     const w = parseInt(sidebar.style.width);
     if (w) localStorage.setItem('ws_sidebar_w', w);
+    if (currentView === 'map' && displayMode === 'map') renderMapView();
   });
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
   initSidebarResize();
+  document.addEventListener('keydown', handleEditorHotkeys);
   // Enter key
   document.getElementById('l-pass')?.addEventListener('keydown', e => e.key==='Enter' && doLogin());
 
@@ -3422,6 +3692,50 @@ window.addEventListener('DOMContentLoaded', async () => {
     DB.set('session', null); // drop legacy/invalid sessions
   }
 });
+
+function handleEditorHotkeys(e) {
+  if (currentView !== 'admin' || adminActiveTab !== 'floors') return;
+  if (!editorFloorId) return;
+  const target = e.target;
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+
+  const key = String(e.key || '').toLowerCase();
+  const combo = (e.ctrlKey || e.metaKey) && !e.shiftKey;
+  if (!combo) return;
+
+  if (key === 'c') {
+    if (!editorSelectedZoneId) {
+      toast('Выберите зону для копирования', 't-amber', '!');
+      return;
+    }
+    const sp = editorSpaces.find(s => s.id === editorSelectedZoneId);
+    if (!sp) return;
+    editorClipboardZone = { ...sp };
+    toast('Зона скопирована', 't-green', '✓');
+    e.preventDefault();
+  }
+
+  if (key === 'v') {
+    if (!editorClipboardZone) {
+      toast('Скопируйте зону (Cmd/Ctrl+C)', 't-amber', '!');
+      return;
+    }
+    const offset = 2;
+    const copy = {
+      ...editorClipboardZone,
+      id: DB.uid(),
+      label: `${editorClipboardZone.label} (копия)`,
+      x: clamp(editorClipboardZone.x + offset, 0, 100 - editorClipboardZone.w),
+      y: clamp(editorClipboardZone.y + offset, 0, 100 - editorClipboardZone.h),
+    };
+    editorSpaces.push(copy);
+    renderEditorZones();
+    updateEditorZonesList();
+    selectEditorZone(copy.id);
+    toast('Зона вставлена — не забудь сохранить', 't-green', '✓');
+    e.preventDefault();
+  }
+}
 
 
 /* ═══════════════════════════════════════════════════════
