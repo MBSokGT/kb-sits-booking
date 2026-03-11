@@ -695,6 +695,8 @@ async function ensureUserDepartmentMembership(env, userId, departmentName) {
     [cleanName]
   );
   let departmentId = row?.id ? String(row.id) : '';
+  let changed = false;
+
   if (!departmentId) {
     departmentId = `dep_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
     await runSql(
@@ -702,14 +704,25 @@ async function ensureUserDepartmentMembership(env, userId, departmentName) {
       "INSERT INTO departments (id, name, head_user_id, updated_at) VALUES (?, ?, NULL, datetime('now'))",
       [departmentId, cleanName]
     );
+    changed = true;
   }
 
-  await runSql(env, 'DELETE FROM department_members WHERE user_id = ?', [userId]);
-  await runSql(
+  const existing = await firstSql(
     env,
-    'INSERT OR IGNORE INTO department_members (department_id, user_id) VALUES (?, ?)',
-    [departmentId, userId]
+    'SELECT 1 FROM department_members WHERE user_id = ? AND department_id = ?',
+    [userId, departmentId]
   );
+  if (!existing) {
+    await runSql(env, 'DELETE FROM department_members WHERE user_id = ?', [userId]);
+    await runSql(
+      env,
+      'INSERT OR IGNORE INTO department_members (department_id, user_id) VALUES (?, ?)',
+      [departmentId, userId]
+    );
+    changed = true;
+  }
+
+  if (changed) await bumpDomainRev(env, 'departments');
 }
 
 async function getTargetUser(env, userId) {
@@ -1446,7 +1459,11 @@ async function migrateLegacyDomainData(env) {
   if (await tableRowCount(env, 'departments') === 0) {
     const row = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', ['departments']);
     const parsed = row ? parseJsonSafe(row.v, null) : null;
-    if (Array.isArray(parsed) && parsed.length) await replaceDepartmentsTable(env, parsed);
+    if (Array.isArray(parsed) && parsed.length) {
+      await replaceDepartmentsTable(env, parsed);
+      // Remove old KV entry so this migration doesn't re-run if all depts are later deleted
+      await runSql(env, 'DELETE FROM kv_store WHERE k = ?', ['departments']);
+    }
   }
 
   if (await tableRowCount(env, 'working_saturdays') === 0) {

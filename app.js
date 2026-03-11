@@ -2235,7 +2235,7 @@ function buildDeptCard(dept, users) {
       </select>
     </div>
     <div class="dept-members">
-      <label class="dept-label">Сотрудники (${members.length})</label>
+      <span class="dept-label">Сотрудники (${members.length})</span>
       <div class="dept-member-list">
         ${members.map(u=>`
           <span class="dept-member-chip">
@@ -2245,9 +2245,9 @@ function buildDeptCard(dept, users) {
       </div>
       ${nonMembers.length ? `
         <div class="dept-add-row">
-          <input type="text" id="dept-search-${dept.id}" name="dept-search-${dept.id}" class="dept-search" placeholder="Поиск сотрудника..." value="${escapeHtml(deptMemberSearch[dept.id] || '')}"
+          <input type="text" id="dept-search-${dept.id}" name="dept-search-${dept.id}" aria-label="Поиск сотрудника в отделе ${escapeHtml(dept.name)}" class="dept-search" placeholder="Поиск сотрудника..." value="${escapeHtml(deptMemberSearch[dept.id] || '')}"
             oninput="setDeptMemberSearch('${dept.id}',this.value)"  autocomplete="off">
-          <select id="dept-add-sel-${dept.id}" class="dept-select">
+          <select id="dept-add-sel-${dept.id}" name="dept-add-sel-${dept.id}" aria-label="Добавить сотрудника в отдел ${escapeHtml(dept.name)}" class="dept-select">
             <option value="">Добавить сотрудника…</option>
             ${filteredNonMembers.map(u=>`<option value="${u.id}">${escapeHtml(u.name)}</option>`).join('')}
           </select>
@@ -2314,10 +2314,12 @@ function saveDeptName(deptId) {
 function deleteDepartment(deptId) {
   const depts = getDepartments();
   const dept  = depts.find(d => d.id === deptId);
-  if (!dept || !confirm(`Удалить отдел «${dept.name}»?`)) return;
-  saveDepartments(depts.filter(d => d.id !== deptId));
-  _refreshDeptTab();
-  toast('Отдел удалён', '', '✓');
+  if (!dept) return;
+  confirmAction(`Удалить отдел «${escapeHtml(dept.name)}»?`, () => {
+    saveDepartments(getDepartments().filter(d => d.id !== deptId));
+    _refreshDeptTab();
+    toast('Отдел удалён', '', '✓');
+  });
 }
 
 function setDeptHead(deptId, userId) {
