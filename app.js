@@ -645,6 +645,7 @@ async function syncFromServer({ bookingsOnly = false } = {}) {
 
     // 2. Sync shared KV buckets (without bookings: bookings are in dedicated API)
     const keys = ['coworkings', 'floors', 'spaces', 'departments'];
+    const pendingPush = {};
 
     await Promise.all(keys.map(async k => {
       const r = await apiFetch('/api/kv/' + encodeURIComponent(k));
@@ -656,14 +657,20 @@ async function syncFromServer({ bookingsOnly = false } = {}) {
         // Server has data → overwrite localStorage (truth comes from server)
         localStorage.setItem('ws_' + k, JSON.stringify(d.value));
       } else {
-        // Server bucket empty → push current localStorage value so other devices get it
+        // Server bucket empty → collect for ordered push (spaces depend on floors)
         const local = DB.get(k, null);
-        if (local) DB._push(k, local);
+        if (local) pendingPush[k] = local;
       }
     }));
+
     if (unauthorized) {
       requireRelogin();
       return false;
+    }
+    // Push empty-server keys in dependency order: coworkings → floors → spaces
+    // (parallel Promise.all would race and spaces could arrive before floors exist)
+    for (const k of ['coworkings', 'floors', 'spaces', 'departments']) {
+      if (pendingPush[k]) await pushDomainKey(k, pendingPush[k]);
     }
     return fetchBookingsFromApi();
   } catch(e) {
