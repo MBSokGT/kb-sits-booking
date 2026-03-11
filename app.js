@@ -3509,9 +3509,18 @@ async function saveEditorSpaces() {
   await syncFromServer().catch(() => {});
   const allSpaces   = getSpaces().filter(s=>s.floorId!==editorFloorId);
   const finalSpaces = [...allSpaces, ...editorSpaces];
+  const floorIds = new Set(getFloors().map(f => f.id));
+  const cleanedSpaces = finalSpaces.filter(s => floorIds.has(s.floorId));
+  if (cleanedSpaces.length !== finalSpaces.length) {
+    toast('Некоторые зоны относились к удалённым этажам и были убраны', 't-amber', '!');
+  }
+  const okCoworkings = await pushDomainKey('coworkings', getCoworkings());
+  if (!okCoworkings) return;
+  const okFloors = await pushDomainKey('floors', getFloors());
+  if (!okFloors) return;
   suppressPushKeys.add('spaces');
-  saveSpaces(finalSpaces);
-  const ok = await pushDomainKey('spaces', finalSpaces);
+  saveSpaces(cleanedSpaces);
+  const ok = await pushDomainKey('spaces', cleanedSpaces);
   if (!ok) return;
   // Refresh floors/spaces in main view
   if (!selFloorId) selFloorId = editorFloorId;
