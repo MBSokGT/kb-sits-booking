@@ -319,6 +319,7 @@ let bookingUserSearch = '';
 let calendarSinglePick = false;
 let selectedMyBookingIds = new Set();
 let adminUserSearch = '';
+let adminUserSort = 'lastLogin';
 const deptMemberSearch = {};
 
 // Editor state
@@ -2472,6 +2473,12 @@ function setAdminUserSearch(value) {
   if (currentView === 'admin') renderAdminView('users');
 }
 
+function setAdminUserSort(value) {
+  const next = String(value || '').trim();
+  adminUserSort = next || 'lastLogin';
+  if (currentView === 'admin') renderAdminView('users');
+}
+
 function setBookingUserSearch(value) {
   bookingUserSearch = String(value || '').trim().toLowerCase();
   renderBookingTargetOptions();
@@ -2513,11 +2520,39 @@ function renderAdminUsers(el) {
   const filtered = search
     ? users.filter(u => `${u.name} ${u.email} ${u.department || ''}`.toLowerCase().includes(search))
     : users;
+  const toLoginTs = (v) => {
+    if (!v) return 0;
+    const s = String(v);
+    const iso = s.includes('T') ? s : `${s.replace(' ', 'T')}Z`;
+    const ts = Date.parse(iso);
+    return Number.isFinite(ts) ? ts : 0;
+  };
+  const sorted = filtered.slice().sort((a, b) => {
+    if (adminUserSort === 'name') {
+      return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
+    }
+    if (adminUserSort === 'department') {
+      const ad = String(a.department || '');
+      const bd = String(b.department || '');
+      const depCmp = ad.localeCompare(bd, 'ru');
+      if (depCmp !== 0) return depCmp;
+      return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
+    }
+    const at = toLoginTs(a.lastLogin || a.last_login);
+    const bt = toLoginTs(b.lastLogin || b.last_login);
+    if (at !== bt) return bt - at; // newest first; missing goes last
+    return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
+  });
 
   el.innerHTML = `<div style="margin-bottom:1rem;display:flex;justify-content:space-between;gap:.75rem;align-items:center;flex-wrap:wrap">
     <div style="display:flex;gap:.5rem;align-items:center">
       <input type="text" class="role-sel" placeholder="Поиск сотрудника..." value="${escapeHtml(adminUserSearch)}"
         oninput="setAdminUserSearch(this.value)" style="min-width:220px">
+      <select class="role-sel" onchange="setAdminUserSort(this.value)" style="min-width:200px">
+        <option value="lastLogin" ${adminUserSort==='lastLogin'?'selected':''}>Сортировка: по дате входа</option>
+        <option value="name" ${adminUserSort==='name'?'selected':''}>Сортировка: по ФИО</option>
+        <option value="department" ${adminUserSort==='department'?'selected':''}>Сортировка: по отделу</option>
+      </select>
       <span style="font-size:12px;color:var(--ink4)">Найдено: ${filtered.length}</span>
     </div>
     <button class="btn btn-primary" onclick="showAddUserModal()">+ Добавить аккаунт</button>
@@ -2531,7 +2566,7 @@ function renderAdminUsers(el) {
   <div class="card"><div class="card-head">Пользователи</div>
   <div style="padding:0"><table class="data-table">
     <thead><tr><th>ФИО</th><th>Email</th><th>Отдел</th><th>Пароль</th><th>Бронирований</th><th>Роль</th><th>Статус</th><th></th></tr></thead>
-    <tbody>${filtered.map(u => {
+    <tbody>${sorted.map(u => {
       const cnt = bks.filter(b=>sameId(b.userId, u.id)).length;
       const isSelf = isCurrentUserId(u.id);
       return `<tr>

@@ -449,7 +449,7 @@ async function upsertLdapUser(env, profile) {
   await ensureUserDepartmentMembership(env, userId, profile.department);
 
   return env.DB.prepare(
-    'SELECT id, email, name, department, role, blocked FROM users WHERE id = ?'
+    'SELECT id, email, name, department, role, blocked, last_login FROM users WHERE id = ?'
   ).bind(userId).first();
 }
 
@@ -665,13 +665,14 @@ async function revokeUserSessions(env, userId, keepToken = '') {
 
 async function getUsersMap(env, options = {}) {
   const { results } = await env.DB.prepare(
-    'SELECT id, email, name, department, role, password, blocked FROM users ORDER BY role DESC, name'
+    'SELECT id, email, name, department, role, password, blocked, last_login FROM users ORDER BY role DESC, name'
   ).all();
   const withSessionActive = !!options.withSessionActive;
   const activeUserIds = withSessionActive ? await getActiveSessionUserIds(env) : null;
-  const list = (results || []).map(({ password, blocked, ...u }) => ({
+  const list = (results || []).map(({ password, blocked, last_login, ...u }) => ({
     ...u,
     blocked: Number(blocked || 0) === 1,
+    lastLogin: last_login || null,
     isLdap: isLdapExternalPassword(password),
     ...(withSessionActive ? { sessionActive: activeUserIds.has(u.id) } : {}),
   }));
@@ -1574,6 +1575,9 @@ export async function onRequest(context) {
           return reply({ error: 'Аккаунт заблокирован. Обратитесь к администратору.' }, 403);
         }
         await ensureUserDepartmentMembership(env, ldapResult.user.id, ldapResult.user.department);
+        await env.DB.prepare('UPDATE users SET last_login = datetime(\'now\') WHERE id = ?')
+          .bind(ldapResult.user.id)
+          .run();
         const { token } = await createSession(env, ldapResult.user.id);
         const secureCookie = shouldUseSecureCookie(request, env);
         return reply(
@@ -1598,6 +1602,10 @@ export async function onRequest(context) {
         const upgraded = await hashPassword(password);
         await env.DB.prepare('UPDATE users SET password = ? WHERE id = ?').bind(upgraded, row.id).run();
       }
+
+      await env.DB.prepare('UPDATE users SET last_login = datetime(\'now\') WHERE id = ?')
+        .bind(row.id)
+        .run();
 
       await ensureUserDepartmentMembership(env, row.id, row.department);
       const { token } = await createSession(env, row.id);

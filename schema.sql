@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
   department TEXT NOT NULL DEFAULT '',
   role       TEXT NOT NULL DEFAULT 'user',
   blocked    INTEGER NOT NULL DEFAULT 0,
+  last_login TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

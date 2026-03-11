@@ -34,6 +34,9 @@ const userCols = sqlite.prepare("PRAGMA table_info(users)").all();
 if (!userCols.some(col => col.name === 'blocked')) {
   sqlite.exec('ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0');
 }
+if (!userCols.some(col => col.name === 'last_login')) {
+  sqlite.exec('ALTER TABLE users ADD COLUMN last_login TEXT');
+}
 
 function hashPasswordNode(password) {
   const salt = crypto.randomBytes(16).toString('hex');
