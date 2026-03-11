@@ -23,8 +23,8 @@
       <div class="auth-err" id="auth-err"></div>
       <!-- LOGIN -->
       <div id="aform-login">
-        <div class="field"><label>Логин / Email</label>
-          <input type="text" id="l-email" placeholder="you@company.ru или DOMAIN\\login" autocomplete="username">
+        <div class="field"><label>Логин</label>
+          <input type="text" id="l-email" placeholder="DOMAIN\login" autocomplete="username">
         </div>
         <div class="field"><label>Пароль</label>
           <input type="password" id="l-pass" placeholder="••••••" autocomplete="current-password">
@@ -261,15 +261,12 @@
     <div class="cal-slot-box">
       <div class="cal-slot-title">Временной слот для бронирования</div>
       <select class="cal-slot-select" id="cal-slot-select" onchange="onCalendarSlotSelect(this.value)">
-        <option value="morning">Утро (09:00–13:00)</option>
-        <option value="afternoon">День (13:00–17:00)</option>
-        <option value="evening">Вечер (17:00–21:00)</option>
-        <option value="full">Весь день (09:00–21:00)</option>
+        <option value="full">Весь день (10:00–18:00)</option>
         <option value="custom">Своё время</option>
       </select>
       <div class="cal-slot-custom" id="cal-slot-custom" style="display:none">
         <div class="custom-time">
-          <input type="time" id="cal-ct-from" value="09:00">
+          <input type="time" id="cal-ct-from" value="10:00">
           <span style="display:flex;align-items:center;color:var(--ink3);font-size:13px">—</span>
           <input type="time" id="cal-ct-to" value="18:00">
           <button class="custom-apply" onclick="applyCalendarCustomTime()">OK</button>

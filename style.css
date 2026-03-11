@@ -89,6 +89,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .tnav:hover{color:white;background:rgba(255,255,255,.08)}
 .tnav.active{color:white;background:rgba(255,255,255,.13)}
 .tnav.manager-only{display:none}
+.tnav.admin-only{display:none}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:.75rem}
 .user-info{display:flex;align-items:center;gap:8px;cursor:pointer}
 .avatar{width:30px;height:30px;border-radius:50%;background:var(--blue);color:white;
@@ -609,7 +610,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .view-area{flex:1;overflow-y:auto;padding:1.5rem;display:flex;flex-direction:column;gap:1.25rem}
 .view-head{font-size:20px;font-weight:800;letter-spacing:-.5px;margin-bottom:.25rem}
 .view-sub{font-size:13px;color:var(--ink3)}
-.card{background:var(--white);border:1px solid var(--line);border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow)}
+.card{background:var(--white);border:1px solid var(--line);border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow);flex-shrink:0}
 .card-head{padding:1rem 1.25rem;border-bottom:1px solid var(--line);font-weight:700;font-size:14px;
   display:flex;align-items:center;justify-content:space-between;gap:.75rem}
 .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem}
@@ -802,6 +803,7 @@ table.data-table tr:hover td{background:var(--paper)}
   .mnav.active{color:white}
   .mnav.active svg{filter:drop-shadow(0 0 4px rgba(255,255,255,.25))}
   .mnav.manager-only{display:none}
+  .mnav.admin-only{display:none}
 
   /* Filter button — accent colour, only visible on map view */
   .mnav-filter{color:var(--blue);background:rgba(59,130,246,.12);border-radius:0}

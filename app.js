@@ -270,9 +270,11 @@ let includeWeekends = false;
 let workingSaturdays = [];  // array of 'YYYY-MM-DD' (персональные настройки пользователя)
 let saturdayMode = false;   // true = all Saturdays are bookable
 let slotId        = 'full';
-let customFrom    = '09:00';
+let customFrom    = '10:00';
 let customTo      = '18:00';
 let displayMode   = 'map';     // 'map' | 'list'
+let mapZoom       = parseFloat(localStorage.getItem('mapZoom'))    || 1.0;  // map zoom: 0.5..2.0
+let editorZoom    = parseFloat(localStorage.getItem('editorZoom')) || 1.0;  // admin editor zoom
 let currentView   = 'map';
 let adminActiveTab = 'floors';
 let expiryTimer   = null;
@@ -294,11 +296,8 @@ let cloudSyncTimer = null;
 let _sessionActivityHandler = null;  // single ref so we can removeEventListener
 
 const SLOTS = [
-  { id:'morning',   label:'Утро',       from:'09:00', to:'13:00' },
-  { id:'afternoon', label:'День',       from:'13:00', to:'17:00' },
-  { id:'evening',   label:'Вечер',      from:'17:00', to:'21:00' },
-  { id:'full',      label:'Весь день',  from:'09:00', to:'21:00' },
-  { id:'custom',    label:'Своё время', from:'09:00', to:'18:00' },
+  { id:'full',      label:'Весь день',  from:'10:00', to:'18:00' },
+  { id:'custom',    label:'Своё время', from:'10:00', to:'18:00' },
 ];
 const COLORS = ['#059669'];
 const MONTHS  = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
@@ -537,7 +536,7 @@ function doLogout(skipServerLogout = false) {
   calViewMonth = _logoutToday.getMonth();
   calAnchorDate = null;
   slotId = 'full';
-  customFrom = '09:00';
+  customFrom = '10:00';
   customTo   = '18:00';
   // Сброс UI попапа календаря
   const _satInp = document.getElementById('opt-saturday');
@@ -561,9 +560,9 @@ function applyUserUI() {
   rp.textContent = labels[u.role] || u.role;
   rp.className   = 'role-pill rp-' + u.role;
   document.querySelectorAll('.manager-only').forEach(el =>
-    el.style.display = (u.role==='manager'||u.role==='admin') ? '' : 'none');
+    el.style.display = (u.role==='manager'||u.role==='admin') ? 'block' : 'none');
   document.querySelectorAll('.admin-only').forEach(el =>
-    el.style.display = u.role==='admin' ? '' : 'none');
+    el.style.display = u.role==='admin' ? 'block' : 'none');
 }
 
 function syncCurrentUserProfile(users) {
@@ -1109,7 +1108,7 @@ function renderSlots() {
   const el = document.getElementById('slot-list');
   el.innerHTML = SLOTS.map(s => {
     const active = s.id === slotId;
-    const dotColor = active ? 'rgba(255,255,255,.8)' : s.id==='full' ? '#059669' : s.id==='morning' ? '#f59e0b' : s.id==='afternoon' ? '#3b82f6' : s.id==='evening' ? '#8b5cf6' : '#64748b';
+    const dotColor = active ? 'rgba(255,255,255,.8)' : s.id==='full' ? '#059669' : '#64748b';
     return `<div class="slot-item ${active?'active':''}" onclick="selectSlot('${s.id}')">
       <div class="slot-dot" style="background:${dotColor}"></div>
       <div><div class="slot-name">${s.label}</div>
@@ -1385,12 +1384,33 @@ function renderMapView() {
        <rect width="${W}" height="${H}" fill="white"/>
        <rect width="${W}" height="${H}" fill="url(#grid)"/>`;
 
-  mapArea.innerHTML = `<div style="position:relative">
-    <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"
-      style="display:block;box-shadow:var(--shadow-lg);border-radius:4px;overflow:hidden">
-      ${bgPattern}${zones}
-    </svg>
-  </div>`;
+  const svgW = Math.round(W * mapZoom), svgH = Math.round(H * mapZoom);
+  mapArea.innerHTML = `
+    <div style="position:sticky;top:0;z-index:10;background:var(--bg);display:flex;align-items:center;gap:6px;margin-bottom:8px;justify-content:flex-end;padding:4px 0">
+      <button class="btn btn-ghost btn-sm" onclick="resetMapZoom()" title="Сбросить масштаб" style="font-size:11px">↺</button>
+      <button class="btn btn-ghost btn-sm" onclick="changeMapZoom(-0.25)" title="Уменьшить" style="font-size:16px;padding:2px 8px;line-height:1">−</button>
+      <span style="font-size:12px;color:var(--ink3);min-width:36px;text-align:center">${Math.round(mapZoom*100)}%</span>
+      <button class="btn btn-ghost btn-sm" onclick="changeMapZoom(0.25)" title="Увеличить" style="font-size:16px;padding:2px 8px;line-height:1">+</button>
+    </div>
+    <div style="overflow:auto">
+      <div style="position:relative;display:inline-block">
+        <svg width="${svgW}" height="${svgH}" viewBox="0 0 ${W} ${H}"
+          style="display:block;box-shadow:var(--shadow-lg);border-radius:4px;overflow:hidden">
+          ${bgPattern}${zones}
+        </svg>
+      </div>
+    </div>`;
+}
+
+function changeMapZoom(delta) {
+  mapZoom = Math.min(2.0, Math.max(0.5, Math.round((mapZoom + delta) * 100) / 100));
+  localStorage.setItem('mapZoom', mapZoom);
+  renderMapView();
+}
+function resetMapZoom() {
+  mapZoom = 1.0;
+  localStorage.setItem('mapZoom', mapZoom);
+  renderMapView();
 }
 
 function renderListView(spaces, date, from, to) {
@@ -1958,8 +1978,7 @@ function renderCabinetView() {
 
     <!-- Logout at the very bottom -->
     <div>
-      <button class="btn btn-danger" style="width:100%;padding:.75rem"
-        onclick="doLogout()">Выйти из аккаунта</button>
+      <button class="btn btn-danger" onclick="doLogout()">Выйти из аккаунта</button>
     </div>
 
   </div>`;
@@ -2600,7 +2619,7 @@ function renderAdminBookings(el) {
   el.innerHTML = `
     <div class="metrics" style="margin-bottom:1.25rem">
       <div class="metric mt-blue">
-        <div class="metric-n" style="color:var(--blue)">${bksAll.length}</div>
+        <div class="metric-n" style="color:var(--blue)">${bks.length}</div>
         <div class="metric-l">Всего бронирований</div>
       </div>
       <div class="metric mt-green">
@@ -2642,13 +2661,13 @@ function renderAdminBookings(el) {
     </div>
 
     <div class="card">
-      <div class="card-head">Все бронирования (${bksAll.length})
+      <div class="card-head">Все бронирования (${bks.length})
         <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇ CSV</button>
       </div>
       <div style="padding:0"><table class="data-table">
         <thead><tr><th>Место</th><th>Сотрудник</th><th>Отдел</th><th>Дата</th><th>Время</th><th>Истекает</th><th></th></tr></thead>
-        <tbody>${!bksAll.length ? `<tr><td colspan="7" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>` :
-          bksAll.map(b=>{
+        <tbody>${!bks.length ? `<tr><td colspan="7" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>` :
+          bks.map(b=>{
             const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
             return `<tr>
               <td><strong>${escapeHtml(sp?.label||'?')}</strong><br><span style="font-size:11px;color:var(--ink3)">${escapeHtml(fl?.name||'?')}</span></td>
@@ -2898,7 +2917,7 @@ function renameCoworking(id, name) {
   refreshAdminFloorsIfOpen();
 }
 
-async function deleteCoworking(id) {
+function deleteCoworking(id) {
   const coworkings = getCoworkings();
   if (coworkings.length <= 1) {
     toast('Нельзя удалить последний коворкинг', 't-red', '✕');
@@ -2906,34 +2925,35 @@ async function deleteCoworking(id) {
   }
   const cw = coworkings.find(c=>c.id===id);
   if (!cw) return;
-  if (!confirm(`Удалить коворкинг "${cw.name}" со всеми этажами и бронированиями?`)) return;
+  confirmAction(`Вы уверены, что хотите удалить коворкинг «${escapeHtml(cw.name)}» со всеми этажами и бронированиями?`, async () => {
+    const floorIds = getFloors().filter(f=>f.coworkingId===id).map(f=>f.id);
+    const spaceIds = getSpaces().filter(s=>floorIds.includes(s.floorId)).map(s=>s.id);
 
-  const floorIds = getFloors().filter(f=>f.coworkingId===id).map(f=>f.id);
-  const spaceIds = getSpaces().filter(s=>floorIds.includes(s.floorId)).map(s=>s.id);
+    saveCoworkings(coworkings.filter(c=>c.id!==id));
+    saveFloors(getFloors().filter(f=>f.coworkingId!==id));
+    saveSpaces(getSpaces().filter(s=>!floorIds.includes(s.floorId)));
+    const ok = await replaceBookingsAsAdmin(getBookings().filter(b=>!spaceIds.includes(b.spaceId)));
+    if (!ok) return;
 
-  saveCoworkings(coworkings.filter(c=>c.id!==id));
-  saveFloors(getFloors().filter(f=>f.coworkingId!==id));
-  saveSpaces(getSpaces().filter(s=>!floorIds.includes(s.floorId)));
-  const ok = await replaceBookingsAsAdmin(getBookings().filter(b=>!spaceIds.includes(b.spaceId)));
-  if (!ok) return;
-
-  const nextCoworking = getCoworkings()[0];
-  editorCoworkingId = nextCoworking?.id || null;
-  editorFloorId = getFloorsByCoworking(editorCoworkingId)[0]?.id || null;
-  if (selCoworkingId === id) {
-    selCoworkingId = editorCoworkingId;
-    selFloorId = editorFloorId;
-  }
-  renderCoworkings();
-  renderFloors();
-  renderStats();
-  renderMiniBookings();
-  if (currentView === 'map') renderMapView();
-  refreshAdminFloorsIfOpen();
+    const nextCoworking = getCoworkings()[0];
+    editorCoworkingId = nextCoworking?.id || null;
+    editorFloorId = getFloorsByCoworking(editorCoworkingId)[0]?.id || null;
+    if (selCoworkingId === id) {
+      selCoworkingId = editorCoworkingId;
+      selFloorId = editorFloorId;
+    }
+    renderCoworkings();
+    renderFloors();
+    renderStats();
+    renderMiniBookings();
+    if (currentView === 'map') renderMapView();
+    refreshAdminFloorsIfOpen();
+  });
 }
 
 function selectEditorFloor(id, btn) {
   editorFloorId = id;
+  editorZoom = 1.0;
   document.querySelectorAll('#editor-floor-tabs .floor-tab-btn').forEach(b=>b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   renderEditorForFloor();
@@ -2972,6 +2992,17 @@ function _addFloor(name) {
   refreshAdminFloorsIfOpen();
 }
 
+function changeEditorZoom(delta) {
+  editorZoom = Math.min(2.0, Math.max(0.25, Math.round((editorZoom + delta) * 100) / 100));
+  localStorage.setItem('editorZoom', editorZoom);
+  renderEditorForFloor();
+}
+function resetEditorZoom() {
+  editorZoom = 1.0;
+  localStorage.setItem('editorZoom', editorZoom);
+  renderEditorForFloor();
+}
+
 function renderEditorForFloor() {
   const floor  = getFloors().find(f=>f.id===editorFloorId);
   const layout = document.getElementById('editor-layout');
@@ -2992,6 +3023,11 @@ function renderEditorForFloor() {
           ${escapeHtml(floor.name)}
         </span>
         <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center">
+          <button class="btn btn-ghost btn-sm" onclick="resetEditorZoom()" title="Сбросить масштаб" style="font-size:11px">↺</button>
+          <button class="btn btn-ghost btn-sm" onclick="changeEditorZoom(-0.25)" title="Уменьшить" style="font-size:16px;padding:2px 8px;line-height:1">−</button>
+          <span style="font-size:12px;color:var(--ink3);min-width:36px;text-align:center">${Math.round(editorZoom*100)}%</span>
+          <button class="btn btn-ghost btn-sm" onclick="changeEditorZoom(0.25)" title="Увеличить" style="font-size:16px;padding:2px 8px;line-height:1">+</button>
+          <div style="width:1px;height:18px;background:var(--line)"></div>
           <label class="btn btn-ghost btn-sm" style="cursor:pointer">
             📎 Загрузить план (JPG/PNG/PDF)
             <input type="file" accept=".jpg,.jpeg,.png,.pdf,.webp" style="display:none" onchange="uploadFloorImage(event,'${floor.id}')">
@@ -3000,7 +3036,9 @@ function renderEditorForFloor() {
           <span style="font-size:11px;color:var(--ink4)">Рисуй поверх — создаёт зону</span>
         </div>
       </div>
+      <div style="overflow:auto;flex:1">
       <div class="editor-canvas-body" id="editor-canvas"
+        style="transform:scale(${editorZoom});transform-origin:top left;${editorZoom !== 1 ? `width:${Math.round(100/editorZoom)}%;` : ''}"
         onmousedown="editorMouseDown(event)"
         onmousemove="editorMouseMove(event)"
         onmouseup="editorMouseUp(event)">
@@ -3016,6 +3054,7 @@ function renderEditorForFloor() {
              </div>`}
         <div id="editor-zones"></div>
         <div id="editor-drawing" class="drawing-rect" style="display:none"></div>
+      </div>
       </div>
     </div>
 
@@ -3103,7 +3142,7 @@ function editorMouseDown(e) {
   const canvas = document.getElementById('editor-canvas');
   const rect   = canvas.getBoundingClientRect();
   editorDrawing  = true;
-  editorDrawStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  editorDrawStart = { x: (e.clientX - rect.left) / editorZoom, y: (e.clientY - rect.top) / editorZoom };
   const dr = document.getElementById('editor-drawing');
   dr.style.display = 'block';
   dr.style.left = editorDrawStart.x + 'px';
@@ -3115,7 +3154,7 @@ function editorMouseMove(e) {
   if (!editorDrawing) return;
   const canvas = document.getElementById('editor-canvas');
   const rect   = canvas.getBoundingClientRect();
-  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+  const cx = (e.clientX - rect.left) / editorZoom, cy = (e.clientY - rect.top) / editorZoom;
   const x = Math.min(cx, editorDrawStart.x), y = Math.min(cy, editorDrawStart.y);
   const w = Math.abs(cx - editorDrawStart.x), h = Math.abs(cy - editorDrawStart.y);
   const dr = document.getElementById('editor-drawing');
@@ -3133,7 +3172,7 @@ function editorMouseUp(e) {
   const rect   = canvas.getBoundingClientRect();
   const CW = canvas.offsetWidth, CH = document.getElementById('floor-img')?.offsetHeight || canvas.offsetHeight;
 
-  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+  const cx = (e.clientX - rect.left) / editorZoom, cy = (e.clientY - rect.top) / editorZoom;
   const px = Math.min(cx, editorDrawStart.x), py = Math.min(cy, editorDrawStart.y);
   const pw = Math.abs(cx - editorDrawStart.x), ph = Math.abs(cy - editorDrawStart.y);
 
@@ -3278,25 +3317,28 @@ function renameFloor(id, name) {
   if (currentView === 'map') renderMapView();
 }
 
-async function deleteFloor(id) {
-  if (!confirm('Удалить этаж и все его зоны?')) return;
-  const removedSpaceIds = getSpaces().filter(s=>s.floorId===id).map(s=>s.id);
-  saveFloors(getFloors().filter(f=>f.id!==id));
-  saveSpaces(getSpaces().filter(s=>s.floorId!==id));
-  const ok = await replaceBookingsAsAdmin(getBookings().filter(b => !removedSpaceIds.includes(b.spaceId)));
-  if (!ok) return;
+function deleteFloor(id) {
+  const fl = getFloors().find(f=>f.id===id);
+  const floorName = fl?.name || 'этаж';
+  confirmAction(`Вы уверены, что хотите удалить этаж «${escapeHtml(floorName)}» и все его зоны?`, async () => {
+    const removedSpaceIds = getSpaces().filter(s=>s.floorId===id).map(s=>s.id);
+    saveFloors(getFloors().filter(f=>f.id!==id));
+    saveSpaces(getSpaces().filter(s=>s.floorId!==id));
+    const ok = await replaceBookingsAsAdmin(getBookings().filter(b => !removedSpaceIds.includes(b.spaceId)));
+    if (!ok) return;
 
-  const floors = getFloorsByCoworking(editorCoworkingId);
-  editorFloorId = floors[0]?.id || null;
-  if (selCoworkingId === editorCoworkingId && !floors.find(f=>f.id===selFloorId)) {
-    selFloorId = floors[0]?.id || null;
-  }
-  renderFloors();
-  renderCoworkings();
-  renderStats();
-  renderMiniBookings();
-  if (currentView === 'map') renderMapView();
-  refreshAdminFloorsIfOpen();
+    const floors = getFloorsByCoworking(editorCoworkingId);
+    editorFloorId = floors[0]?.id || null;
+    if (selCoworkingId === editorCoworkingId && !floors.find(f=>f.id===selFloorId)) {
+      selFloorId = floors[0]?.id || null;
+    }
+    renderFloors();
+    renderCoworkings();
+    renderStats();
+    renderMiniBookings();
+    if (currentView === 'map') renderMapView();
+    refreshAdminFloorsIfOpen();
+  });
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -3304,6 +3346,24 @@ async function deleteFloor(id) {
 ═══════════════════════════════════════════════════════ */
 function closeModal() { document.getElementById('modal-overlay').classList.remove('open'); }
 function overlayClick(e) { if (e.target === document.getElementById('modal-overlay')) closeModal(); }
+
+function confirmAction(message, onConfirm) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = `
+    <div style="background:var(--white);border-radius:var(--radius-lg);padding:1.5rem;max-width:400px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="font-size:15px;font-weight:600;color:var(--ink);margin-bottom:1.25rem">${message}</div>
+      <div style="display:flex;gap:.75rem;justify-content:flex-end">
+        <button class="btn btn-ghost" id="_conf-no">Нет</button>
+        <button class="btn btn-danger" id="_conf-yes">Да</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const cleanup = () => document.body.removeChild(overlay);
+  overlay.querySelector('#_conf-yes').addEventListener('click', () => { cleanup(); onConfirm(); });
+  overlay.querySelector('#_conf-no').addEventListener('click', cleanup);
+  overlay.addEventListener('click', e => { if (e.target === overlay) cleanup(); });
+}
 
 /* ═══════════════════════════════════════════════════════
    BOOT
