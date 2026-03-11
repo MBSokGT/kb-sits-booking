@@ -48,7 +48,7 @@
       <button class="tnav active" onclick="switchView('map',this)">Карта</button>
       <button class="tnav" onclick="switchView('mybookings',this)">Мои брони</button>
       <button class="tnav manager-only" onclick="switchView('team',this)">Отдел</button>
-      <button class="tnav admin-only" id="nav-admin-btn" onclick="switchView('admin',this)">Администрирование</button>
+      <button class="tnav manager-only" id="nav-admin-btn" onclick="switchView('admin',this)">Администрирование</button>
     </div>
     <div class="topbar-right">
       <span class="role-pill" id="role-pill"></span>
@@ -64,30 +64,6 @@
 
     <!-- SIDEBAR -->
     <div class="sidebar">
-
-      <!-- Calendar trigger -->
-      <div class="sb-block">
-        <span class="sb-label">Даты</span>
-        <button class="cal-trigger" id="cal-trigger" onclick="openCalendar()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="flex-shrink:0;color:var(--status-mine)"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
-          <span id="cal-trigger-text" class="cal-trigger-text">Загрузка…</span>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0;color:var(--ink4)"><path d="M6 9l6 6 6-6"/></svg>
-        </button>
-      </div>
-
-      <!-- Time Slots -->
-      <div class="sb-block">
-        <span class="sb-label">Временной слот</span>
-        <div class="slot-list" id="slot-list"></div>
-        <div id="custom-time-picker" style="display:none;margin-top:6px">
-          <div class="custom-time">
-            <input type="time" id="ct-from" value="09:00">
-            <span style="display:flex;align-items:center;color:var(--ink3);font-size:13px">—</span>
-            <input type="time" id="ct-to" value="18:00">
-            <button class="custom-apply" onclick="applyCustomTime()">OK</button>
-          </div>
-        </div>
-      </div>
 
       <!-- Coworkings -->
       <div class="sb-block">
@@ -194,7 +170,7 @@
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/><path d="M16 3.13a4 4 0 010 7.75M21 21v-2a4 4 0 00-3-3.87"/></svg>
       <span>Отдел</span>
     </button>
-    <button class="mnav admin-only" data-view="admin" onclick="switchView('admin',this)">
+    <button class="mnav manager-only" data-view="admin" onclick="switchView('admin',this)">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M12 14c-5 0-8 2.5-8 4v1h16v-1c0-1.5-3-4-8-4z"/><path d="M18 3l3 3-9.5 9.5L8 16l.5-3.5L18 3z"/></svg>
       <span>Админ</span>
     </button>

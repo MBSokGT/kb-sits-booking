@@ -320,6 +320,8 @@ let calendarSinglePick = false;
 let selectedMyBookingIds = new Set();
 let adminUserSearch = '';
 let adminUserSort = 'lastLogin';
+let adminStatsPeriod = 30;
+let adminStatsDept = '';
 const deptMemberSearch = {};
 
 // Editor state
@@ -1072,6 +1074,21 @@ function closeCalendar() {
   document.getElementById('cal-popup').classList.remove('active');
   calendarSinglePick = false;
   document.removeEventListener('keydown', _calEscHandler);
+  // If booking modal is open, refresh date/time summary and footer button
+  const modalOpen = document.getElementById('modal-overlay')?.classList.contains('open');
+  if (modalOpen) {
+    updateBookingModalSummary();
+    // Update the "Забронировать (N дней)" button text if present
+    const footEl = document.getElementById('modal-foot');
+    if (footEl) {
+      const bookBtn = footEl.querySelector('[onclick^="bookSpace"]');
+      if (bookBtn) {
+        const m = bookBtn.getAttribute('onclick').match(/bookSpace\('([^']+)'\)/);
+        if (m) bookBtn.textContent = `Забронировать${selDates.length > 1 ? ' (' + selDates.length + ' дней)' : ''}`;
+      }
+    }
+    renderStats();
+  }
 }
 
 function _calEscHandler(e) {
@@ -1202,6 +1219,7 @@ function renderCalendar() {
 ═══════════════════════════════════════════════════════ */
 function renderSlots() {
   const el = document.getElementById('slot-list');
+  if (!el) return;
   el.innerHTML = SLOTS.map(s => {
     const active = s.id === slotId;
     const dotColor = active ? 'rgba(255,255,255,.8)' : s.id==='full' ? '#059669' : '#64748b';
@@ -1212,7 +1230,8 @@ function renderSlots() {
       </div>
     </div>`;
   }).join('');
-  document.getElementById('custom-time-picker').style.display = slotId === 'custom' ? '' : 'none';
+  const ctp = document.getElementById('custom-time-picker');
+  if (ctp) ctp.style.display = slotId === 'custom' ? '' : 'none';
 }
 
 function renderCalendarSlotControls() {
@@ -2244,14 +2263,21 @@ function buildDeptCard(dept, users) {
           </span>`).join('')}
       </div>
       ${nonMembers.length ? `
-        <div class="dept-add-row">
-          <input type="text" id="dept-search-${dept.id}" name="dept-search-${dept.id}" aria-label="Поиск сотрудника в отделе ${escapeHtml(dept.name)}" class="dept-search" placeholder="Поиск сотрудника..." value="${escapeHtml(deptMemberSearch[dept.id] || '')}"
-            oninput="setDeptMemberSearch('${dept.id}',this.value)"  autocomplete="off">
-          <select id="dept-add-sel-${dept.id}" name="dept-add-sel-${dept.id}" aria-label="Добавить сотрудника в отдел ${escapeHtml(dept.name)}" class="dept-select">
-            <option value="">Добавить сотрудника…</option>
-            ${filteredNonMembers.map(u=>`<option value="${u.id}">${escapeHtml(u.name)}</option>`).join('')}
-          </select>
-          <button class="btn btn-ghost btn-sm" onclick="addMemberToDept('${dept.id}')">Добавить</button>
+        <div class="dept-add-row" style="position:relative">
+          <input type="text" id="dept-search-${dept.id}" name="dept-search-${dept.id}"
+            aria-label="Поиск сотрудника в отделе ${escapeHtml(dept.name)}"
+            class="dept-search" placeholder="Поиск сотрудника..."
+            value="${escapeHtml(deptMemberSearch[dept.id] || '')}"
+            oninput="setDeptMemberSearch('${dept.id}',this.value)"
+            onfocus="showDeptDropdown('${dept.id}')"
+            onblur="hideDeptDropdown('${dept.id}')"
+            autocomplete="off">
+          ${filteredNonMembers.length && deptMemberSearch[dept.id] ? `
+          <div id="dept-drop-${dept.id}" class="dept-dropdown">
+            ${filteredNonMembers.map(u=>`
+              <div class="dept-drop-item" onmousedown="addMemberToDeptById('${dept.id}','${u.id}')">${escapeHtml(u.name)}${u.department?`<span style="font-size:11px;color:var(--ink4);margin-left:4px">${escapeHtml(u.department)}</span>`:''}</div>
+            `).join('')}
+          </div>` : ''}
         </div>` : ''}
     </div>
   </div>`;
@@ -2329,6 +2355,30 @@ function setDeptHead(deptId, userId) {
   dept.headUserId = userId || null;
   saveDepartments(depts);
   toast('Руководитель обновлён', '', '✓');
+}
+
+function addMemberToDeptById(deptId, userId) {
+  if (!userId) return;
+  const depts = getDepartments();
+  const dept  = depts.find(d => d.id === deptId);
+  if (!dept) return;
+  if (!dept.memberIds) dept.memberIds = [];
+  if (!dept.memberIds.includes(userId)) dept.memberIds.push(userId);
+  deptMemberSearch[deptId] = '';
+  saveDepartments(depts);
+  _refreshDeptTab();
+}
+
+function showDeptDropdown(deptId) {
+  const el = document.getElementById('dept-drop-' + deptId);
+  if (el) el.style.display = 'block';
+}
+function hideDeptDropdown(deptId) {
+  // small delay so onmousedown fires before blur
+  setTimeout(() => {
+    const el = document.getElementById('dept-drop-' + deptId);
+    if (el) el.style.display = 'none';
+  }, 150);
 }
 
 function addMemberToDept(deptId) {
@@ -2434,19 +2484,158 @@ function showForgotPasswordModal() {
 }
 
 /* ═══════════════════════════════════════════════════════
+   ADMIN STATS
+═══════════════════════════════════════════════════════ */
+function setAdminStatsPeriod(v) { adminStatsPeriod = Number(v); renderAdminTabContent('stats'); }
+function setAdminStatsDept(v)   { adminStatsDept = v; renderAdminTabContent('stats'); }
+
+function renderAdminStats(el) {
+  const allUsers    = getUsers();
+  const allBookings = getBookings().filter(b => b.status !== 'cancelled');
+  const depts       = getDepartments();
+  const isManager   = currentUser?.role === 'manager';
+
+  // Dept filter
+  const deptName = isManager ? (currentUser.department || '') : adminStatsDept;
+  const deptUsers = deptName
+    ? allUsers.filter(u => u.department === deptName)
+    : allUsers;
+  const deptUserIds = new Set(deptUsers.map(u => u.id));
+
+  // Period filter
+  const periodDays = adminStatsPeriod || 30;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - periodDays);
+  const cutoffStr = fmtDate(cutoff);
+
+  const bks = allBookings.filter(b =>
+    b.date >= cutoffStr && deptUserIds.has(b.userId)
+  );
+
+  // Unique attendees
+  const attendeeIds = new Set(bks.map(b => b.userId));
+  const totalStaff  = deptUsers.length;
+  const attendees   = attendeeIds.size;
+
+  // By weekday (0=Mon..4=Fri)
+  const dayNames = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+  const byDay = [0,0,0,0,0,0,0];
+  bks.forEach(b => {
+    const d = new Date(b.date + 'T12:00:00');
+    byDay[d.getDay() === 0 ? 6 : d.getDay() - 1]++;
+  });
+  const maxDay = Math.max(...byDay, 1);
+
+  // By space
+  const spaceCount = {};
+  bks.forEach(b => {
+    const k = b.spaceName || b.spaceId || '?';
+    spaceCount[k] = (spaceCount[k] || 0) + 1;
+  });
+  const topSpaces = Object.entries(spaceCount)
+    .sort((a,b) => b[1]-a[1]).slice(0, 5);
+
+  // Per employee
+  const empCount = {};
+  bks.forEach(b => { empCount[b.userId] = (empCount[b.userId] || 0) + 1; });
+  const empRows = deptUsers.map(u => ({
+    name: u.name, dept: u.department || '',
+    count: empCount[u.id] || 0,
+    lastDate: bks.filter(b=>b.userId===u.id).map(b=>b.date).sort().at(-1) || '—'
+  })).sort((a,b) => b.count - a.count);
+
+  // Daily activity (last periodDays)
+  const dailyCounts = {};
+  bks.forEach(b => { dailyCounts[b.date] = (dailyCounts[b.date] || 0) + 1; });
+  const topDate = Object.entries(dailyCounts).sort((a,b)=>b[1]-a[1])[0];
+
+  const deptSelector = !isManager ? `
+    <select class="role-sel" onchange="setAdminStatsDept(this.value)" style="min-width:180px">
+      <option value="" ${!adminStatsDept?'selected':''}>Все отделы</option>
+      ${[...new Set(allUsers.map(u=>u.department).filter(Boolean))].sort()
+        .map(d=>`<option value="${escapeHtml(d)}" ${adminStatsDept===d?'selected':''}>${escapeHtml(d)}</option>`).join('')}
+    </select>` : `<strong>${escapeHtml(deptName || 'Все отделы')}</strong>`;
+
+  el.innerHTML = `
+  <div style="padding:1rem 0">
+    <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;margin-bottom:1.25rem">
+      ${deptSelector}
+      <select class="role-sel" onchange="setAdminStatsPeriod(this.value)" style="min-width:160px">
+        <option value="30" ${adminStatsPeriod===30?'selected':''}>За 30 дней</option>
+        <option value="90" ${adminStatsPeriod===90?'selected':''}>За 90 дней</option>
+        <option value="180" ${adminStatsPeriod===180?'selected':''}>За 180 дней</option>
+      </select>
+    </div>
+
+    <div class="metrics" style="margin-bottom:1.5rem">
+      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${attendees}<span style="font-size:14px;font-weight:500;color:var(--ink3)">/${totalStaff}</span></div><div class="metric-l">Сотрудников в офисе</div></div>
+      <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${bks.length}</div><div class="metric-l">Бронирований</div></div>
+      <div class="metric mt-amber"><div class="metric-n" style="color:var(--amber)">${topDate ? dayNames[new Date(topDate[0]+'T12:00:00').getDay()===0?6:new Date(topDate[0]+'T12:00:00').getDay()-1] : '—'}</div><div class="metric-l">Самый занятой день</div></div>
+      <div class="metric mt-purple"><div class="metric-n" style="color:var(--purple)">${totalStaff > 0 ? Math.round(attendees/totalStaff*100) : 0}%</div><div class="metric-l">Посещаемость</div></div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">
+
+      <div class="card" style="padding:1.25rem">
+        <div class="card-head" style="padding:0 0 1rem">По дням недели</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${byDay.map((cnt, i) => `
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="width:22px;font-size:12px;font-weight:600;color:var(--ink3)">${dayNames[i]}</span>
+              <div style="flex:1;height:18px;background:var(--bg2);border-radius:4px;overflow:hidden">
+                <div style="height:100%;width:${Math.round(cnt/maxDay*100)}%;background:var(--blue);border-radius:4px;transition:width .3s"></div>
+              </div>
+              <span style="width:28px;text-align:right;font-size:12px;color:var(--ink3)">${cnt}</span>
+            </div>`).join('')}
+        </div>
+      </div>
+
+      <div class="card" style="padding:1.25rem">
+        <div class="card-head" style="padding:0 0 1rem">Популярные места</div>
+        ${topSpaces.length ? `<div style="display:flex;flex-direction:column;gap:6px">
+          ${topSpaces.map(([name, cnt], i) => `
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="width:16px;font-size:11px;color:var(--ink4)">${i+1}</span>
+              <span style="flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(name)}</span>
+              <span class="badge badge-blue">${cnt}</span>
+            </div>`).join('')}
+        </div>` : `<p style="color:var(--ink4);font-size:13px">Нет данных</p>`}
+      </div>
+    </div>
+
+    <div class="card" style="padding:0">
+      <div class="card-head">Посещаемость сотрудников</div>
+      <div style="padding:0"><table class="data-table">
+        <thead><tr><th>Сотрудник</th><th>Отдел</th><th>Визитов за период</th><th>Последний визит</th></tr></thead>
+        <tbody>${empRows.map(r => `<tr>
+          <td><strong>${escapeHtml(r.name)}</strong></td>
+          <td style="color:var(--ink3)">${escapeHtml(r.dept)}</td>
+          <td><span class="badge ${r.count > 0 ? 'badge-blue' : ''}" style="${r.count===0?'color:var(--ink4)':''}">${r.count}</span></td>
+          <td style="font-size:12px;color:var(--ink3)">${r.lastDate !== '—' ? fmtHuman(r.lastDate) : '—'}</td>
+        </tr>`).join('')}
+        </tbody>
+      </table></div>
+    </div>
+  </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════
    ADMIN VIEW
 ═══════════════════════════════════════════════════════ */
 function renderAdminView(activeTab = adminActiveTab) {
-  const allowedTabs = new Set(['users', 'floors', 'bookings', 'departments']);
-  adminActiveTab = allowedTabs.has(activeTab) ? activeTab : 'floors';
+  const isManager = currentUser?.role === 'manager';
+  const allowedTabs = new Set(['users', 'floors', 'bookings', 'departments', 'stats']);
+  if (isManager) allowedTabs.delete('users'); // managers don't see all users
+  adminActiveTab = allowedTabs.has(activeTab) ? activeTab : (isManager ? 'stats' : 'floors');
   const el = document.getElementById('view-admin');
   el.innerHTML = `<div class="view-area">
     <div><div class="view-head">Администрирование</div></div>
     <div class="floor-tabs" id="admin-tabs">
-      <button class="floor-tab-btn ${adminActiveTab==='users'?'active':''}" data-admin-tab="users" onclick="adminTab('users',this)">Пользователи</button>
-      <button class="floor-tab-btn ${adminActiveTab==='floors'?'active':''}" data-admin-tab="floors" onclick="adminTab('floors',this)">Коворкинги и планировки</button>
-      <button class="floor-tab-btn ${adminActiveTab==='bookings'?'active':''}" data-admin-tab="bookings" onclick="adminTab('bookings',this)">Все брони</button>
-      <button class="floor-tab-btn ${adminActiveTab==='departments'?'active':''}" data-admin-tab="departments" onclick="adminTab('departments',this)">Департаменты</button>
+      ${!isManager ? `<button class="floor-tab-btn ${adminActiveTab==='users'?'active':''}" data-admin-tab="users" onclick="adminTab('users',this)">Пользователи</button>` : ''}
+      ${!isManager ? `<button class="floor-tab-btn ${adminActiveTab==='floors'?'active':''}" data-admin-tab="floors" onclick="adminTab('floors',this)">Коворкинги и планировки</button>` : ''}
+      ${!isManager ? `<button class="floor-tab-btn ${adminActiveTab==='bookings'?'active':''}" data-admin-tab="bookings" onclick="adminTab('bookings',this)">Все брони</button>` : ''}
+      ${!isManager ? `<button class="floor-tab-btn ${adminActiveTab==='departments'?'active':''}" data-admin-tab="departments" onclick="adminTab('departments',this)">Департаменты</button>` : ''}
+      <button class="floor-tab-btn ${adminActiveTab==='stats'?'active':''}" data-admin-tab="stats" onclick="adminTab('stats',this)">Статистика отдела</button>
     </div>
     <div id="admin-tab-content"></div>
   </div>`;
@@ -2460,6 +2649,7 @@ function renderAdminTabContent(tab) {
   if (tab === 'floors')      { renderAdminFloors(el); return; }
   if (tab === 'bookings')    { renderAdminBookings(el); return; }
   if (tab === 'departments') { renderAdminDepartments(el); return; }
+  if (tab === 'stats')       { renderAdminStats(el); return; }
 }
 
 function adminTab(tab, btn) {
@@ -2529,6 +2719,8 @@ function renderAdminUsers(el) {
     const ts = Date.parse(iso);
     return Number.isFinite(ts) ? ts : 0;
   };
+  const bkCountById = {};
+  bks.forEach(b => { bkCountById[b.userId] = (bkCountById[b.userId] || 0) + 1; });
   const sorted = filtered.slice().sort((a, b) => {
     if (adminUserSort === 'name') {
       return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
@@ -2540,9 +2732,12 @@ function renderAdminUsers(el) {
       if (depCmp !== 0) return depCmp;
       return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
     }
+    if (adminUserSort === 'bookings') {
+      return (bkCountById[b.id] || 0) - (bkCountById[a.id] || 0);
+    }
     const at = toLoginTs(a.lastLogin || a.last_login);
     const bt = toLoginTs(b.lastLogin || b.last_login);
-    if (at !== bt) return bt - at; // newest first; missing goes last
+    if (at !== bt) return bt - at;
     return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
   });
 
@@ -2550,11 +2745,6 @@ function renderAdminUsers(el) {
     <div style="display:flex;gap:.5rem;align-items:center">
       <input type="text" class="role-sel" placeholder="Поиск сотрудника..." value="${escapeHtml(adminUserSearch)}"
         oninput="setAdminUserSearch(this.value)" style="min-width:220px">
-      <select class="role-sel" onchange="setAdminUserSort(this.value)" style="min-width:200px">
-        <option value="lastLogin" ${adminUserSort==='lastLogin'?'selected':''}>Сортировка: по дате входа</option>
-        <option value="name" ${adminUserSort==='name'?'selected':''}>Сортировка: по ФИО</option>
-        <option value="department" ${adminUserSort==='department'?'selected':''}>Сортировка: по отделу</option>
-      </select>
       <span style="font-size:12px;color:var(--ink4)">Найдено: ${filtered.length}</span>
     </div>
     <button class="btn btn-primary" onclick="showAddUserModal()">+ Добавить аккаунт</button>
@@ -2567,16 +2757,21 @@ function renderAdminUsers(el) {
   </div>
   <div class="card"><div class="card-head">Пользователи</div>
   <div style="padding:0"><table class="data-table">
-    <thead><tr><th>ФИО</th><th>Email</th><th>Отдел</th><th>Пароль</th><th>Бронирований</th><th>Роль</th><th>Статус</th><th></th></tr></thead>
+    <thead><tr>
+      <th><button class="sort-col-btn ${adminUserSort==='name'?'active':''}" onclick="setAdminUserSort('name')">ФИО ${adminUserSort==='name'?'↑':''}</button></th>
+      <th><button class="sort-col-btn" onclick="setAdminUserSort('name')">Email</button></th>
+      <th><button class="sort-col-btn ${adminUserSort==='department'?'active':''}" onclick="setAdminUserSort('department')">Отдел ${adminUserSort==='department'?'↑':''}</button></th>
+      <th><button class="sort-col-btn ${adminUserSort==='bookings'?'active':''}" onclick="setAdminUserSort('bookings')">Брони ${adminUserSort==='bookings'?'↑':''}</button></th>
+      <th>Роль</th><th>Статус</th><th></th>
+    </tr></thead>
     <tbody>${sorted.map(u => {
       const cnt = bks.filter(b=>sameId(b.userId, u.id)).length;
       const isSelf = isCurrentUserId(u.id);
       return `<tr>
         <td><strong>${escapeHtml(u.name)}</strong></td>
         <td style="color:var(--ink3)">${escapeHtml(u.email)}</td>
-        <td><input type="text" class="role-sel" value="${escapeHtml(u.department||'')}" 
+        <td><input type="text" class="role-sel" value="${escapeHtml(u.department||'')}"
           onblur="updateUserDept('${u.id}',this.value)" placeholder="Отдел" style="min-width:100px"></td>
-        <td><button class="btn btn-ghost btn-xs" data-uid="${u.id}" onclick="showPasswordModal(this.dataset.uid)">🔑 Пароль</button></td>
         <td><span class="badge badge-blue">${cnt}</span></td>
         <td>${isSelf
           ? `<span class="badge badge-amber">Вы</span>`
