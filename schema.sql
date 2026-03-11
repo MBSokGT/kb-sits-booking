@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
   name       TEXT NOT NULL,
   department TEXT NOT NULL DEFAULT '',
   role       TEXT NOT NULL DEFAULT 'user',
+  blocked    INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

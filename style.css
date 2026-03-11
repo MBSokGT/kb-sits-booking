@@ -319,6 +319,8 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .badge{padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;display:inline-block}
 .badge-blue{background:var(--blue-l);color:var(--blue)}
 .badge-amber{background:var(--amber-l);color:var(--amber)}
+.badge-green{background:var(--green-l);color:var(--green)}
+.badge-red{background:var(--red-l);color:var(--red)}
 
 .toggle{display:flex;gap:2px;background:var(--paper);border-radius:var(--radius);padding:2px}
 .toggle-btn{padding:6px 12px;border:none;background:transparent;font-family:inherit;font-size:12px;
@@ -548,6 +550,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .badge-blue{background:var(--blue-l);color:var(--blue-d)}
 .badge-green{background:var(--green-l);color:var(--green)}
 .badge-amber{background:var(--amber-l);color:var(--amber)}
+.badge-red{background:var(--red-l);color:var(--red)}
 
 /* ═══════════════════════════════════════════════════════
    MAP VIEW
@@ -715,6 +718,10 @@ table.data-table tr:hover td{background:var(--paper)}
 .date-pills{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:1.25rem}
 .date-pill{padding:3px 10px;background:var(--blue-l);color:var(--blue-d);border-radius:20px;
   font-size:12px;font-weight:600;font-family:'DM Mono',monospace}
+.modal-pick{padding:.75rem;border:1px solid var(--line);background:var(--paper);border-radius:var(--radius);margin-bottom:1rem}
+.modal-pick-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;margin-bottom:.35rem}
+.modal-pick-label{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--ink4)}
+.modal-pick-value{font-size:13px;font-weight:600;color:var(--ink2)}
 
 /* ═══════════════════════════════════════════════════════
    BUTTONS

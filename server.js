@@ -29,6 +29,12 @@ if (fs.existsSync(schemaPath)) {
   sqlite.exec(schemaSql);
 }
 
+// Lightweight migration for new columns in users table.
+const userCols = sqlite.prepare("PRAGMA table_info(users)").all();
+if (!userCols.some(col => col.name === 'blocked')) {
+  sqlite.exec('ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0');
+}
+
 function hashPasswordNode(password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const iterations = 100000;

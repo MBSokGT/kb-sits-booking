@@ -315,6 +315,7 @@ let currentView   = 'map';
 let adminActiveTab = 'floors';
 let expiryTimer   = null;
 let bookingForUserId = null;
+let bookingUserSearch = '';
 let calendarSinglePick = false;
 let selectedMyBookingIds = new Set();
 let adminUserSearch = '';
@@ -999,6 +1000,7 @@ function updateRangeHint() {
       : `${daysHint} · ${todayLink}`;
   }
   updateCalTrigger();
+  updateBookingModalSummary();
 }
 
 function jumpToTodayDate() {
@@ -1275,6 +1277,21 @@ function applyCustomTime() {
 function updateSlotBadge() {
   const s = currentSlot();
   document.getElementById('slot-badge-lbl').textContent = `${s.label}: ${slotLabel(s)}`;
+  updateBookingModalSummary();
+}
+
+function updateBookingModalSummary() {
+  const datesEl = document.getElementById('booking-dates-summary');
+  const timeEl = document.getElementById('booking-time-summary');
+  if (!datesEl || !timeEl) return;
+  if (!selDates.length) {
+    datesEl.textContent = 'Даты не выбраны';
+  } else if (selDates.length === 1) {
+    datesEl.textContent = fmtHuman(selDates[0]);
+  } else {
+    datesEl.textContent = `${fmtHuman(selDates[0])} — ${fmtHuman(selDates[selDates.length - 1])} · ${selDates.length} дн.`;
+  }
+  timeEl.textContent = `${slotFrom()}–${slotTo()}`;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -1558,11 +1575,12 @@ function renderListView(spaces, date, from, to) {
 function getAllowedBookingTargets() {
   if (!currentUser) return [];
   if (currentUser.role === 'admin') {
-    return getUsers().slice().sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+    return getUsers().filter(u => !u.blocked).slice().sort((a,b)=>a.name.localeCompare(b.name,'ru'));
   }
   if (currentUser.role === 'manager') {
     // Managers can ONLY book for users in their own department (security fix)
     const deptUsers = getUsers().filter(u =>
+      !u.blocked &&
       u.department === currentUser.department &&
       !isCurrentUserId(u.id) &&
       u.role === 'user' // Cannot book for other roles
@@ -1617,6 +1635,7 @@ function spaceClick(spaceId) {
   const targets = getAllowedBookingTargets();
   // Always default to self when modal opens to avoid accidental booking for another user.
   bookingForUserId = currentUser.id;
+  bookingUserSearch = '';
   if (!bookingForUserId || !targets.some(u=>sameId(u.id, bookingForUserId))) {
     bookingForUserId = currentUser.id;
   }
@@ -1638,20 +1657,39 @@ function spaceClick(spaceId) {
        <div class="date-pills">${selDates.map(d=>`<span class="date-pill">${fmtHuman(d)}</span>`).join('')}</div>
        </div>`
     : '';
-  const targetPicker = !isBusy && targets.length > 1
+  const canPickTarget = !isBusy && (currentUser.role === 'admin' || currentUser.role === 'manager') && targets.length > 1;
+  const filteredTargets = bookingUserSearch
+    ? targets.filter(u => `${u.name} ${u.email} ${u.department || ''}`.toLowerCase().includes(bookingUserSearch))
+    : targets;
+  const targetPicker = canPickTarget
     ? `<div style="margin-bottom:1rem">
         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--ink4);margin-bottom:6px">
           Бронировать за
         </div>
+        <input type="text" class="role-sel" placeholder="Поиск сотрудника..." value="${escapeHtml(bookingUserSearch)}"
+          oninput="setBookingUserSearch(this.value)" style="width:100%;margin-bottom:6px">
         <select class="role-sel" id="book-for-user" onchange="bookingForUserId=this.value" style="width:100%">
-          ${targets.map(u=>`<option value="${u.id}" ${sameId(u.id, bookingForUserId)?'selected':''}>${escapeHtml(u.name)}${isCurrentUserId(u.id)?' (я)':''}</option>`).join('')}
+          ${filteredTargets.length
+            ? filteredTargets.map(u=>`<option value="${u.id}" ${sameId(u.id, bookingForUserId)?'selected':''}>${escapeHtml(u.name)}${isCurrentUserId(u.id)?' (я)':''}</option>`).join('')
+            : `<option value="">Ничего не найдено</option>`}
         </select>
        </div>`
+    : '';
+  const dateTimePicker = !isBusy
+    ? `<div class="modal-pick">
+        <div class="modal-pick-row">
+          <div class="modal-pick-label">Даты и время</div>
+          <button class="btn btn-ghost btn-sm" onclick="openCalendar()">Выбрать</button>
+        </div>
+        <div class="modal-pick-value" id="booking-dates-summary"></div>
+        <div class="modal-pick-value" id="booking-time-summary"></div>
+      </div>`
     : '';
 
   bodyEl.innerHTML = `
     ${datePills}
     ${targetPicker}
+    ${dateTimePicker}
     <div class="modal-info-grid">
       <div class="mig-item"><div class="mig-l">Место</div><div class="mig-v">${escapeHtml(sp.label)}</div></div>
       <div class="mig-item"><div class="mig-l">Мест</div><div class="mig-v">${sp.seats}</div></div>
@@ -1682,6 +1720,7 @@ function spaceClick(spaceId) {
   }
 
   document.getElementById('modal-overlay').classList.add('open');
+  updateBookingModalSummary();
 }
 
 async function bookSpace(spaceId) {
@@ -2433,6 +2472,29 @@ function setAdminUserSearch(value) {
   if (currentView === 'admin') renderAdminView('users');
 }
 
+function setBookingUserSearch(value) {
+  bookingUserSearch = String(value || '').trim().toLowerCase();
+  renderBookingTargetOptions();
+}
+
+function renderBookingTargetOptions() {
+  const sel = document.getElementById('book-for-user');
+  if (!sel) return;
+  const targets = getAllowedBookingTargets();
+  const filtered = bookingUserSearch
+    ? targets.filter(u => `${u.name} ${u.email} ${u.department || ''}`.toLowerCase().includes(bookingUserSearch))
+    : targets;
+  const currentId = bookingForUserId || currentUser?.id || '';
+  if (!filtered.length) {
+    sel.innerHTML = `<option value="">Ничего не найдено</option>`;
+    return;
+  }
+  const selectedId = filtered.some(u => sameId(u.id, currentId)) ? currentId : filtered[0].id;
+  bookingForUserId = selectedId;
+  sel.innerHTML = filtered.map(u => `<option value="${u.id}" ${sameId(u.id, selectedId)?'selected':''}>
+    ${escapeHtml(u.name)}${isCurrentUserId(u.id)?' (я)':''}</option>`).join('');
+}
+
 function setDeptMemberSearch(deptId, value) {
   deptMemberSearch[deptId] = String(value || '');
   _refreshDeptTab();
@@ -2468,7 +2530,7 @@ function renderAdminUsers(el) {
   </div>
   <div class="card"><div class="card-head">Пользователи</div>
   <div style="padding:0"><table class="data-table">
-    <thead><tr><th>ФИО</th><th>Email</th><th>Отдел</th><th>Пароль</th><th>Бронирований</th><th>Роль</th><th></th></tr></thead>
+    <thead><tr><th>ФИО</th><th>Email</th><th>Отдел</th><th>Пароль</th><th>Бронирований</th><th>Роль</th><th>Статус</th><th></th></tr></thead>
     <tbody>${filtered.map(u => {
       const cnt = bks.filter(b=>sameId(b.userId, u.id)).length;
       const isSelf = isCurrentUserId(u.id);
@@ -2484,8 +2546,15 @@ function renderAdminUsers(el) {
           : `<select class="role-sel" onchange="setUserRole('${u.id}',this.value)">
               ${['user','manager','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${roles[r]}</option>`).join('')}
              </select>`}</td>
+        <td>
+          ${u.blocked
+            ? `<span class="badge badge-red">Заблокирован</span>`
+            : `<span class="badge badge-green">Активен</span>`}
+        </td>
         <td style="white-space:nowrap">
           <button class="btn btn-ghost btn-xs" data-uid="${u.id}" onclick="showEditUserModal(this.dataset.uid)">✏️ Редактировать</button>
+          ${isSelf ? '' : `<button class="btn ${u.blocked ? 'btn-ghost' : 'btn-danger'} btn-xs" data-uid="${u.id}" onclick="toggleUserBlock(this.dataset.uid, ${u.blocked ? 0 : 1})">
+            ${u.blocked ? 'Разблокировать' : 'Заблокировать'}</button>`}
           ${isSelf ? '' : `<button class="btn btn-danger btn-xs" data-uid="${u.id}" data-name="${escapeHtml(u.name)}" onclick="deleteUser(this.dataset.uid, this.dataset.name)">Удалить</button>`}
         </td>
       </tr>`;
@@ -2702,6 +2771,33 @@ async function setUserRole(uid, role) {
   if (Array.isArray(data.users)) saveUsers(data.users);
   toast('Роль обновлена', 't-green', '✓');
   if (currentView === 'admin') renderAdminView();
+}
+
+async function toggleUserBlock(uid, nextBlocked) {
+  const user = getUsers().find(u => u.id === uid);
+  if (!user) return;
+  if (isCurrentUserId(user.id)) {
+    toast('Нельзя заблокировать себя', 't-red', '✕');
+    return;
+  }
+  const action = Number(nextBlocked) === 1 ? 'Заблокировать' : 'Разблокировать';
+  if (!confirm(`${action} ${user.name}?`)) return;
+
+  const r = await apiFetch('/api/users/block', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: uid, blocked: Number(nextBlocked) === 1 }),
+  });
+  if (r.status === 401) return requireRelogin();
+  const data = await r.json();
+  if (!r.ok) {
+    toast(data.error || 'Не удалось обновить статус', 't-red', '✕');
+    if (currentView === 'admin') renderAdminView('users');
+    return;
+  }
+  if (Array.isArray(data.users)) saveUsers(data.users);
+  toast(Number(nextBlocked) === 1 ? 'Пользователь заблокирован' : 'Пользователь разблокирован', 't-green', '✓');
+  if (currentView === 'admin') renderAdminView('users');
 }
 
 async function deleteUser(uid, name) {

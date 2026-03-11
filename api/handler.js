@@ -449,7 +449,7 @@ async function upsertLdapUser(env, profile) {
   await ensureUserDepartmentMembership(env, userId, profile.department);
 
   return env.DB.prepare(
-    'SELECT id, email, name, department, role FROM users WHERE id = ?'
+    'SELECT id, email, name, department, role, blocked FROM users WHERE id = ?'
   ).bind(userId).first();
 }
 
@@ -618,10 +618,14 @@ async function getAuthSession(env, request) {
   }
 
   const user = await env.DB.prepare(
-    'SELECT id, email, name, department, role FROM users WHERE id = ?'
+    'SELECT id, email, name, department, role, blocked FROM users WHERE id = ?'
   ).bind(payload.userId).first();
 
   if (!user) {
+    await deleteSession(env, token);
+    return null;
+  }
+  if (Number(user.blocked || 0) === 1) {
     await deleteSession(env, token);
     return null;
   }
@@ -661,12 +665,13 @@ async function revokeUserSessions(env, userId, keepToken = '') {
 
 async function getUsersMap(env, options = {}) {
   const { results } = await env.DB.prepare(
-    'SELECT id, email, name, department, role, password FROM users ORDER BY role DESC, name'
+    'SELECT id, email, name, department, role, password, blocked FROM users ORDER BY role DESC, name'
   ).all();
   const withSessionActive = !!options.withSessionActive;
   const activeUserIds = withSessionActive ? await getActiveSessionUserIds(env) : null;
-  const list = (results || []).map(({ password, ...u }) => ({
+  const list = (results || []).map(({ password, blocked, ...u }) => ({
     ...u,
+    blocked: Number(blocked || 0) === 1,
     isLdap: isLdapExternalPassword(password),
     ...(withSessionActive ? { sessionActive: activeUserIds.has(u.id) } : {}),
   }));
@@ -707,7 +712,7 @@ async function ensureUserDepartmentMembership(env, userId, departmentName) {
 }
 
 async function getTargetUser(env, userId) {
-  return env.DB.prepare('SELECT id, email, name, department, role FROM users WHERE id = ?').bind(userId).first();
+  return env.DB.prepare('SELECT id, email, name, department, role, blocked FROM users WHERE id = ?').bind(userId).first();
 }
 
 function canManageTarget(actor, target) {
@@ -1565,6 +1570,9 @@ export async function onRequest(context) {
 
       const ldapResult = await tryLdapLogin(env, loginRaw, password);
       if (ldapResult?.ok && ldapResult.user) {
+        if (Number(ldapResult.user.blocked || 0) === 1) {
+          return reply({ error: 'Аккаунт заблокирован. Обратитесь к администратору.' }, 403);
+        }
         await ensureUserDepartmentMembership(env, ldapResult.user.id, ldapResult.user.department);
         const { token } = await createSession(env, ldapResult.user.id);
         const secureCookie = shouldUseSecureCookie(request, env);
@@ -1576,10 +1584,13 @@ export async function onRequest(context) {
       }
 
       const row = await env.DB.prepare(
-        'SELECT id, email, name, department, role, password FROM users WHERE email = ?'
+        'SELECT id, email, name, department, role, password, blocked FROM users WHERE email = ?'
       ).bind(loginLocalEmail).first();
 
       if (!row) return reply({ error: 'Неверный логин или пароль' }, 401);
+      if (Number(row.blocked || 0) === 1) {
+        return reply({ error: 'Аккаунт заблокирован. Обратитесь к администратору.' }, 403);
+      }
       const ok = await verifyPassword(password, row.password);
       if (!ok) return reply({ error: 'Неверный логин или пароль' }, 401);
 
@@ -1729,6 +1740,26 @@ export async function onRequest(context) {
       return reply({ ok: true, users: list });
     }
 
+    /* ── POST /users/block (admin) ────────────────────── */
+    if (path === '/users/block' && method === 'POST') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const { id = '', blocked = false } = await request.json();
+      const userId = String(id).trim();
+      if (!userId) return reply({ error: 'Некорректные данные' }, 400);
+      if (userId === auth.user.id) return reply({ error: 'Нельзя заблокировать себя' }, 400);
+
+      const target = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(userId).first();
+      if (!target) return reply({ error: 'Пользователь не найден' }, 404);
+
+      const blockedValue = Number(blocked) === 1 || blocked === true ? 1 : 0;
+      await env.DB.prepare('UPDATE users SET blocked = ? WHERE id = ?').bind(blockedValue, userId).run();
+      if (blockedValue === 1) {
+        await revokeUserSessions(env, userId);
+      }
+      const { list } = await getUsersMap(env, { withSessionActive: true });
+      return reply({ ok: true, users: list });
+    }
+
     /* ── POST /users/update (admin) ───────────────────── */
     if (path === '/users/update' && method === 'POST') {
       if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
@@ -1858,6 +1889,9 @@ export async function onRequest(context) {
       const targetUserId = valid.targetUserId || auth.user.id;
       const targetUser = await getTargetUser(env, targetUserId);
       if (!targetUser) return reply({ error: 'Сотрудник не найден' }, 404);
+      if (Number(targetUser.blocked || 0) === 1) {
+        return reply({ error: 'Сотрудник заблокирован' }, 403);
+      }
       if (!canManageTarget(auth.user, targetUser)) {
         return reply({ error: 'Недостаточно прав' }, 403);
       }
