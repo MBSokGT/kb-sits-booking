@@ -3506,7 +3506,6 @@ function updateEditorZonesList() {
 }
 
 async function saveEditorSpaces() {
-  await syncFromServer().catch(() => {});
   const allSpaces   = getSpaces().filter(s=>s.floorId!==editorFloorId);
   const finalSpaces = [...allSpaces, ...editorSpaces];
   const floorIds = new Set(getFloors().map(f => f.id));
