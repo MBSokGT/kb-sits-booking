@@ -321,6 +321,8 @@ let selectedMyBookingIds = new Set();
 let adminUserSearch = '';
 let adminUserSort = 'lastLogin';
 let adminStatsPeriod = 30;
+let teamViewPeriod   = 'active'; // 'active' | '30' | 'all'
+let myBookingsTab    = 'active'; // 'active' | 'history'
 let adminStatsDept = '';
 const deptMemberSearch = {};
 
@@ -391,6 +393,12 @@ function saveCalendarPrefs() {
    UTILS
 ═══════════════════════════════════════════════════════ */
 function p2(n) { return String(n).padStart(2,'0'); }
+function pluralRu(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
+  return many;
+}
 function fmtDate(d) { return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}`; }
 function fmtHuman(ds) {
   const d = new Date(ds+'T12:00:00');
@@ -1783,6 +1791,9 @@ async function bookSpace(spaceId) {
 
   saveBookings(Array.isArray(data.bookings) ? data.bookings : []);
   closeModal();
+  // Reset date selection so the next booking starts fresh from today
+  selDates = [fmtDate(new Date())];
+  calAnchorDate = selDates[0];
 
   const created = Number(data.created || 0);
   const skippedBusy = Number(data.skippedBusy || 0);
@@ -1995,28 +2006,48 @@ function setDisplay(mode, btn) {
 /* ═══════════════════════════════════════════════════════
    MY BOOKINGS VIEW
 ═══════════════════════════════════════════════════════ */
+function setMyBookingsTab(t) { myBookingsTab = t; renderMyBookingsView(); }
+
 function renderMyBookingsView() {
   purgeExpired();
   const el     = document.getElementById('view-mybookings');
-  const mine   = getActiveBookings(getBookings()).filter(b=>isMineBooking(b))
-                              .sort((a,b)=>a.date.localeCompare(b.date));
+  const allMine = getBookings().filter(b=>isMineBooking(b));
+  const mine   = getActiveBookings(allMine).sort((a,b)=>a.date.localeCompare(b.date));
+  const history = allMine
+    .filter(b => b.status === 'cancelled' || !getActiveBookings([b]).length)
+    .sort((a,b) => b.date.localeCompare(a.date))
+    .slice(0, 50);
   const spaces = getSpaces(); const floors = getFloors();
+
+  const isHistory = myBookingsTab === 'history';
+  const shown = isHistory ? history : mine;
+
   const cancelableIds = new Set(mine.filter(b => canCancelBooking(b)).map(b => b.id));
   selectedMyBookingIds = new Set([...selectedMyBookingIds].filter(id => cancelableIds.has(id)));
   const selectedCount = [...selectedMyBookingIds].filter(id => cancelableIds.has(id)).length;
   const allSelected = cancelableIds.size > 0 && selectedCount === cancelableIds.size;
 
+  const subText = isHistory
+    ? `${history.length} ${pluralRu(history.length,'запись','записи','записей')}`
+    : `${mine.length} ${pluralRu(mine.length,'активное','активных','активных')}`;
+
   el.innerHTML = `<div class="view-area">
-    <div>
-      <div class="view-head">Мои бронирования</div>
-      <div class="view-sub">${mine.length} активных</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <div>
+        <div class="view-head">Мои бронирования</div>
+        <div class="view-sub">${subText}</div>
+      </div>
+      <div class="floor-tabs" style="margin:0">
+        <button class="floor-tab-btn${!isHistory?' active':''}" onclick="setMyBookingsTab('active')">Активные</button>
+        <button class="floor-tab-btn${isHistory?' active':''}" onclick="setMyBookingsTab('history')">История</button>
+      </div>
     </div>
-    ${!mine.length ? `<div class="empty">
+    ${!shown.length ? `<div class="empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>
-      </svg><p>Нет активных бронирований</p></div>` :
+      </svg><p>${isHistory ? 'Нет истории бронирований' : 'Нет активных бронирований'}</p></div>` :
     `<div class="card">
-      <div style="padding:10px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      ${!isHistory ? `<div style="padding:10px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink2);font-weight:600;cursor:pointer">
           <input type="checkbox" ${allSelected ? 'checked' : ''} ${cancelableIds.size ? '' : 'disabled'}
             onchange="toggleMyBookingsSelectAll(this.checked)">
@@ -2027,23 +2058,24 @@ function renderMyBookingsView() {
           style="${selectedCount ? '' : 'opacity:.45;pointer-events:none'}">
           Отменить выбранные (${selectedCount})
         </button>
-      </div>
+      </div>` : ''}
       <div style="padding:0"><table class="data-table">
-      <thead><tr><th style="width:36px"></th><th>Место</th><th>Этаж</th><th>Дата</th><th>Время</th><th>Истекает</th><th></th></tr></thead>
-      <tbody>${mine.map(b=>{
+      <thead><tr>${!isHistory ? '<th style="width:36px"></th>' : ''}<th>Место</th><th>Этаж</th><th>Дата</th><th>Время</th>${!isHistory?'<th>Истекает</th>':'<th>Статус</th>'}<th></th></tr></thead>
+      <tbody>${shown.map(b=>{
         const sp = spaces.find(s=>s.id===b.spaceId);
         const fl = floors.find(f=>f.id===sp?.floorId);
-        const canCancel = canCancelBooking(b);
+        const canCancel = !isHistory && canCancelBooking(b);
         const checked = selectedMyBookingIds.has(b.id) ? 'checked' : '';
+        const statusCell = isHistory
+          ? (b.status === 'cancelled' ? '<span style="color:var(--red);font-size:12px">Отменено</span>' : '<span style="color:var(--ink4);font-size:12px">Истекло</span>')
+          : b.expiresAt;
         return `<tr>
-          <td style="text-align:center">
-            ${canCancel ? `<input type="checkbox" ${checked} onchange="toggleMyBookingSelection('${b.id}', this.checked)">` : ''}
-          </td>
+          ${!isHistory ? `<td style="text-align:center">${canCancel ? `<input type="checkbox" ${checked} onchange="toggleMyBookingSelection('${b.id}', this.checked)">` : ''}</td>` : ''}
           <td><strong>${escapeHtml(sp?.label || b.spaceName || '?')}</strong></td>
           <td>${escapeHtml(fl?.name||'?')}</td>
           <td>${fmtHuman(b.date)}</td>
           <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
-          <td style="font-size:12px;color:var(--ink3)">${b.expiresAt}</td>
+          <td style="font-size:12px;color:var(--ink3)">${statusCell}</td>
           <td>${canCancel ? `<button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}')">Отменить</button>` : '<span style="color:var(--ink4)">—</span>'}</td>
         </tr>`;
       }).join('')}
@@ -2093,7 +2125,7 @@ function renderCabinetView() {
     ${isManager ? `
     <!-- Department bookings -->
     <div class="card">
-      <div class="card-head">Отдел: ${escapeHtml(me.department)} · ${team.length} сотрудников</div>
+      <div class="card-head">Отдел: ${escapeHtml(me.department)} · ${team.length} ${pluralRu(team.length,'сотрудник','сотрудника','сотрудников')}</div>
       <div style="padding:0"><table class="data-table">
         <thead><tr><th>Сотрудник</th><th>Место</th><th>Дата</th><th>Время</th><th></th></tr></thead>
         <tbody>${!teamBks.length
@@ -2172,25 +2204,49 @@ function renderCabinetView() {
 /* ═══════════════════════════════════════════════════════
    TEAM VIEW (manager)
 ═══════════════════════════════════════════════════════ */
+function setTeamViewPeriod(v) { teamViewPeriod = v; renderTeamView(); }
+
 function renderTeamView() {
   purgeExpired();
   const el   = document.getElementById('view-team');
   const me   = currentUser;
   const team = getUsers().filter(u=>u.department===me.department && !sameId(u.id, me.id) && u.role==='user');
-  const bks  = getActiveBookings(getBookings()).filter(b => team.some(u=>sameId(u.id, b.userId)))
-                             .sort((a,b)=>a.date.localeCompare(b.date));
   const spaces = getSpaces(); const floors = getFloors();
+  const allBks = getBookings().filter(b => b.status !== 'cancelled' && team.some(u=>sameId(u.id, b.userId)));
+  const today = fmtDate(new Date());
+
+  let bks;
+  if (teamViewPeriod === '30') {
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 30);
+    const cutoffStr = fmtDate(cutoff);
+    bks = allBks.filter(b => b.date >= cutoffStr && b.date <= today);
+  } else if (teamViewPeriod === 'all') {
+    bks = allBks;
+  } else { // 'active' — future/ongoing
+    bks = getActiveBookings(allBks);
+  }
+  bks = bks.sort((a,b)=>a.date.localeCompare(b.date));
+
+  const staffWord = pluralRu(team.length, 'сотрудник', 'сотрудника', 'сотрудников');
+  const bkWord    = pluralRu(bks.length, 'бронирование', 'бронирования', 'бронирований');
+  const periodLabels = { active: 'Активные', '30': 'За 30 дней', all: 'Все' };
 
   el.innerHTML = `<div class="view-area">
     <div>
       <div class="view-head">Отдел: ${escapeHtml(me.department)}</div>
-      <div class="view-sub">${team.length} сотрудников · ${bks.length} активных бронирований</div>
+      <div class="view-sub">${team.length} ${staffWord} · ${bks.length} ${bkWord}</div>
     </div>
     <div class="metrics">
-      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${team.length}</div><div class="metric-l">Сотрудников</div></div>
-      <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${bks.length}</div><div class="metric-l">Бронирований</div></div>
+      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${team.length}</div><div class="metric-l">${staffWord.charAt(0).toUpperCase()+staffWord.slice(1)}</div></div>
+      <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${bks.length}</div><div class="metric-l">${bkWord.charAt(0).toUpperCase()+bkWord.slice(1)}</div></div>
     </div>
-    <div class="card"><div class="card-head">Бронирования отдела</div>
+    <div class="card">
+      <div class="card-head" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Бронирования отдела</span>
+        <div class="floor-tabs" style="margin:0;gap:4px">
+          ${['active','30','all'].map(v=>`<button class="floor-tab-btn${teamViewPeriod===v?' active':''}" onclick="setTeamViewPeriod('${v}')">${periodLabels[v]}</button>`).join('')}
+        </div>
+      </div>
     <div style="padding:0"><table class="data-table">
       <thead><tr><th>Сотрудник</th><th>Место</th><th>Дата</th><th>Время</th><th></th></tr></thead>
       <tbody>${!bks.length ? `<tr><td colspan="5" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>` :
@@ -2507,9 +2563,10 @@ function renderAdminStats(el) {
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - periodDays);
   const cutoffStr = fmtDate(cutoff);
+  const todayStr  = fmtDate(new Date());
 
   const bks = allBookings.filter(b =>
-    b.date >= cutoffStr && deptUserIds.has(b.userId)
+    b.date >= cutoffStr && b.date <= todayStr && deptUserIds.has(b.userId)
   );
 
   // Unique attendees
@@ -2568,7 +2625,7 @@ function renderAdminStats(el) {
     </div>
 
     <div class="metrics" style="margin-bottom:1.5rem">
-      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${attendees}<span style="font-size:14px;font-weight:500;color:var(--ink3)">/${totalStaff}</span></div><div class="metric-l">Сотрудников в офисе</div></div>
+      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${attendees}<span style="font-size:14px;font-weight:500;color:var(--ink3)">/${totalStaff}</span></div><div class="metric-l">Посетили за период</div></div>
       <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${bks.length}</div><div class="metric-l">Бронирований</div></div>
       <div class="metric mt-amber"><div class="metric-n" style="color:var(--amber)">${topDate ? dayNames[new Date(topDate[0]+'T12:00:00').getDay()===0?6:new Date(topDate[0]+'T12:00:00').getDay()-1] : '—'}</div><div class="metric-l">Самый занятой день</div></div>
       <div class="metric mt-purple"><div class="metric-n" style="color:var(--purple)">${totalStaff > 0 ? Math.round(attendees/totalStaff*100) : 0}%</div><div class="metric-l">Посещаемость</div></div>
