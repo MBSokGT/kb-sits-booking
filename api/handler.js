@@ -433,8 +433,7 @@ async function upsertLdapUser(env, profile) {
   if (existing?.id) {
     userId = existing.id;
     // Preserve existing role — it may have been manually set by an admin.
-    // LDAP groups only set the role on first login (new user creation below).
-    const nextRole = existing.role || profile.role;
+    const nextRole = existing.role || 'user';
     const nextPassword = isLdapExternalPassword(existing.password) ? ldapMarkerPassword : existing.password;
 
     await env.DB.prepare(
@@ -442,9 +441,10 @@ async function upsertLdapUser(env, profile) {
     ).bind(profile.name, profile.department, nextRole, nextPassword, userId).run();
   } else {
     userId = `ldap_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+    // New users always start as 'user'. Admins assign manager/admin roles manually.
     await env.DB.prepare(
       'INSERT INTO users (id, email, password, name, department, role) VALUES (?, ?, ?, ?, ?, ?)'
-    ).bind(userId, profile.email, ldapMarkerPassword, profile.name, profile.department, profile.role).run();
+    ).bind(userId, profile.email, ldapMarkerPassword, profile.name, profile.department, 'user').run();
   }
 
   await ensureUserDepartmentMembership(env, userId, profile.department);
