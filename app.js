@@ -833,7 +833,8 @@ async function initApp() {
 
   // Restore last visited tab, but only if the user is allowed to see it
   const allowed = new Set(['map', 'mybookings', 'team', 'admin', 'cabinet']);
-  if (currentUser?.role === 'user') { allowed.delete('team'); allowed.delete('admin'); }
+  if (currentUser?.role === 'user')    { allowed.delete('team'); allowed.delete('admin'); }
+  if (currentUser?.role === 'manager') { allowed.delete('admin'); }
   const savedView = localStorage.getItem('lastView');
   const startView = savedView && allowed.has(savedView) ? savedView : 'map';
   const savedAdminTab = localStorage.getItem('adminActiveTab');
@@ -1967,6 +1968,9 @@ async function _doCancelSelected(ids) {
    VIEW SWITCHING
 ═══════════════════════════════════════════════════════ */
 function switchView(view, btn) {
+  // Access control
+  if (view === 'admin' && currentUser?.role === 'manager') view = 'team';
+  if ((view === 'admin' || view === 'team') && currentUser?.role === 'user') view = 'map';
   currentView = view;
   try { localStorage.setItem('lastView', view); } catch(e) {}
 
