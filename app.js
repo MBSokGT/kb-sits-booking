@@ -323,6 +323,7 @@ let adminUserSort = 'lastLogin';
 let adminStatsPeriod = 30;
 let teamViewPeriod   = 'active'; // 'active' | '30' | 'all'
 let teamViewTab      = 'bookings'; // 'bookings' | 'stats'
+let teamViewSearch   = ''; // filter by employee name
 let myBookingsTab    = 'active'; // 'active' | 'history'
 let adminStatsDept = '';
 const deptMemberSearch = {};
@@ -828,6 +829,8 @@ async function initApp() {
   if (currentUser?.role === 'user') { allowed.delete('team'); allowed.delete('admin'); }
   const savedView = localStorage.getItem('lastView');
   const startView = savedView && allowed.has(savedView) ? savedView : 'map';
+  const savedAdminTab = localStorage.getItem('adminActiveTab');
+  if (savedAdminTab) adminActiveTab = savedAdminTab;
   switchView(startView);
 }
 
@@ -1835,8 +1838,13 @@ async function bookSpace(spaceId) {
     : `Забронировано${who}: ${created} ${created===1?'день':'дней'}`;
   toast(msg, 't-green', '✓');
 
-  renderCalendar(); 
-  renderStats(); 
+  // Reset dates to today after successful booking
+  selDates = [fmtDate(new Date())];
+  calAnchorDate = selDates[0];
+
+  closeModal();
+  renderCalendar();
+  renderStats();
   renderMiniBookings();
   if (currentView === 'map') renderMapView();
 }
@@ -1895,8 +1903,13 @@ function toggleMyBookingsSelectAll(checked) {
 
 async function cancelSelectedMyBookings() {
   const ids = [...selectedMyBookingIds];
-  if (!ids.length) return toast('Не выбраны брони для отмены', 't-amber', '!');
-  if (!confirm(`Отменить выбранные брони: ${ids.length}?`)) return;
+  if (!ids.length) return toast('Не выбраны бронирования для отмены', 't-amber', '!');
+  const n = ids.length;
+  const word = pluralRu(n, 'бронирование', 'бронирования', 'бронирований');
+  confirmAction(`Отменить ${n} ${word}?`, () => _doCancelSelected(ids));
+}
+
+async function _doCancelSelected(ids) {
 
   let cancelled = 0;
   let failed = 0;
@@ -1930,7 +1943,7 @@ async function cancelSelectedMyBookings() {
       failed > 0 ? '!' : '✓'
     );
   } else {
-    toast('Не удалось отменить выбранные брони', 't-red', '✕');
+    toast('Не удалось отменить выбранные бронирования', 't-red', '✕');
   }
 
   renderCalendar();
@@ -2215,6 +2228,7 @@ function renderCabinetView() {
 ═══════════════════════════════════════════════════════ */
 function setTeamViewPeriod(v) { teamViewPeriod = v; renderTeamView(); }
 function setTeamViewTab(v) { teamViewTab = v; renderTeamView(); }
+function setTeamViewSearch(v) { teamViewSearch = String(v||'').trim().toLowerCase(); renderTeamView(); }
 
 function renderTeamView() {
   purgeExpired();
@@ -2237,8 +2251,13 @@ function renderTeamView() {
   }
   bks = bks.sort((a,b)=>a.date.localeCompare(b.date));
 
+  // Apply employee search filter
+  const filteredBks = teamViewSearch
+    ? bks.filter(b => b.userName.toLowerCase().includes(teamViewSearch))
+    : bks;
+
   const staffWord = pluralRu(team.length, 'сотрудник', 'сотрудника', 'сотрудников');
-  const bkWord    = pluralRu(bks.length, 'бронирование', 'бронирования', 'бронирований');
+  const bkWord    = pluralRu(filteredBks.length, 'бронирование', 'бронирования', 'бронирований');
   const periodLabels = { active: 'Активные', '30': 'За 30 дней', all: 'Все' };
 
   el.innerHTML = `<div class="view-area">
@@ -2262,19 +2281,25 @@ function renderTeamView() {
     content.innerHTML = `
     <div class="metrics">
       <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${team.length}</div><div class="metric-l">${staffWord.charAt(0).toUpperCase()+staffWord.slice(1)}</div></div>
-      <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${bks.length}</div><div class="metric-l">${bkWord.charAt(0).toUpperCase()+bkWord.slice(1)}</div></div>
+      <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${filteredBks.length}</div><div class="metric-l">${bkWord.charAt(0).toUpperCase()+bkWord.slice(1)}</div></div>
     </div>
     <div class="card">
-      <div class="card-head" style="display:flex;align-items:center;justify-content:space-between">
+      <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
         <span>Бронирования отдела</span>
-        <div class="floor-tabs" style="margin:0;gap:4px">
-          ${['active','30','all'].map(v=>`<button class="floor-tab-btn${teamViewPeriod===v?' active':''}" onclick="setTeamViewPeriod('${v}')">${periodLabels[v]}</button>`).join('')}
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <input type="text" class="role-sel" placeholder="Поиск по сотруднику..."
+            value="${escapeHtml(teamViewSearch)}"
+            oninput="setTeamViewSearch(this.value)"
+            style="min-width:180px;font-size:13px">
+          <div class="floor-tabs" style="margin:0;gap:4px">
+            ${['active','30','all'].map(v=>`<button class="floor-tab-btn${teamViewPeriod===v?' active':''}" onclick="setTeamViewPeriod('${v}')">${periodLabels[v]}</button>`).join('')}
+          </div>
         </div>
       </div>
       <div style="padding:0"><table class="data-table">
         <thead><tr><th>Сотрудник</th><th>Место</th><th>Дата</th><th>Время</th><th></th></tr></thead>
-        <tbody>${!bks.length ? `<tr><td colspan="5" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>` :
-          bks.map(b=>{
+        <tbody>${!filteredBks.length ? `<tr><td colspan="5" style="text-align:center;color:var(--ink4);padding:2rem">${teamViewSearch ? 'Ничего не найдено' : 'Нет бронирований'}</td></tr>` :
+          filteredBks.map(b=>{
             const sp=spaces.find(s=>s.id===b.spaceId);
             return `<tr>
               <td><strong>${escapeHtml(b.userName)}</strong></td>
@@ -2332,7 +2357,7 @@ function buildDeptCard(dept, users) {
       <label class="dept-label" for="dept-head-${dept.id}">Руководитель</label>
       <select id="dept-head-${dept.id}" class="dept-select" onchange="setDeptHead('${dept.id}',this.value)">
         <option value="">— не назначен —</option>
-        ${users.map(u=>`<option value="${u.id}"${u.id===dept.headUserId?' selected':''}>${escapeHtml(u.name)}</option>`).join('')}
+        ${users.filter(u=>u.role==='manager'||u.role==='admin').map(u=>`<option value="${u.id}"${u.id===dept.headUserId?' selected':''}>${escapeHtml(u.name)}</option>`).join('')}
       </select>
     </div>
     <div class="dept-members">
@@ -2354,8 +2379,8 @@ function buildDeptCard(dept, users) {
             onfocus="showDeptDropdown('${dept.id}')"
             onblur="hideDeptDropdown('${dept.id}')"
             autocomplete="off">
-          ${filteredNonMembers.length && deptMemberSearch[dept.id] ? `
-          <div id="dept-drop-${dept.id}" class="dept-dropdown">
+          ${filteredNonMembers.length ? `
+          <div id="dept-drop-${dept.id}" class="dept-dropdown" style="display:none">
             ${filteredNonMembers.map(u=>`
               <div class="dept-drop-item" onmousedown="addMemberToDeptById('${dept.id}','${u.id}')">${escapeHtml(u.name)}${u.department?`<span style="font-size:11px;color:var(--ink4);margin-left:4px">${escapeHtml(u.department)}</span>`:''}</div>
             `).join('')}
@@ -2676,10 +2701,10 @@ function renderAdminStats(el, forceDept = null) {
     <div class="card" style="padding:0">
       <div class="card-head">Посещаемость сотрудников</div>
       <div style="padding:0"><table class="data-table">
-        <thead><tr><th>Сотрудник</th><th>Отдел</th><th>Визитов за период</th><th>Последний визит</th></tr></thead>
+        <thead><tr><th>Сотрудник</th>${!deptName?'<th>Отдел</th>':''}<th>Визитов</th><th>Последний визит</th></tr></thead>
         <tbody>${empRows.map(r => `<tr>
           <td><strong>${escapeHtml(r.name)}</strong></td>
-          <td style="color:var(--ink3)">${escapeHtml(r.dept)}</td>
+          ${!deptName?`<td style="color:var(--ink3)">${escapeHtml(r.dept)}</td>`:''}
           <td><span class="badge ${r.count > 0 ? 'badge-blue' : ''}" style="${r.count===0?'color:var(--ink4)':''}">${r.count}</span></td>
           <td style="font-size:12px;color:var(--ink3)">${r.lastDate !== '—' ? fmtHuman(r.lastDate) : '—'}</td>
         </tr>`).join('')}
@@ -2724,6 +2749,7 @@ function renderAdminTabContent(tab) {
 
 function adminTab(tab, btn) {
   adminActiveTab = tab;
+  try { localStorage.setItem('adminActiveTab', tab); } catch(e) {}
   document.querySelectorAll('#admin-tabs .floor-tab-btn').forEach(b=>b.classList.remove('active'));
   const activeBtn = btn || document.querySelector(`#admin-tabs [data-admin-tab="${tab}"]`);
   if (activeBtn) activeBtn.classList.add('active');
@@ -2766,7 +2792,12 @@ function renderBookingTargetOptions() {
 
 function setDeptMemberSearch(deptId, value) {
   deptMemberSearch[deptId] = String(value || '');
-  _refreshDeptTab();
+  const q = value.trim().toLowerCase();
+  const drop = document.getElementById('dept-drop-' + deptId);
+  if (!drop) return;
+  drop.querySelectorAll('.dept-drop-item').forEach(item => {
+    item.style.display = !q || item.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
 }
 
 function getDeptMemberSearch(deptId) {
