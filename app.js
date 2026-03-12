@@ -814,8 +814,8 @@ async function initApp() {
   calViewYear  = today.getFullYear();
   calViewMonth = today.getMonth();
   calMode      = 'month';
-  selDates     = [fmtDate(today)];
-  calAnchorDate = selDates[0];
+  selDates     = [];
+  calAnchorDate = null;
   bookingForUserId = currentUser?.id || null;
   loadCalendarPrefs();
 
@@ -1011,7 +1011,6 @@ function calDayClick(ds, evt) {
     selDates = [...new Set([...selDates, ...ranged])].sort();
   } else if (selDates.includes(ds)) {
     selDates = selDates.filter(x => x !== ds);
-    if (!selDates.length) selDates = [ds];
   } else {
     selDates = [...selDates, ds].sort();
   }
@@ -1094,9 +1093,8 @@ function shiftSelectedDate(deltaDays) {
 
 function resetSelectedRange() {
   const today = new Date();
-  const ds = fmtDate(today);
-  selDates = [ds];
-  calAnchorDate = ds;
+  selDates = [];
+  calAnchorDate = null;
   calViewYear = today.getFullYear();
   calViewMonth = today.getMonth();
   renderCalendar();
@@ -1818,7 +1816,7 @@ async function bookSpace(spaceId) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       spaceId,
-      dates: selDates,
+      dates: selDates.length ? selDates : [fmtDate(new Date())],
       slotFrom: from,
       slotTo: to,
       targetUserId: targetId,
@@ -1841,9 +1839,8 @@ async function bookSpace(spaceId) {
 
   saveBookings(Array.isArray(data.bookings) ? data.bookings : []);
   closeModal();
-  // Reset date selection so the next booking starts fresh from today
-  selDates = [fmtDate(new Date())];
-  calAnchorDate = selDates[0];
+  selDates = [];
+  calAnchorDate = null;
 
   const created = Number(data.created || 0);
   const skippedBusy = Number(data.skippedBusy || 0);
@@ -1877,9 +1874,8 @@ async function bookSpace(spaceId) {
     : `Забронировано${who}: ${created} ${created===1?'день':'дней'}`;
   toast(msg, 't-green', '✓');
 
-  // Reset dates to today after successful booking
-  selDates = [fmtDate(new Date())];
-  calAnchorDate = selDates[0];
+  selDates = [];
+  calAnchorDate = null;
 
   closeModal();
   renderCalendar();
@@ -2207,27 +2203,6 @@ function renderCabinetView() {
       </div>
     </div>
 
-    <!-- Change password -->
-    <div class="card">
-      <div class="card-head">Изменить пароль</div>
-      <div style="padding:1.25rem;display:flex;flex-direction:column;gap:.75rem;max-width:360px">
-        <div class="field">
-          <label>Текущий пароль</label>
-          <input type="password" id="cp-old" autocomplete="current-password">
-        </div>
-        <div class="field">
-          <label>Новый пароль <span style="color:var(--ink3);font-size:11px">(мин. 6 символов)</span></label>
-          <input type="password" id="cp-new" autocomplete="new-password">
-        </div>
-        <div class="field">
-          <label>Повторите новый пароль</label>
-          <input type="password" id="cp-confirm" autocomplete="new-password">
-        </div>
-        <div id="cp-err" style="color:var(--red);font-size:13px;display:none"></div>
-        <button class="btn btn-primary" style="align-self:flex-start" onclick="doChangePassword()">Сохранить пароль</button>
-      </div>
-    </div>
-
     <!-- Logout at the very bottom -->
     <div>
       <button class="btn btn-danger" onclick="doLogout()">Выйти из аккаунта</button>
@@ -2235,9 +2210,6 @@ function renderCabinetView() {
 
   </div>`;
 
-  // Enter on last password field
-  const cpConfirm = document.getElementById('cp-confirm');
-  if (cpConfirm) cpConfirm.addEventListener('keydown', e => { if(e.key==='Enter') doChangePassword(); });
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -2531,73 +2503,6 @@ function removeMemberFromDept(deptId, userId) {
 function _refreshDeptTab() {
   const content = document.getElementById('admin-tab-content');
   if (content) renderAdminDepartments(content);
-}
-
-/* ═══════════════════════════════════════════════════════
-   PROFILE / CHANGE PASSWORD
-═══════════════════════════════════════════════════════ */
-function showChangePasswordModal() {
-  document.getElementById('modal-title').textContent = 'Изменить пароль';
-  document.getElementById('modal-body').innerHTML = `
-    <div class="field">
-      <label>Текущий пароль</label>
-      <input type="password" id="cp-old" autocomplete="current-password">
-    </div>
-    <div class="field">
-      <label>Новый пароль <span style="color:var(--ink3);font-size:11px">(мин. 6 символов)</span></label>
-      <input type="password" id="cp-new" autocomplete="new-password">
-    </div>
-    <div class="field">
-      <label>Повторите новый пароль</label>
-      <input type="password" id="cp-confirm" autocomplete="new-password">
-    </div>
-    <div id="cp-err" style="color:var(--red);font-size:13px;display:none"></div>`;
-  document.getElementById('modal-foot').innerHTML = `
-    <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
-    <button class="btn btn-primary" onclick="doChangePassword()">Сохранить</button>`;
-  document.getElementById('modal-overlay').classList.add('open');
-  requestAnimationFrame(() => { const i = document.getElementById('cp-old'); if(i) i.focus(); });
-  // Allow Enter on last field
-  document.getElementById('cp-confirm').addEventListener('keydown', e => { if(e.key==='Enter') doChangePassword(); });
-}
-
-async function doChangePassword() {
-  const oldPwd  = document.getElementById('cp-old').value;
-  const newPwd  = document.getElementById('cp-new').value;
-  const confirm = document.getElementById('cp-confirm').value;
-  const errEl   = document.getElementById('cp-err');
-  const showErr = msg => { errEl.textContent = msg; errEl.style.display = 'block'; };
-
-  if (!oldPwd || !newPwd) return showErr('Заполните все поля');
-  if (newPwd.length < 6)  return showErr('Новый пароль минимум 6 символов');
-  if (newPwd !== confirm)  return showErr('Пароли не совпадают');
-
-  try {
-    const r = await apiFetch('/api/auth/change-password', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: currentUser.email, oldPassword: oldPwd, newPassword: newPwd })
-    });
-    if (r.status === 401) {
-      requireRelogin();
-      return;
-    }
-    const data = await r.json();
-    if (!r.ok) return showErr(data.error || 'Ошибка');
-    // Close modal if open; otherwise we're in the cabinet view — just clear the fields
-    const overlay = document.getElementById('modal-overlay');
-    if (overlay && overlay.classList.contains('open')) {
-      closeModal();
-    } else {
-      const o = document.getElementById('cp-old'); if(o) o.value='';
-      const n = document.getElementById('cp-new'); if(n) n.value='';
-      const c = document.getElementById('cp-confirm'); if(c) c.value='';
-      const e = document.getElementById('cp-err'); if(e) e.style.display='none';
-    }
-    toast('Пароль изменён', '', '✓');
-  } catch(e) {
-    showErr('Нет соединения с сервером');
-  }
 }
 
 /* ═══════════════════════════════════════════════════════
