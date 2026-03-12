@@ -432,8 +432,9 @@ async function upsertLdapUser(env, profile) {
 
   if (existing?.id) {
     userId = existing.id;
-    const keepLocalAdminRole = existing.role === 'admin' && !isLdapExternalPassword(existing.password);
-    const nextRole = keepLocalAdminRole ? 'admin' : profile.role;
+    // Preserve existing role — it may have been manually set by an admin.
+    // LDAP groups only set the role on first login (new user creation below).
+    const nextRole = existing.role || profile.role;
     const nextPassword = isLdapExternalPassword(existing.password) ? ldapMarkerPassword : existing.password;
 
     await env.DB.prepare(
@@ -1754,11 +1755,8 @@ export async function onRequest(context) {
       if (!userId || !roleClean) return reply({ error: 'Некорректные данные' }, 400);
       if (userId === auth.user.id) return reply({ error: 'Нельзя менять роль текущего администратора' }, 400);
 
-      const target = await env.DB.prepare('SELECT id, password FROM users WHERE id = ?').bind(userId).first();
+      const target = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(userId).first();
       if (!target) return reply({ error: 'Пользователь не найден' }, 404);
-      if (isLdapExternalPassword(target.password)) {
-        return reply({ error: 'Это доменный аккаунт. Роль назначается в Active Directory.' }, 400);
-      }
       await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(roleClean, userId).run();
 
       const { list } = await getUsersMap(env, { withSessionActive: true });
