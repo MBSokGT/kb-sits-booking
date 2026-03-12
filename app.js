@@ -1970,21 +1970,13 @@ function switchView(view, btn) {
   currentView = view;
   try { localStorage.setItem('lastView', view); } catch(e) {}
 
-  // Sync both topbar tabs and mobile bottom nav
-  document.querySelectorAll('.tnav,.mnav[data-view]').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.tnav').forEach(b=>b.classList.remove('active'));
   if (btn) btn.classList.add('active');
-  // Also sync the counterpart button (topbar vs bottom nav)
-  document.querySelectorAll(`.tnav[onclick*="'${view}'"],.mnav[data-view="${view}"]`).forEach(b=>b.classList.add('active'));
+  document.querySelectorAll(`.tnav[onclick*="'${view}'"]`).forEach(b=>b.classList.add('active'));
 
   // Mark app with current view so CSS can hide sidebar on non-map views
   document.getElementById('app').dataset.view = view;
 
-  // Show/hide filter button in bottom nav (only relevant on map view)
-  const filterBtn = document.getElementById('mnav-filter-btn');
-  if (filterBtn) filterBtn.classList.toggle('hidden', view !== 'map');
-
-  // Close drawer if open
-  closeFilterDrawer();
 
   ['view-map','view-mybookings','view-team','view-admin','view-cabinet'].forEach(id=>{
     const el = document.getElementById(id);
@@ -2005,23 +1997,6 @@ function switchView(view, btn) {
   if (view === 'cabinet')    { document.getElementById('view-cabinet').style.display = 'flex';    renderCabinetView(); }
 }
 
-function openFilterDrawer() {
-  const sidebar  = document.querySelector('.sidebar');
-  const overlay  = document.getElementById('drawer-overlay');
-  if (!sidebar || !overlay) return;
-  sidebar.classList.add('open');
-  overlay.style.display = 'block';
-  requestAnimationFrame(()=>overlay.classList.add('open'));
-}
-
-function closeFilterDrawer() {
-  const sidebar  = document.querySelector('.sidebar');
-  const overlay  = document.getElementById('drawer-overlay');
-  if (!sidebar || !overlay) return;
-  sidebar.classList.remove('open');
-  overlay.classList.remove('open');
-  setTimeout(()=>{ if (!overlay.classList.contains('open')) overlay.style.display='none'; }, 260);
-}
 
 function setDisplay(mode, btn) {
   displayMode = mode;

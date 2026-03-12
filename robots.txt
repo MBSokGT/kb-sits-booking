@@ -1,4 +1,0 @@
-User-agent: *
-Disallow: /
-
-# This is a private internal application — no public indexing allowed.

@@ -760,79 +760,6 @@ table.data-table tr:hover td{background:var(--paper)}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:10px}
 
-/* ═══════════════════════════════════════════════════════
-   MOBILE BOTTOM NAV
-═══════════════════════════════════════════════════════ */
-.mobile-nav{display:none}
-
-/* Filter drawer (sidebar as bottom sheet on mobile) */
-.drawer-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:299;
-  opacity:0;transition:opacity .25s}
-.drawer-overlay.open{opacity:1}
-
-@media (max-width:768px){
-  /* ── Topbar: hide nav tabs, separator, user name, role pill ── */
-  .topbar-sep,.topbar-nav,.user-name,.role-pill{display:none}
-  .topbar{padding:0 .875rem}
-  .topbar-right{gap:.5rem}
-  .logout-btn{padding:5px 9px;font-size:11px}
-
-  /* ── Main: leave room for bottom nav ── */
-  .main{padding-bottom:62px}
-
-  /* ── Sidebar becomes a bottom-sheet drawer ── */
-  .sidebar{
-    position:fixed;bottom:62px;left:0;right:0;
-    width:100%;max-height:78dvh;
-    border-right:none;border-top:1px solid var(--line);border-radius:16px 16px 0 0;
-    z-index:300;
-    transform:translateY(110%);
-    transition:transform .3s cubic-bezier(.4,0,.2,1);
-    box-shadow:0 -4px 24px rgba(0,0,0,.12);
-    overflow-y:auto;
-  }
-  .sidebar.open{transform:translateY(0)}
-  .drawer-overlay.open{display:block}
-
-  /* Drag handle on top of drawer */
-  .sidebar::before{
-    content:'';display:block;width:36px;height:4px;
-    background:var(--line2);border-radius:2px;
-    margin:.75rem auto .25rem;
-  }
-
-  /* ── Bottom nav bar ── */
-  .mobile-nav{
-    display:flex;position:fixed;bottom:0;left:0;right:0;height:62px;
-    background:var(--ink);border-top:1px solid rgba(255,255,255,.08);
-    z-index:400;
-  }
-  .mnav{
-    flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
-    gap:3px;border:none;background:transparent;cursor:pointer;
-    color:rgba(255,255,255,.45);font-family:inherit;font-size:10px;font-weight:600;
-    letter-spacing:.3px;padding:0;transition:color .15s;
-  }
-  .mnav:hover{color:rgba(255,255,255,.75)}
-  .mnav.active{color:white}
-  .mnav.active svg{filter:drop-shadow(0 0 4px rgba(255,255,255,.25))}
-  .mnav.manager-only{display:none}
-  .mnav.admin-only{display:none}
-
-  /* Filter button — accent colour, only visible on map view */
-  .mnav-filter{color:var(--blue);background:rgba(59,130,246,.12);border-radius:0}
-  .mnav-filter:hover{color:#93c5fd}
-  .mnav-filter.hidden{display:none}
-
-  /* Toast: push up above bottom nav */
-  .toast{bottom:calc(62px + 1rem)}
-
-  /* Content-bar stacks on mobile */
-  .content-bar{flex-direction:column;align-items:flex-start;gap:.5rem;padding:.75rem 1rem}
-  .map-legend-row{padding:.5rem 1rem;flex-wrap:wrap}
-  .map-legend-items{gap:.75rem}
-  .map-day-nav{position:static;transform:none;margin-left:auto}
-}
 
 /* ── Sidebar resize handle ───────────────────────────────── */
 .sidebar-resizer{
@@ -848,14 +775,9 @@ table.data-table tr:hover td{background:var(--paper)}
   background:var(--blue);opacity:0;transition:opacity .2s;
 }
 .sidebar-resizer:hover::after,.sidebar-resizer.dragging::after{opacity:.7}
-/* Hide resizer on mobile (sidebar becomes a bottom sheet) */
-@media(max-width:768px){.sidebar-resizer{display:none}}
-
-/* Hide sidebar on non-map views (desktop) */
-@media (min-width:769px){
-  #app[data-view]:not([data-view="map"]) .sidebar{display:none}
-  #app[data-view]:not([data-view="map"]) .sidebar-resizer{display:none}
-}
+/* Hide sidebar on non-map views */
+#app[data-view]:not([data-view="map"]) .sidebar{display:none}
+#app[data-view]:not([data-view="map"]) .sidebar-resizer{display:none}
 
 /* ── Department cards (Admin → Департаменты) ─────────────── */
 .dept-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:1.25rem 1.25rem 1rem;display:flex;flex-direction:column;gap:.875rem}
