@@ -2257,7 +2257,7 @@ function renderTeamView() {
 
   const content = el.querySelector('#team-tab-content');
   if (teamViewTab === 'stats') {
-    renderAdminStats(content);
+    renderAdminStats(content, me.department || '');
   } else {
     content.innerHTML = `
     <div class="metrics">
@@ -2571,14 +2571,15 @@ function showForgotPasswordModal() {
 function setAdminStatsPeriod(v) { adminStatsPeriod = Number(v); renderAdminTabContent('stats'); }
 function setAdminStatsDept(v)   { adminStatsDept = v; renderAdminTabContent('stats'); }
 
-function renderAdminStats(el) {
+function renderAdminStats(el, forceDept = null) {
   const allUsers    = getUsers();
   const allBookings = getBookings().filter(b => b.status !== 'cancelled');
   const depts       = getDepartments();
   const isManager   = currentUser?.role === 'manager';
+  const lockDept    = forceDept !== null;
 
   // Dept filter
-  const deptName = isManager ? (currentUser.department || '') : adminStatsDept;
+  const deptName = lockDept ? forceDept : (isManager ? (currentUser.department || '') : adminStatsDept);
   const deptUsers = deptName
     ? allUsers.filter(u => u.department === deptName)
     : allUsers;
@@ -2632,7 +2633,7 @@ function renderAdminStats(el) {
   bks.forEach(b => { dailyCounts[b.date] = (dailyCounts[b.date] || 0) + 1; });
   const topDate = Object.entries(dailyCounts).sort((a,b)=>b[1]-a[1])[0];
 
-  const deptSelector = !isManager ? `
+  const deptSelector = (!isManager && !lockDept) ? `
     <select class="role-sel" onchange="setAdminStatsDept(this.value)" style="min-width:180px">
       <option value="" ${!adminStatsDept?'selected':''}>Все отделы</option>
       ${[...new Set(allUsers.map(u=>u.department).filter(Boolean))].sort()
