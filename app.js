@@ -322,6 +322,7 @@ let adminUserSearch = '';
 let adminUserSort = 'lastLogin';
 let adminStatsPeriod = 30;
 let teamViewPeriod   = 'active'; // 'active' | '30' | 'all'
+let teamViewTab      = 'bookings'; // 'bookings' | 'stats'
 let myBookingsTab    = 'active'; // 'active' | 'history'
 let adminStatsDept = '';
 const deptMemberSearch = {};
@@ -2213,6 +2214,7 @@ function renderCabinetView() {
    TEAM VIEW (manager)
 ═══════════════════════════════════════════════════════ */
 function setTeamViewPeriod(v) { teamViewPeriod = v; renderTeamView(); }
+function setTeamViewTab(v) { teamViewTab = v; renderTeamView(); }
 
 function renderTeamView() {
   purgeExpired();
@@ -2230,7 +2232,7 @@ function renderTeamView() {
     bks = allBks.filter(b => b.date >= cutoffStr && b.date <= today);
   } else if (teamViewPeriod === 'all') {
     bks = allBks;
-  } else { // 'active' — future/ongoing
+  } else {
     bks = getActiveBookings(allBks);
   }
   bks = bks.sort((a,b)=>a.date.localeCompare(b.date));
@@ -2240,10 +2242,24 @@ function renderTeamView() {
   const periodLabels = { active: 'Активные', '30': 'За 30 дней', all: 'Все' };
 
   el.innerHTML = `<div class="view-area">
-    <div>
-      <div class="view-head">Отдел: ${escapeHtml(me.department)}</div>
-      <div class="view-sub">${team.length} ${staffWord} · ${bks.length} ${bkWord}</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <div>
+        <div class="view-head">Отдел: ${escapeHtml(me.department)}</div>
+        <div class="view-sub">${team.length} ${staffWord}</div>
+      </div>
+      <div class="floor-tabs" style="margin:0">
+        <button class="floor-tab-btn${teamViewTab==='bookings'?' active':''}" onclick="setTeamViewTab('bookings')">Бронирования</button>
+        <button class="floor-tab-btn${teamViewTab==='stats'?' active':''}" onclick="setTeamViewTab('stats')">Статистика</button>
+      </div>
     </div>
+    <div id="team-tab-content"></div>
+  </div>`;
+
+  const content = el.querySelector('#team-tab-content');
+  if (teamViewTab === 'stats') {
+    renderAdminStats(content);
+  } else {
+    content.innerHTML = `
     <div class="metrics">
       <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${team.length}</div><div class="metric-l">${staffWord.charAt(0).toUpperCase()+staffWord.slice(1)}</div></div>
       <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${bks.length}</div><div class="metric-l">${bkWord.charAt(0).toUpperCase()+bkWord.slice(1)}</div></div>
@@ -2255,21 +2271,23 @@ function renderTeamView() {
           ${['active','30','all'].map(v=>`<button class="floor-tab-btn${teamViewPeriod===v?' active':''}" onclick="setTeamViewPeriod('${v}')">${periodLabels[v]}</button>`).join('')}
         </div>
       </div>
-    <div style="padding:0"><table class="data-table">
-      <thead><tr><th>Сотрудник</th><th>Место</th><th>Дата</th><th>Время</th><th></th></tr></thead>
-      <tbody>${!bks.length ? `<tr><td colspan="5" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>` :
-        bks.map(b=>{
-          const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
-          return `<tr>
-            <td><strong>${escapeHtml(b.userName)}</strong></td>
-            <td>${escapeHtml(sp?.label || b.spaceName || '?')}</td>
-            <td>${fmtHuman(b.date)}</td>
-            <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
-            <td>${canCancelBooking(b) ? `<button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}')">Отменить</button>` : '<span style="color:var(--ink4)">—</span>'}</td>
-          </tr>`;
-        }).join('')}
-      </tbody></table></div></div>
-  </div>`;
+      <div style="padding:0"><table class="data-table">
+        <thead><tr><th>Сотрудник</th><th>Место</th><th>Дата</th><th>Время</th><th></th></tr></thead>
+        <tbody>${!bks.length ? `<tr><td colspan="5" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>` :
+          bks.map(b=>{
+            const sp=spaces.find(s=>s.id===b.spaceId);
+            return `<tr>
+              <td><strong>${escapeHtml(b.userName)}</strong></td>
+              <td>${escapeHtml(sp?.label || b.spaceName || '?')}</td>
+              <td>${fmtHuman(b.date)}</td>
+              <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
+              <td>${canCancelBooking(b) ? `<button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}')">Отменить</button>` : '<span style="color:var(--ink4)">—</span>'}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>
+    </div>`;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -2635,7 +2653,6 @@ function renderAdminStats(el) {
     <div class="metrics" style="margin-bottom:1.5rem">
       <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${attendees}<span style="font-size:14px;font-weight:500;color:var(--ink3)">/${totalStaff}</span></div><div class="metric-l">Посетили за период</div></div>
       <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${bks.length}</div><div class="metric-l">Бронирований</div></div>
-      <div class="metric mt-amber"><div class="metric-n" style="color:var(--amber)">${topDate ? dayNames[new Date(topDate[0]+'T12:00:00').getDay()===0?6:new Date(topDate[0]+'T12:00:00').getDay()-1] : '—'}</div><div class="metric-l">Самый занятой день</div></div>
       <div class="metric mt-purple"><div class="metric-n" style="color:var(--purple)">${totalStaff > 0 ? Math.round(attendees/totalStaff*100) : 0}%</div><div class="metric-l">Посещаемость</div></div>
     </div>
 
