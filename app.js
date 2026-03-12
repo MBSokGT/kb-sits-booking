@@ -910,10 +910,10 @@ function clearWeekdayChips() {
 }
 
 function applyWeekdayPick() {
-  const panel = document.getElementById('cal-weekday-panel');
-  if (!panel) return;
+  const container = document.getElementById('cal-wd-days');
+  if (!container) return;
   const days = new Set();
-  panel.querySelectorAll('input[type=checkbox]:checked').forEach(cb => days.add(Number(cb.value)));
+  container.querySelectorAll('input[type=checkbox]:checked').forEach(cb => days.add(Number(cb.value)));
   if (!days.size) return;
 
   const monthCount = parseInt(document.getElementById('cal-wd-months')?.value || '1', 10);
