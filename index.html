@@ -210,6 +210,31 @@
           <span class="cal-toggle-label">Рабочие субботы</span>
         </label>
       </div>
+      <div id="cal-weekday-section">
+        <button class="cal-toggle cal-wd-toggle-btn" onclick="toggleWeekdayPicker()">
+          <span class="cal-toggle-label">По дням недели</span>
+          <span class="cal-wd-arrow" id="cal-wd-arrow">▸</span>
+        </button>
+        <div id="cal-weekday-panel" style="display:none">
+          <div class="cal-wd-days">
+            <label class="cal-wd-chip"><input type="checkbox" value="1"><span>Пн</span></label>
+            <label class="cal-wd-chip"><input type="checkbox" value="2"><span>Вт</span></label>
+            <label class="cal-wd-chip"><input type="checkbox" value="3"><span>Ср</span></label>
+            <label class="cal-wd-chip"><input type="checkbox" value="4"><span>Чт</span></label>
+            <label class="cal-wd-chip"><input type="checkbox" value="5"><span>Пт</span></label>
+            <label class="cal-wd-chip"><input type="checkbox" value="6"><span>Сб</span></label>
+          </div>
+          <div class="cal-wd-foot">
+            <select class="cal-wd-select" id="cal-wd-months">
+              <option value="1">Текущий месяц</option>
+              <option value="2">2 месяца</option>
+              <option value="3">3 месяца</option>
+              <option value="6">6 месяцев</option>
+            </select>
+            <button class="btn btn-primary cal-wd-apply" onclick="applyWeekdayPick()">Применить</button>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="cal-slot-box">
       <div class="cal-slot-title">Временной слот для бронирования</div>

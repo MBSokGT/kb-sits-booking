@@ -905,6 +905,42 @@ function toggleSaturdayMode(checked) {
   renderCalendar();
 }
 
+function toggleWeekdayPicker() {
+  const panel = document.getElementById('cal-weekday-panel');
+  const arrow = document.getElementById('cal-wd-arrow');
+  if (!panel) return;
+  const open = panel.style.display === 'none';
+  panel.style.display = open ? '' : 'none';
+  if (arrow) arrow.classList.toggle('open', open);
+}
+
+function applyWeekdayPick() {
+  const panel = document.getElementById('cal-weekday-panel');
+  if (!panel) return;
+  const days = new Set();
+  panel.querySelectorAll('input[type=checkbox]:checked').forEach(cb => days.add(Number(cb.value)));
+  if (!days.size) return;
+
+  const monthCount = parseInt(document.getElementById('cal-wd-months')?.value || '1', 10);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  // end = last day of (current month + monthCount - 1)
+  const end = new Date(today.getFullYear(), today.getMonth() + monthCount, 0);
+
+  const toAdd = [];
+  const cur = new Date(today);
+  while (cur <= end) {
+    const dow = cur.getDay();
+    if (days.has(dow)) {
+      const ds = fmtDate(new Date(cur));
+      if (!isPastDate(ds) && !selDates.includes(ds)) toAdd.push(ds);
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+  selDates = Array.from(new Set([...selDates, ...toAdd])).sort();
+  renderCalendar();
+}
+
 function toggleWorkingSaturday(ds) {
   if (workingSaturdays.includes(ds)) {
     workingSaturdays = workingSaturdays.filter(x => x !== ds);
