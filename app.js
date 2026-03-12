@@ -474,6 +474,13 @@ function findBookingForSpace(spaceId, date, from, to) {
 function userInitials(name) {
   return name.split(' ').map(p=>p[0]).join('').slice(0,2).toUpperCase();
 }
+// "Тест Сотрудник Отчество" → "Тест С."
+function shortName(name) {
+  if (!name) return '';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0];
+  return parts[0] + ' ' + parts[1][0] + '.';
+}
 
 /* toast */
 let _toastTimer;
@@ -1529,7 +1536,7 @@ function renderMapView() {
     // Подпись: при нескольких датах показываем «Занято» без имени (у разных дней могут быть разные люди)
     const whoHtml = isBusy
       ? `<text x="${x+w/2}" y="${y+h-7}" text-anchor="middle" fill="rgba(255,255,255,.75)"
-          font-family="DM Sans,sans-serif" font-size="9">${checkDates.length > 1 ? 'Занято' : escapeHtml(busyBk.userName)}</text>`
+          font-family="DM Sans,sans-serif" font-size="9">${checkDates.length > 1 ? 'Занято' : escapeHtml(shortName(busyBk.userName))}</text>`
       : isMine
       ? `<text x="${x+w/2}" y="${y+h-7}" text-anchor="middle" fill="rgba(255,255,255,.75)"
           font-family="DM Sans,sans-serif" font-size="9">Моё</text>`
