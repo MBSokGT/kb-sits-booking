@@ -905,13 +905,8 @@ function toggleSaturdayMode(checked) {
   renderCalendar();
 }
 
-function toggleWeekdayPicker() {
-  const panel = document.getElementById('cal-weekday-panel');
-  const arrow = document.getElementById('cal-wd-arrow');
-  if (!panel) return;
-  const open = panel.style.display === 'none';
-  panel.style.display = open ? '' : 'none';
-  if (arrow) arrow.classList.toggle('open', open);
+function clearWeekdayChips() {
+  document.querySelectorAll('#cal-wd-days input[type=checkbox]').forEach(cb => cb.checked = false);
 }
 
 function applyWeekdayPick() {
