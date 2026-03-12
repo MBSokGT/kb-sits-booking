@@ -2656,8 +2656,7 @@ function renderAdminStats(el) {
       <div class="metric mt-purple"><div class="metric-n" style="color:var(--purple)">${totalStaff > 0 ? Math.round(attendees/totalStaff*100) : 0}%</div><div class="metric-l">Посещаемость</div></div>
     </div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">
-
+    <div style="margin-bottom:1rem">
       <div class="card" style="padding:1.25rem">
         <div class="card-head" style="padding:0 0 1rem">По дням недели</div>
         <div style="display:flex;flex-direction:column;gap:6px">
@@ -2670,18 +2669,6 @@ function renderAdminStats(el) {
               <span style="width:28px;text-align:right;font-size:12px;color:var(--ink3)">${cnt}</span>
             </div>`).join('')}
         </div>
-      </div>
-
-      <div class="card" style="padding:1.25rem">
-        <div class="card-head" style="padding:0 0 1rem">Популярные места</div>
-        ${topSpaces.length ? `<div style="display:flex;flex-direction:column;gap:6px">
-          ${topSpaces.map(([name, cnt], i) => `
-            <div style="display:flex;align-items:center;gap:8px">
-              <span style="width:16px;font-size:11px;color:var(--ink4)">${i+1}</span>
-              <span style="flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(name)}</span>
-              <span class="badge badge-blue">${cnt}</span>
-            </div>`).join('')}
-        </div>` : `<p style="color:var(--ink4);font-size:13px">Нет данных</p>`}
       </div>
     </div>
 
