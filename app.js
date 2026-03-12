@@ -577,6 +577,7 @@ function doLogout(skipServerLogout = false) {
   bookingForUserId = null;
   displayMode = 'map';
   currentView = 'map';
+  try { localStorage.removeItem('lastView'); } catch(e) {}
   editorCoworkingId = null;
   editorFloorId = null;
   editorSpaces = [];
@@ -820,7 +821,13 @@ async function initApp() {
   renderFloors();
   renderStats();
   renderMiniBookings();
-  renderMapView();
+
+  // Restore last visited tab, but only if the user is allowed to see it
+  const allowed = new Set(['map', 'mybookings', 'team', 'admin', 'cabinet']);
+  if (currentUser?.role === 'user') { allowed.delete('team'); allowed.delete('admin'); }
+  const savedView = localStorage.getItem('lastView');
+  const startView = savedView && allowed.has(savedView) ? savedView : 'map';
+  switchView(startView);
 }
 
 function refreshActiveViewAfterExpiry() {
@@ -1940,6 +1947,7 @@ async function cancelSelectedMyBookings() {
 ═══════════════════════════════════════════════════════ */
 function switchView(view, btn) {
   currentView = view;
+  try { localStorage.setItem('lastView', view); } catch(e) {}
 
   // Sync both topbar tabs and mobile bottom nav
   document.querySelectorAll('.tnav,.mnav[data-view]').forEach(b=>b.classList.remove('active'));
