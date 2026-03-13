@@ -144,6 +144,12 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .cal-day.cal-has-booking::after{content:'';position:absolute;bottom:2px;left:50%;transform:translateX(-50%);
   width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.6}
 .cal-day.cal-selected.cal-has-booking::after{background:rgba(255,255,255,.8)}
+/* Occupancy dots (top-right corner) */
+.cal-day.cal-occ-low::before,.cal-day.cal-occ-mid::before,.cal-day.cal-occ-high::before{
+  content:'';position:absolute;top:3px;right:3px;width:5px;height:5px;border-radius:50%}
+.cal-day.cal-occ-low::before{background:#059669}
+.cal-day.cal-occ-mid::before{background:var(--amber)}
+.cal-day.cal-occ-high::before{background:var(--red)}
 /* Calendar trigger button */
 .cal-trigger{width:100%;display:flex;align-items:center;gap:8px;padding:8px 12px;
   border:1.5px solid var(--line);border-radius:10px;background:var(--white);
@@ -385,6 +391,15 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .data-table th{padding:10px 14px;text-align:left;font-size:11px;font-weight:700;
   text-transform:uppercase;letter-spacing:.7px;color:var(--ink3)}
 .data-table td{padding:12px 14px;border-top:1px solid var(--line);font-size:13px;color:var(--ink2)}
+.col-sortable{cursor:pointer;user-select:none}
+.col-sortable:hover{background:var(--paper-dark,#e2e8f0)}
+.row-selected td{background:rgba(59,130,246,.06)}
+.filter-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 6px 2px 8px;
+  background:rgba(59,130,246,.1);border-radius:999px;font-size:12px;color:var(--blue)}
+.filter-pill button{background:none;border:none;cursor:pointer;color:inherit;padding:0;font-size:15px;line-height:1}
+.btn-link{background:none;border:none;cursor:pointer;color:var(--blue);font-size:inherit;
+  padding:0;text-decoration:none;font-family:inherit}
+.btn-link:hover{text-decoration:underline}
 
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem;
   color:var(--ink4)}

@@ -327,6 +327,13 @@ let teamViewSearch   = ''; // filter by employee name
 let myBookingsTab    = 'active'; // 'active' | 'history'
 let adminStatsDept = '';
 const deptMemberSearch = {};
+let adminBkSearch     = '';
+let adminBkDateFrom   = '';
+let adminBkDateTo     = '';
+let adminBkSortBy     = 'date';
+let adminBkSortDir    = 1;
+let adminBkSelected   = new Set();
+let adminBkUserFilter = '';
 
 // Editor state
 let editorCoworkingId = null;
@@ -1242,6 +1249,8 @@ function renderCalendar() {
   }
 
   const daysInMonth = new Date(calViewYear, calViewMonth+1, 0).getDate();
+  const allBksForOcc = getActiveBookings(getBookings());
+  const totalSpacesForOcc = getSpaces().length;
 
   for (let d = 1; d <= daysInMonth; d++) {
     const ds   = `${calViewYear}-${p2(calViewMonth+1)}-${p2(d)}`;
@@ -1261,6 +1270,16 @@ function renderCalendar() {
     if (isToday)     cls += ' cal-today';
     if (isSelected)  cls += ' cal-selected';
     if (hasMine)     cls += ' cal-has-booking';
+
+    // Occupancy indicator (red/amber/green dot top-right corner)
+    if (!isPast && !isSelected && totalSpacesForOcc > 0) {
+      const dayOtherBks = allBksForOcc.filter(b => b.date===ds && !isMineBooking(b));
+      const busySpaces  = new Set(dayOtherBks.map(b=>b.spaceId)).size;
+      const occPct      = busySpaces / totalSpacesForOcc;
+      if (occPct >= 0.7) cls += ' cal-occ-high';
+      else if (occPct >= 0.4) cls += ' cal-occ-mid';
+      else if (occPct > 0)    cls += ' cal-occ-low';
+    }
 
     const clickable = isDateSelectable(ds);
     html += `<div class="${cls}" ${clickable?`onclick="calDayClick('${ds}', event)"`:''}>
@@ -3078,120 +3097,161 @@ function renderAdminBookings(el) {
   const bks    = getActiveBookings(bksAll);
   const spaces = getSpaces();
   const floors = getFloors();
+  const users  = getUsers();
   const totalSpaces = spaces.length;
   const today = new Date();
   const todayDs = fmtDate(today);
 
-  const weekStart = new Date(today);
-  weekStart.setHours(0, 0, 0, 0);
-  const dow = weekStart.getDay();
-  const shift = dow === 0 ? 6 : dow - 1; // Monday-based week
-  weekStart.setDate(weekStart.getDate() - shift);
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekEnd.getDate() + 6);
-
-  const prevWeekStart = new Date(weekStart);
-  prevWeekStart.setDate(prevWeekStart.getDate() - 7);
-  const prevWeekEnd = new Date(weekStart);
-  prevWeekEnd.setDate(prevWeekEnd.getDate() - 1);
-
-  const weekStartDs = fmtDate(weekStart);
-  const weekEndDs = fmtDate(weekEnd);
-  const prevWeekStartDs = fmtDate(prevWeekStart);
-  const prevWeekEndDs = fmtDate(prevWeekEnd);
-
-  const thisWeekCount = bks.filter(b => b.date >= weekStartDs && b.date <= weekEndDs).length;
-  const prevWeekCount = bks.filter(b => b.date >= prevWeekStartDs && b.date <= prevWeekEndDs).length;
-  const weekDelta = thisWeekCount - prevWeekCount;
-  const weekDeltaSign = weekDelta > 0 ? '+' : '';
-  const weekDeltaPct = prevWeekCount > 0 ? Math.round((weekDelta / prevWeekCount) * 100) : (thisWeekCount > 0 ? 100 : 0);
-  const weekTrendColor = weekDelta > 0 ? 'var(--green)' : weekDelta < 0 ? 'var(--red)' : 'var(--ink3)';
-
-  const todayBookings = bks.filter(b => b.date === todayDs);
-  const todayUniqueSpaces = new Set(todayBookings.map(b => b.spaceId)).size;
-  const todayLoadPct = totalSpaces ? Math.round((todayUniqueSpaces / totalSpaces) * 100) : 0;
-
-  const dailyRows = [];
-  for (let i = 0; i < 14; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() + i);
-    const ds = fmtDate(d);
-    const dayBookings = bks.filter(b => b.date === ds);
-    const dayUniqueSpaces = new Set(dayBookings.map(b => b.spaceId)).size;
-    const loadPct = totalSpaces ? Math.round((dayUniqueSpaces / totalSpaces) * 100) : 0;
-    dailyRows.push({ ds, dayBookings, dayUniqueSpaces, loadPct });
+  const weekStart = new Date(today); weekStart.setHours(0,0,0,0);
+  const dow = weekStart.getDay(); const shift = dow===0?6:dow-1;
+  weekStart.setDate(weekStart.getDate()-shift);
+  const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate()+6);
+  const prevWeekStart = new Date(weekStart); prevWeekStart.setDate(prevWeekStart.getDate()-7);
+  const prevWeekEnd   = new Date(weekStart); prevWeekEnd.setDate(prevWeekEnd.getDate()-1);
+  const weekStartDs=fmtDate(weekStart),weekEndDs=fmtDate(weekEnd);
+  const prevWeekStartDs=fmtDate(prevWeekStart),prevWeekEndDs=fmtDate(prevWeekEnd);
+  const thisWeekCount=bks.filter(b=>b.date>=weekStartDs&&b.date<=weekEndDs).length;
+  const prevWeekCount=bks.filter(b=>b.date>=prevWeekStartDs&&b.date<=prevWeekEndDs).length;
+  const weekDelta=thisWeekCount-prevWeekCount;
+  const weekDeltaSign=weekDelta>0?'+':'';
+  const weekDeltaPct=prevWeekCount>0?Math.round((weekDelta/prevWeekCount)*100):(thisWeekCount>0?100:0);
+  const weekTrendColor=weekDelta>0?'var(--green)':weekDelta<0?'var(--red)':'var(--ink3)';
+  const todayBookings=bks.filter(b=>b.date===todayDs);
+  const todayUniqueSpaces=new Set(todayBookings.map(b=>b.spaceId)).size;
+  const todayLoadPct=totalSpaces?Math.round((todayUniqueSpaces/totalSpaces)*100):0;
+  const dailyRows=[];
+  for(let i=0;i<14;i++){
+    const d=new Date(today); d.setDate(d.getDate()+i);
+    const ds=fmtDate(d);
+    const dayBookings=bks.filter(b=>b.date===ds);
+    const dayUniqueSpaces=new Set(dayBookings.map(b=>b.spaceId)).size;
+    const loadPct=totalSpaces?Math.round((dayUniqueSpaces/totalSpaces)*100):0;
+    dailyRows.push({ds,dayBookings,dayUniqueSpaces,loadPct});
   }
+
+  // --- Filter & sort ---
+  let filtered = bks;
+  if (adminBkUserFilter) filtered = filtered.filter(b=>b.userId===adminBkUserFilter);
+  if (adminBkSearch) {
+    const q=adminBkSearch.toLowerCase();
+    filtered = filtered.filter(b=>b.userName.toLowerCase().includes(q)||(spaces.find(s=>s.id===b.spaceId)?.label||'').toLowerCase().includes(q));
+  }
+  if (adminBkDateFrom) filtered = filtered.filter(b=>b.date>=adminBkDateFrom);
+  if (adminBkDateTo)   filtered = filtered.filter(b=>b.date<=adminBkDateTo);
+  filtered = [...filtered].sort((a,b)=>{
+    if (adminBkSortBy==='name') return adminBkSortDir*a.userName.localeCompare(b.userName,'ru');
+    return adminBkSortDir*a.date.localeCompare(b.date);
+  });
+  adminBkSelected = new Set([...adminBkSelected].filter(id=>filtered.some(b=>b.id===id)));
+  const allChecked = filtered.length>0 && filtered.every(b=>adminBkSelected.has(b.id));
+  const someChecked = adminBkSelected.size>0;
+  const hasFilters = adminBkSearch||adminBkDateFrom||adminBkDateTo||adminBkUserFilter;
+
+  const uPill = adminBkUserFilter ? (()=>{
+    const u=users.find(u=>u.id===adminBkUserFilter);
+    return `<span class="filter-pill">${escapeHtml(u?.name||'?')}<button onclick="adminBkSetUserFilter('')">×</button></span>`;
+  })() : '';
 
   el.innerHTML = `
     <div class="metrics" style="margin-bottom:1.25rem">
-      <div class="metric mt-blue">
-        <div class="metric-n" style="color:var(--blue)">${bks.length}</div>
-        <div class="metric-l">Всего бронирований</div>
-      </div>
-      <div class="metric mt-green">
-        <div class="metric-n" style="color:${weekTrendColor}">${weekDeltaSign}${weekDelta}</div>
-        <div class="metric-l">Изменение за неделю (${weekDeltaSign}${weekDeltaPct}%)</div>
-      </div>
-      <div class="metric mt-purple">
-        <div class="metric-n" style="color:var(--purple)">${totalSpaces}</div>
-        <div class="metric-l">Всего рабочих пространств</div>
-      </div>
-      <div class="metric mt-amber">
-        <div class="metric-n" style="color:var(--amber)">${todayLoadPct}%</div>
-        <div class="metric-l">Загрузка сегодня (${todayUniqueSpaces}/${totalSpaces || 0})</div>
-      </div>
+      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${bks.length}</div><div class="metric-l">Всего бронирований</div></div>
+      <div class="metric mt-green"><div class="metric-n" style="color:${weekTrendColor}">${weekDeltaSign}${weekDelta}</div><div class="metric-l">Изменение за неделю (${weekDeltaSign}${weekDeltaPct}%)</div></div>
+      <div class="metric mt-purple"><div class="metric-n" style="color:var(--purple)">${totalSpaces}</div><div class="metric-l">Всего рабочих пространств</div></div>
+      <div class="metric mt-amber"><div class="metric-n" style="color:var(--amber)">${todayLoadPct}%</div><div class="metric-l">Загрузка сегодня (${todayUniqueSpaces}/${totalSpaces||0})</div></div>
     </div>
 
     <div class="card">
       <div class="card-head">Загрузка по дням (14 дней)</div>
-      <div style="padding:0">
-        <table class="data-table">
-          <thead><tr><th>Дата</th><th>Бронирований</th><th>Занято пространств</th><th>Загрузка</th></tr></thead>
-          <tbody>${dailyRows.map(r => `
-            <tr>
-              <td>${fmtHuman(r.ds)}</td>
-              <td>${r.dayBookings.length}</td>
-              <td>${r.dayUniqueSpaces}/${totalSpaces || 0}</td>
-              <td>
-                <div style="display:flex;align-items:center;gap:8px;min-width:180px">
-                  <div style="flex:1;height:8px;background:var(--paper);border-radius:999px;overflow:hidden">
-                    <div style="height:100%;width:${r.loadPct}%;background:var(--status-mine)"></div>
-                  </div>
-                  <span style="font-size:11px;color:var(--ink3);min-width:34px">${r.loadPct}%</span>
-                </div>
-              </td>
-            </tr>
-          `).join('')}</tbody>
-        </table>
-      </div>
+      <div style="padding:0"><table class="data-table">
+        <thead><tr><th>Дата</th><th>Бронирований</th><th>Занято пространств</th><th>Загрузка</th></tr></thead>
+        <tbody>${dailyRows.map(r=>`
+          <tr>
+            <td>${fmtHuman(r.ds)}</td>
+            <td>${r.dayBookings.length}</td>
+            <td>${r.dayUniqueSpaces}/${totalSpaces||0}</td>
+            <td><div style="display:flex;align-items:center;gap:8px;min-width:180px">
+              <div style="flex:1;height:8px;background:var(--paper);border-radius:999px;overflow:hidden">
+                <div style="height:100%;width:${r.loadPct}%;background:var(--status-mine)"></div>
+              </div>
+              <span style="font-size:11px;color:var(--ink3);min-width:34px">${r.loadPct}%</span>
+            </div></td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div>
     </div>
 
     <div class="card">
-      <div class="card-head">Все бронирования (${bks.length})
-        <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇ CSV</button>
+      <div class="card-head" style="flex-wrap:wrap;gap:.5rem">
+        <span>Все бронирования (${filtered.length}${hasFilters?` из ${bks.length}`:''})</span>
+        ${uPill}
+        <div style="display:flex;gap:.5rem;align-items:center;margin-left:auto;flex-wrap:wrap">
+          ${someChecked?`<button class="btn btn-danger btn-sm" onclick="adminBkCancelSelected()">Отменить выбранные (${adminBkSelected.size})</button>`:''}
+          <input type="text" class="search-input" placeholder="Поиск по имени, месту…" value="${escapeHtml(adminBkSearch)}"
+            oninput="adminBkSetSearch(this.value)" style="width:190px">
+          <input type="date" class="search-input" value="${adminBkDateFrom}" onchange="adminBkSetDateFrom(this.value)" title="С даты" style="width:130px">
+          <input type="date" class="search-input" value="${adminBkDateTo}" onchange="adminBkSetDateTo(this.value)" title="По дату" style="width:130px">
+          ${hasFilters?`<button class="btn btn-ghost btn-sm" onclick="adminBkClearFilters()">✕ Сбросить</button>`:''}
+          <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇ CSV</button>
+        </div>
       </div>
       <div style="padding:0"><table class="data-table">
-        <thead><tr><th>Место</th><th>Сотрудник</th><th>Отдел</th><th>Дата</th><th>Время</th><th>Истекает</th><th></th></tr></thead>
-        <tbody>${!bks.length ? `<tr><td colspan="7" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>` :
-          bks.map(b=>{
+        <thead><tr>
+          <th style="width:32px"><input type="checkbox" ${allChecked?'checked':''} ${!filtered.length?'disabled':''} onchange="adminBkToggleAll(this.checked)"></th>
+          <th class="col-sortable" onclick="adminBkSort('date')">Дата ${adminBkSortBy==='date'?(adminBkSortDir===1?'↑':'↓'):'↕'}</th>
+          <th class="col-sortable" onclick="adminBkSort('name')">Сотрудник ${adminBkSortBy==='name'?(adminBkSortDir===1?'↑':'↓'):'↕'}</th>
+          <th>Отдел</th><th>Место</th><th>Время</th><th></th>
+        </tr></thead>
+        <tbody>${!filtered.length?`<tr><td colspan="7" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>`:
+          filtered.map(b=>{
             const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
-            return `<tr>
-              <td><strong>${escapeHtml(sp?.label || b.spaceName || '?')}</strong><br><span style="font-size:11px;color:var(--ink3)">${escapeHtml(fl?.name||'?')}</span></td>
-              <td>${escapeHtml(b.userName)}</td>
-              <td style="font-size:12px;color:var(--ink3)">${isMineBooking(b)?'<span class="badge badge-blue">Вы</span>':escapeHtml(getUsers().find(u=>u.id===b.userId)?.department||'—')}</td>
+            const u=users.find(u=>u.id===b.userId); const checked=adminBkSelected.has(b.id);
+            return `<tr class="${checked?'row-selected':''}">
+              <td><input type="checkbox" ${checked?'checked':''} onchange="adminBkToggle('${b.id}',this.checked)"></td>
               <td>${fmtHuman(b.date)}</td>
+              <td>
+                <button class="btn-link" onclick="adminBkSetUserFilter('${escapeHtml(b.userId)}')">${escapeHtml(b.userName)}</button>
+                ${isMineBooking(b)?'<span class="badge badge-blue" style="margin-left:4px">Вы</span>':''}
+              </td>
+              <td style="font-size:12px;color:var(--ink3)">${escapeHtml(u?.department||'—')}</td>
+              <td><strong>${escapeHtml(sp?.label||b.spaceName||'?')}</strong><br><span style="font-size:11px;color:var(--ink3)">${escapeHtml(fl?.name||'?')}</span></td>
               <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
-              <td style="font-size:11px;color:var(--ink3)">${b.expiresAt}</td>
-              <td>${canCancelBooking(b) ? `<button class="btn btn-danger btn-xs" onclick="adminCancelBk('${b.id}')">Отменить</button>` : '<span style="color:var(--ink4)">—</span>'}</td>
+              <td>${canCancelBooking(b)?`<button class="btn btn-danger btn-xs" onclick="adminCancelBk('${b.id}')">Отменить</button>`:'<span style="color:var(--ink4)">—</span>'}</td>
             </tr>`;
           }).join('')}
-        </tbody></table></div>
+        </tbody>
+      </table></div>
     </div>`;
 }
 
 async function adminCancelBk(id) {
   await cancelBooking(id);
   if (currentView === 'admin') renderAdminView();
+}
+function adminBkSetSearch(v)     { adminBkSearch=String(v||'').toLowerCase(); renderAdminView(); }
+function adminBkSetDateFrom(v)   { adminBkDateFrom=v||''; renderAdminView(); }
+function adminBkSetDateTo(v)     { adminBkDateTo=v||''; renderAdminView(); }
+function adminBkSetUserFilter(v) { adminBkUserFilter=v||''; adminBkSelected=new Set(); renderAdminView(); }
+function adminBkClearFilters()   { adminBkSearch='';adminBkDateFrom='';adminBkDateTo='';adminBkUserFilter='';adminBkSelected=new Set(); renderAdminView(); }
+function adminBkSort(by) {
+  if (adminBkSortBy===by) adminBkSortDir*=-1; else { adminBkSortBy=by; adminBkSortDir=1; }
+  renderAdminView();
+}
+function adminBkToggle(id, checked) {
+  if (checked) adminBkSelected.add(id); else adminBkSelected.delete(id);
+  renderAdminView();
+}
+function adminBkToggleAll(checked) {
+  const filtered = getActiveBookings(getBookings());
+  if (checked) filtered.forEach(b=>adminBkSelected.add(b.id)); else adminBkSelected.clear();
+  renderAdminView();
+}
+function adminBkCancelSelected() {
+  const ids=[...adminBkSelected]; if(!ids.length) return;
+  confirmAction(`Отменить ${ids.length} бронирование(й)?`, async ()=>{
+    for (const id of ids) await cancelBooking(id);
+    adminBkSelected=new Set();
+    renderAdminView();
+  });
 }
 
 function exportCSV() {
