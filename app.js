@@ -302,6 +302,7 @@ let calViewYear   = 0;
 let calViewMonth  = 0;
 let calMode       = 'month';   // 'month' | 'year'
 let calAnchorDate = null;
+let calSpaceId    = null;      // space being booked — highlight its busy days in calendar
 let includeWeekends = false;
 let workingSaturdays = [];  // array of 'YYYY-MM-DD' (персональные настройки пользователя)
 let saturdayMode = false;   // true = all Saturdays are bookable
@@ -1123,6 +1124,11 @@ function openCalendar(singlePick = false) {
   document.addEventListener('keydown', _calEscHandler);
 }
 
+function openCalendarForBooking(spaceId) {
+  calSpaceId = spaceId || null;
+  openCalendar();
+}
+
 function openCalendarForMapDate() {
   const base = selDates[0] || fmtDate(new Date());
   const d = new Date(base + 'T12:00:00');
@@ -1136,6 +1142,7 @@ function closeCalendar() {
   document.getElementById('cal-overlay').classList.remove('active');
   document.getElementById('cal-popup').classList.remove('active');
   calendarSinglePick = false;
+  calSpaceId = null;
   document.removeEventListener('keydown', _calEscHandler);
   // If booking modal is open, refresh date/time summary and footer button
   const modalOpen = document.getElementById('modal-overlay')?.classList.contains('open');
@@ -1251,6 +1258,9 @@ function renderCalendar() {
   const daysInMonth = new Date(calViewYear, calViewMonth+1, 0).getDate();
   const allBksForOcc = getActiveBookings(getBookings());
   const totalSpacesForOcc = getSpaces().length;
+  const spaceBusyDates = calSpaceId
+    ? new Set(allBksForOcc.filter(b => b.spaceId === calSpaceId).map(b => b.date))
+    : null;
 
   for (let d = 1; d <= daysInMonth; d++) {
     const ds   = `${calViewYear}-${p2(calViewMonth+1)}-${p2(d)}`;
@@ -1270,6 +1280,8 @@ function renderCalendar() {
     if (isToday)     cls += ' cal-today';
     if (isSelected)  cls += ' cal-selected';
     if (hasMine)     cls += ' cal-has-booking';
+    const isSpaceBusy = spaceBusyDates && spaceBusyDates.has(ds) && !isSelected;
+    if (isSpaceBusy) cls += ' cal-space-busy';
 
     // Occupancy indicator (red/amber/green dot top-right corner)
     if (!isPast && !isSelected && totalSpacesForOcc > 0) {
@@ -1774,7 +1786,7 @@ function spaceClick(spaceId) {
     ? `<div class="modal-pick">
         <div class="modal-pick-row">
           <div class="modal-pick-label">Даты и время</div>
-          <button class="btn btn-ghost btn-sm" onclick="openCalendar()">Выбрать</button>
+          <button class="btn btn-ghost btn-sm" onclick="openCalendarForBooking('${spaceId}')">Выбрать</button>
         </div>
         <div class="modal-pick-value" id="booking-dates-summary"></div>
         <div class="modal-pick-value" id="booking-time-summary"></div>
@@ -2151,7 +2163,7 @@ function renderCabinetView() {
                               .sort((a, b) => a.date.localeCompare(b.date));
   const isManager = me.role === 'manager' || me.role === 'admin';
   const team = isManager
-    ? getUsers().filter(u => u.department === me.department && !sameId(u.id, me.id) && u.role === 'user')
+    ? getUsers().filter(u => me.department && u.department === me.department && !sameId(u.id, me.id) && u.role === 'user')
     : [];
   const teamBks = isManager
     ? activeBookings.filter(b => team.some(u => u.id === b.userId))
@@ -2242,7 +2254,7 @@ function renderTeamView() {
   purgeExpired();
   const el   = document.getElementById('view-team');
   const me   = currentUser;
-  const team = getUsers().filter(u=>u.department===me.department && !sameId(u.id, me.id) && u.role==='user');
+  const team = getUsers().filter(u=>me.department && u.department===me.department && !sameId(u.id, me.id) && u.role==='user');
   const spaces = getSpaces(); const floors = getFloors();
   const allBks = getBookings().filter(b => b.status !== 'cancelled' && team.some(u=>sameId(u.id, b.userId)));
   const today = fmtDate(new Date());

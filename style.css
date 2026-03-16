@@ -150,6 +150,8 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .cal-day.cal-occ-low::before{background:#059669}
 .cal-day.cal-occ-mid::before{background:var(--amber)}
 .cal-day.cal-occ-high::before{background:var(--red)}
+.cal-day.cal-space-busy{background:#fee2e2;color:var(--red);border-color:rgba(220,38,38,.3)}
+.cal-day.cal-space-busy:hover:not(.cal-past){background:#fecaca;color:var(--red)}
 /* Calendar trigger button */
 .cal-trigger{width:100%;display:flex;align-items:center;gap:8px;padding:8px 12px;
   border:1.5px solid var(--line);border-radius:10px;background:var(--white);
