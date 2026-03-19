@@ -366,6 +366,18 @@ function calendarPrefsStorageKey() {
   return `ws_calendar_prefs_${uid}`;
 }
 
+function getPinnedCoworkingId() {
+  if (!currentUser) return null;
+  try { return localStorage.getItem(`pinnedCw_${currentUser.id}`) || null; } catch(e) { return null; }
+}
+function setPinnedCoworkingId(id) {
+  if (!currentUser) return;
+  try {
+    if (id) localStorage.setItem(`pinnedCw_${currentUser.id}`, id);
+    else localStorage.removeItem(`pinnedCw_${currentUser.id}`);
+  } catch(e) {}
+}
+
 function loadCalendarPrefs() {
   includeWeekends = false;
   saturdayMode = false;
@@ -828,6 +840,8 @@ async function initApp() {
   loadCalendarPrefs();
 
   const coworkings = getCoworkings();
+  const pinnedCw = getPinnedCoworkingId();
+  if (pinnedCw && coworkings.some(c => c.id === pinnedCw)) selCoworkingId = pinnedCw;
   if (!selCoworkingId && coworkings.length) selCoworkingId = coworkings[0].id;
   const floors = getFloorsByCoworking(selCoworkingId);
   if (!selFloorId || !floors.some(f=>f.id===selFloorId)) selFloorId = floors[0]?.id || null;
@@ -1420,9 +1434,24 @@ function renderCoworkings() {
   if (!selCoworkingId || !coworkings.some(c=>c.id===selCoworkingId)) {
     selCoworkingId = coworkings[0].id;
   }
-  el.innerHTML = coworkings.map(c =>
-    `<button class="floor-btn ${c.id===selCoworkingId?'active':''}" onclick="selectCoworking('${c.id}')">${escapeHtml(c.name)}</button>`
-  ).join('');
+  const pinned = getPinnedCoworkingId();
+  el.innerHTML = coworkings.map(c => {
+    const isPinned = c.id === pinned;
+    return `<div class="cw-btn-row">
+      <button class="floor-btn ${c.id===selCoworkingId?'active':''}" onclick="selectCoworking('${c.id}')" style="flex:1;min-width:0">${escapeHtml(c.name)}</button>
+      <button class="cw-pin-btn${isPinned?' pinned':''}" title="${isPinned?'Откреплено':'Закрепить'}" onclick="togglePinCoworking('${c.id}')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="${isPinned?'currentColor':'none'}" stroke="currentColor" stroke-width="2">
+          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>
+        </svg>
+      </button>
+    </div>`;
+  }).join('');
+}
+
+function togglePinCoworking(id) {
+  const current = getPinnedCoworkingId();
+  setPinnedCoworkingId(current === id ? null : id);
+  renderCoworkings();
 }
 
 function selectCoworking(id) {

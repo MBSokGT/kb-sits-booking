@@ -312,6 +312,12 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
   font-size:13px;font-weight:600;color:var(--ink2);transition:all .12s;text-align:left}
 .floor-btn:hover{border-color:var(--blue);background:var(--blue-l)}
 .floor-btn.active{border-color:var(--blue);background:var(--blue);color:white}
+.cw-btn-row{display:flex;align-items:center;gap:4px}
+.cw-pin-btn{flex-shrink:0;width:28px;height:28px;border:1.5px solid var(--line);border-radius:var(--radius);
+  background:white;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  color:var(--ink4);transition:all .12s;padding:0}
+.cw-pin-btn:hover{border-color:var(--amber);color:var(--amber);background:#fffbeb}
+.cw-pin-btn.pinned{border-color:var(--amber);color:var(--amber);background:#fffbeb}
 
 /* Stats */
 .stat-chips{display:flex;gap:6px}
