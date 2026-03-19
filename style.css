@@ -318,6 +318,12 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
   color:var(--ink4);transition:all .12s;padding:0}
 .cw-pin-btn:hover{border-color:var(--amber);color:var(--amber);background:#fffbeb}
 .cw-pin-btn.pinned{border-color:var(--amber);color:var(--amber);background:#fffbeb}
+.fav-space-card{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:8px 10px;border:1.5px solid var(--amber);border-radius:var(--radius);
+  background:#fffbeb;margin-top:4px}
+.fav-space-info{min-width:0}
+.fav-space-name{font-size:13px;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fav-space-sub{font-size:11px;color:var(--ink4);margin-top:1px}
 
 /* Stats */
 .stat-chips{display:flex;gap:6px}

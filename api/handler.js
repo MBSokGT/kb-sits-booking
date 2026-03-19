@@ -450,7 +450,7 @@ async function upsertLdapUser(env, profile) {
   await ensureUserDepartmentMembership(env, userId, profile.department);
 
   return env.DB.prepare(
-    'SELECT id, email, name, department, role, blocked, last_login FROM users WHERE id = ?'
+    'SELECT id, email, name, department, role, blocked, last_login, prefs FROM users WHERE id = ?'
   ).bind(userId).first();
 }
 
@@ -619,7 +619,7 @@ async function getAuthSession(env, request) {
   }
 
   const user = await env.DB.prepare(
-    'SELECT id, email, name, department, role, blocked FROM users WHERE id = ?'
+    'SELECT id, email, name, department, role, blocked, prefs FROM users WHERE id = ?'
   ).bind(payload.userId).first();
 
   if (!user) {
@@ -727,7 +727,7 @@ async function ensureUserDepartmentMembership(env, userId, departmentName) {
 }
 
 async function getTargetUser(env, userId) {
-  return env.DB.prepare('SELECT id, email, name, department, role, blocked FROM users WHERE id = ?').bind(userId).first();
+  return env.DB.prepare('SELECT id, email, name, department, role, blocked, prefs FROM users WHERE id = ?').bind(userId).first();
 }
 
 function canManageTarget(actor, target) {
@@ -1860,6 +1860,20 @@ export async function onRequest(context) {
 
       const { list } = await getUsersMap(env, { withSessionActive: true });
       return reply({ ok: true, users: list, revokedSessions });
+    }
+
+    /* ── POST /users/prefs (self) ─────────────────────── */
+    if (path === '/users/prefs' && method === 'POST') {
+      const body = await request.json();
+      const current = await env.DB.prepare(
+        'SELECT prefs FROM users WHERE id = ?'
+      ).bind(auth.user.id).first();
+      let existing = {};
+      try { existing = JSON.parse(current?.prefs || '{}'); } catch(e) {}
+      const merged = { ...existing, ...body };
+      await env.DB.prepare('UPDATE users SET prefs = ? WHERE id = ?')
+        .bind(JSON.stringify(merged), auth.user.id).run();
+      return reply({ ok: true, prefs: merged });
     }
 
     /* ── POST /users/delete (admin) ───────────────────── */

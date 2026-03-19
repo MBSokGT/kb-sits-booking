@@ -366,16 +366,31 @@ function calendarPrefsStorageKey() {
   return `ws_calendar_prefs_${uid}`;
 }
 
+function getUserPrefs() {
+  try { return JSON.parse(currentUser?.prefs || '{}'); } catch(e) { return {}; }
+}
+function saveUserPrefs(patch) {
+  if (!currentUser) return;
+  const merged = { ...getUserPrefs(), ...patch };
+  currentUser.prefs = JSON.stringify(merged);
+  apiFetch('/api/users/prefs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch)
+  }).catch(() => {});
+}
 function getPinnedCoworkingId() {
-  if (!currentUser) return null;
-  try { return localStorage.getItem(`pinnedCw_${currentUser.id}`) || null; } catch(e) { return null; }
+  return getUserPrefs().pinnedCoworkingId || null;
 }
 function setPinnedCoworkingId(id) {
-  if (!currentUser) return;
-  try {
-    if (id) localStorage.setItem(`pinnedCw_${currentUser.id}`, id);
-    else localStorage.removeItem(`pinnedCw_${currentUser.id}`);
-  } catch(e) {}
+  saveUserPrefs({ pinnedCoworkingId: id || null });
+}
+function getFavoriteSpaceId() {
+  return getUserPrefs().favoriteSpaceId || null;
+}
+function setFavoriteSpaceId(id) {
+  saveUserPrefs({ favoriteSpaceId: id || null });
+  renderFavoriteSpace();
 }
 
 function loadCalendarPrefs() {
@@ -852,6 +867,7 @@ async function initApp() {
   renderFloors();
   renderStats();
   renderMiniBookings();
+  renderFavoriteSpace();
 
   // Restore last visited tab, but only if the user is allowed to see it
   const allowed = new Set(['map', 'mybookings', 'team', 'admin', 'cabinet']);
@@ -1423,6 +1439,47 @@ function getFloorsByCoworking(coworkingId) {
   return floors.filter(f => f.coworkingId === coworkingId);
 }
 
+function renderFavoriteSpace() {
+  const el = document.getElementById('fav-space-block');
+  if (!el) return;
+  const favId = getFavoriteSpaceId();
+  if (!favId) { el.style.display = 'none'; return; }
+  const sp = getSpaces().find(s => s.id === favId);
+  if (!sp) { el.style.display = 'none'; return; }
+  const fl = getFloors().find(f => f.id === sp.floorId);
+  const cw = getCoworkings().find(c => fl && c.id === getFloors().find(f=>f.id===sp.floorId)?.coworkingId);
+  el.style.display = '';
+  el.innerHTML = `
+    <div class="fav-space-card">
+      <div class="fav-space-info">
+        <div class="fav-space-name">${escapeHtml(sp.label)}</div>
+        <div class="fav-space-sub">${escapeHtml(fl?.name || '')}${cw ? ' · ' + escapeHtml(cw.name) : ''}</div>
+      </div>
+      <div style="display:flex;gap:4px">
+        <button class="btn btn-primary btn-sm" onclick="quickBookFavorite('${sp.id}')">Забронировать</button>
+        <button class="cw-pin-btn pinned" title="Открепить" onclick="setFavoriteSpaceId(null)" style="width:28px;height:28px">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </div>`;
+}
+
+function quickBookFavorite(spaceId) {
+  const sp = getSpaces().find(s => s.id === spaceId);
+  if (!sp) return;
+  const fl = getFloors().find(f => f.id === sp.floorId);
+  if (fl) {
+    selCoworkingId = getCoworkings().find(c => c.id === fl.coworkingId)?.id || selCoworkingId;
+    selFloorId = fl.id;
+    renderCoworkings();
+    renderFloors();
+  }
+  if (currentView !== 'map') switchView('map', document.getElementById('nav-map-btn'));
+  setTimeout(() => spaceClick(spaceId), 100);
+}
+
 function renderCoworkings() {
   const el = document.getElementById('coworking-list');
   if (!el) return;
@@ -1848,8 +1905,10 @@ function spaceClick(spaceId) {
       <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
       <button class="btn btn-danger" onclick="cancelBooking('${bk.id}');closeModal()">Отменить бронирование</button>`;
   } else {
+    const isFav = getFavoriteSpaceId() === spaceId;
     footEl.innerHTML = `
       <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+      <button class="btn btn-ghost btn-sm" onclick="setFavoriteSpaceId(${isFav ? 'null' : `'${spaceId}'`});this.textContent='${isFav?'☆ Закрепить':'★ Закреплено'}';" title="${isFav?'Открепить место':'Закрепить как любимое'}" style="font-size:16px">${isFav ? '★' : '☆'}</button>
       <button class="btn btn-primary" onclick="bookSpace('${spaceId}')">
         Забронировать${selDates.length>1?' ('+selDates.length+' дней)':''}
       </button>`;
@@ -3736,7 +3795,9 @@ function renderEditorZones() {
 
   zonesEl.innerHTML = editorSpaces.map(sp => {
     const x = sp.x/100*CW, y = sp.y/100*CH, w = sp.w/100*CW, h = sp.h/100*CH;
-    return `<div class="zone-rect${sp.id === editorSelectedZoneId ? ' selected' : ''}" data-id="${sp.id}" onmousedown="editorZoneMouseDown(event,'${sp.id}')"
+    return `<div class="zone-rect${sp.id === editorSelectedZoneId ? ' selected' : ''}" data-id="${sp.id}"
+      onmousedown="editorZoneMouseDown(event,'${sp.id}')"
+      ondblclick="renameEditorZone('${sp.id}')"
       style="left:${x}px;top:${y}px;width:${w}px;height:${h}px;background:${safeCssColor(sp.color)}">
       <div class="zone-label">${escapeHtml(sp.label)}<br><span style="font-size:9px;opacity:.8">${sp.seats} мест</span></div>
       <button class="zone-del" onclick="deleteEditorZone('${sp.id}')">✕</button>

@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
   role       TEXT NOT NULL DEFAULT 'user',
   blocked    INTEGER NOT NULL DEFAULT 0,
   last_login TEXT,
+  prefs      TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
