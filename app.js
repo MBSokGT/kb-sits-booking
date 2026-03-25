@@ -1316,14 +1316,21 @@ function renderCalendar() {
     const isSpaceBusy = spaceBusyDates && spaceBusyDates.has(ds) && !isSelected;
     if (isSpaceBusy) cls += ' cal-space-busy';
 
-    // Occupancy indicator (red/amber/green dot top-right corner)
-    if (!isPast && !isSelected && totalSpacesForOcc > 0) {
-      const dayOtherBks = allBksForOcc.filter(b => b.date===ds && !isMineBooking(b));
-      const busySpaces  = new Set(dayOtherBks.map(b=>b.spaceId)).size;
-      const occPct      = busySpaces / totalSpacesForOcc;
-      if (occPct >= 0.7) cls += ' cal-occ-high';
-      else if (occPct >= 0.4) cls += ' cal-occ-mid';
-      else if (occPct > 0)    cls += ' cal-occ-low';
+    // Occupancy indicator
+    if (!isPast && !isSelected) {
+      if (calSpaceId) {
+        // Show red/green for the specific space being booked
+        if (spaceBusyDates && spaceBusyDates.has(ds)) cls += ' cal-occ-high';
+        else cls += ' cal-occ-low';
+      } else if (totalSpacesForOcc > 0) {
+        // Show general occupancy across all spaces
+        const dayOtherBks = allBksForOcc.filter(b => b.date===ds && !isMineBooking(b));
+        const busySpaces  = new Set(dayOtherBks.map(b=>b.spaceId)).size;
+        const occPct      = busySpaces / totalSpacesForOcc;
+        if (occPct >= 0.7) cls += ' cal-occ-high';
+        else if (occPct >= 0.4) cls += ' cal-occ-mid';
+        else if (occPct > 0)    cls += ' cal-occ-low';
+      }
     }
 
     const clickable = isDateSelectable(ds);
