@@ -373,6 +373,9 @@ function saveUserPrefs(patch) {
   if (!currentUser) return;
   const merged = { ...getUserPrefs(), ...patch };
   currentUser.prefs = JSON.stringify(merged);
+  // Persist to localStorage so prefs survive page reload on same device
+  const { password, password_hash, ...safeUser } = currentUser;
+  DB.set('session', safeUser);
   apiFetch('/api/users/prefs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
