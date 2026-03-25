@@ -13,7 +13,7 @@ const BASE_CORS = {
 };
 
 const SESSION_TTL_HOURS = 12;
-const MAX_BOOKING_DATES_DEFAULT = 120;
+const MAX_BOOKING_DATES_DEFAULT = 365;
 const MAX_BOOKING_DATES_ADMIN = 730; // two years, aligns with retention window
 const BOOKING_RETENTION_MS = 2 * 365 * 24 * 60 * 60 * 1000;
 const BOOKING_STATE_KEY = 'bookings_state';
