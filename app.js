@@ -1442,6 +1442,25 @@ function getFloorsByCoworking(coworkingId) {
   return floors.filter(f => f.coworkingId === coworkingId);
 }
 
+function _updateModalFavBtn(spaceId) {
+  const btn = document.getElementById('modal-fav-btn');
+  if (!btn) return;
+  const isFav = getFavoriteSpaceId() === spaceId;
+  btn.classList.toggle('pinned', isFav);
+  btn.title = isFav ? 'Открепить любимое место' : 'Сделать любимым местом';
+  btn.querySelector('svg polygon').setAttribute('fill', isFav ? 'currentColor' : 'none');
+}
+
+function toggleFavoriteSpaceFromModal() {
+  const btn = document.getElementById('modal-fav-btn');
+  if (!btn) return;
+  const spaceId = btn.dataset.spaceId;
+  const isFav = getFavoriteSpaceId() === spaceId;
+  setFavoriteSpaceId(isFav ? null : spaceId);
+  _updateModalFavBtn(spaceId);
+  toast(isFav ? 'Убрано из любимых' : 'Добавлено в любимые места', isFav ? 't-amber' : 't-green', isFav ? '★' : '★');
+}
+
 function renderFavoriteSpace() {
   const el = document.getElementById('fav-space-block');
   if (!el) return;
@@ -1845,6 +1864,14 @@ function spaceClick(spaceId) {
     : isBusy
     ? (canCancelBusy ? 'Занято (можно отменить)' : 'Место занято')
     : 'Забронировать место';
+
+  // Star button — toggle favourite space
+  const favBtn = document.getElementById('modal-fav-btn');
+  if (favBtn) {
+    favBtn.style.display = '';
+    favBtn.dataset.spaceId = spaceId;
+    _updateModalFavBtn(spaceId);
+  }
 
   // Date pills
   const datePills = selDates.length > 1
@@ -4143,7 +4170,11 @@ function deleteFloor(id) {
 /* ═══════════════════════════════════════════════════════
    MODAL HELPERS
 ═══════════════════════════════════════════════════════ */
-function closeModal() { document.getElementById('modal-overlay').classList.remove('open'); }
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('open');
+  const favBtn = document.getElementById('modal-fav-btn');
+  if (favBtn) favBtn.style.display = 'none';
+}
 function overlayClick(e) { if (e.target === document.getElementById('modal-overlay')) closeModal(); }
 
 function confirmAction(message, onConfirm) {
