@@ -1938,7 +1938,6 @@ function spaceClick(spaceId) {
     const isFav = getFavoriteSpaceId() === spaceId;
     footEl.innerHTML = `
       <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
-      <button class="btn btn-ghost btn-sm" onclick="setFavoriteSpaceId(${isFav ? 'null' : `'${spaceId}'`});this.textContent='${isFav?'☆ Закрепить':'★ Закреплено'}';" title="${isFav?'Открепить место':'Закрепить как любимое'}" style="font-size:16px">${isFav ? '★' : '☆'}</button>
       <button class="btn btn-primary" onclick="bookSpace('${spaceId}')">
         Забронировать${selDates.length>1?' ('+selDates.length+' дней)':''}
       </button>`;
