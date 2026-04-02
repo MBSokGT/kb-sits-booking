@@ -16,6 +16,7 @@ const SESSION_TTL_HOURS = 12;
 const MAX_BOOKING_DATES_DEFAULT = 365;
 const MAX_BOOKING_DATES_ADMIN = 730; // two years, aligns with retention window
 const BOOKING_RETENTION_MS = 2 * 365 * 24 * 60 * 60 * 1000;
+const CANCELLATION_AUDIT_LIMIT_MAX = 500;
 const BOOKING_STATE_KEY = 'bookings_state';
 const LEGACY_BOOKINGS_KEY = 'bookings';
 const BOOKINGS_REV_KEY = 'bookings_rev';
@@ -686,6 +687,64 @@ function normalizeDepartmentName(name) {
   return String(name || '').trim();
 }
 
+function makeAuditId() {
+  return `audit_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function safeJsonStringify(value) {
+  try {
+    return value ? JSON.stringify(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCancellationAudit(env, entry) {
+  if (!entry) return;
+  await runSql(
+    env,
+    `INSERT INTO booking_cancellation_audit
+      (id, booking_id, actor_user_id, actor_name, actor_role, target_user_id, target_user_name,
+       space_id, space_name, booking_date, slot_from, slot_to, reason, details_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      makeAuditId(),
+      entry.bookingId || null,
+      entry.actorUserId || null,
+      String(entry.actorName || 'Неизвестный пользователь'),
+      String(entry.actorRole || 'user'),
+      entry.targetUserId || null,
+      String(entry.targetUserName || 'Неизвестный сотрудник'),
+      entry.spaceId || null,
+      String(entry.spaceName || 'Рабочее место'),
+      String(entry.bookingDate || ''),
+      String(entry.slotFrom || ''),
+      String(entry.slotTo || ''),
+      String(entry.reason || 'manual_cancel'),
+      safeJsonStringify(entry.details),
+      String(entry.createdAt || new Date().toISOString()),
+    ]
+  );
+}
+
+async function writeCancellationAuditForBooking(env, actor, booking, reason, details = null) {
+  await writeCancellationAudit(env, {
+    bookingId: booking.id,
+    actorUserId: actor?.id || null,
+    actorName: actor?.name || 'Неизвестный пользователь',
+    actorRole: actor?.role || 'user',
+    targetUserId: booking.userId,
+    targetUserName: booking.userName,
+    spaceId: booking.spaceId,
+    spaceName: booking.spaceName,
+    bookingDate: booking.date,
+    slotFrom: booking.slotFrom,
+    slotTo: booking.slotTo,
+    reason,
+    details,
+  });
+}
+
 async function ensureUserDepartmentMembership(env, userId, departmentName) {
   const cleanName = normalizeDepartmentName(departmentName);
   if (!cleanName || !userId) return;
@@ -1300,6 +1359,23 @@ async function createDomainTables(env) {
       cancelled_at TEXT,
       cancelled_by TEXT
     )`,
+    `CREATE TABLE IF NOT EXISTS booking_cancellation_audit (
+      id TEXT PRIMARY KEY,
+      booking_id TEXT,
+      actor_user_id TEXT,
+      actor_name TEXT NOT NULL,
+      actor_role TEXT NOT NULL,
+      target_user_id TEXT,
+      target_user_name TEXT NOT NULL,
+      space_id TEXT,
+      space_name TEXT NOT NULL,
+      booking_date TEXT NOT NULL,
+      slot_from TEXT NOT NULL,
+      slot_to TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      details_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
     'CREATE INDEX IF NOT EXISTS idx_floors_coworking ON floors(coworking_id)',
     'CREATE INDEX IF NOT EXISTS idx_spaces_floor ON spaces(floor_id)',
     'CREATE INDEX IF NOT EXISTS idx_dept_members_dept ON department_members(department_id)',
@@ -1307,6 +1383,8 @@ async function createDomainTables(env) {
     'CREATE INDEX IF NOT EXISTS idx_bookings_status_end ON bookings(status, end_utc_ms)',
     'CREATE INDEX IF NOT EXISTS idx_bookings_space_date ON bookings(space_id, date)',
     'CREATE INDEX IF NOT EXISTS idx_bookings_user_date ON bookings(user_id, date)',
+    'CREATE INDEX IF NOT EXISTS idx_booking_cancel_audit_created ON booking_cancellation_audit(created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_booking_cancel_audit_actor_role ON booking_cancellation_audit(actor_role, created_at DESC)',
   ];
 
   for (const sql of statements) {
@@ -1887,20 +1965,54 @@ export async function onRequest(context) {
       const target = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(userId).first();
       if (!target) return reply({ error: 'Пользователь не найден' }, 404);
 
-      const nowIso = new Date().toISOString();
-      const cancelResult = await runSql(
-        env,
-        `UPDATE bookings
-         SET status = 'cancelled', cancelled_at = ?, cancelled_by = ?
-         WHERE user_id = ? AND status = 'active' AND end_utc_ms > ?`,
-        [nowIso, auth.user.id, userId, Date.now()]
-      );
-      const cancelledBookings = Number(cancelResult?.meta?.changes || 0);
       let rev = await getBookingsRev(env);
-      if (cancelledBookings > 0) rev = await bumpBookingsRev(env);
+      let cancelledBookings = 0;
+      await runInTransaction(env, async () => {
+        const nowMs = Date.now();
+        const { results: activeRows } = await allSql(
+          env,
+          `SELECT
+            id,
+            user_id AS userId,
+            user_name AS userName,
+            space_id AS spaceId,
+            space_name AS spaceName,
+            date,
+            slot_from AS slotFrom,
+            slot_to AS slotTo,
+            expires_at AS expiresAt,
+            created_at AS createdAt,
+            status,
+            created_by AS createdBy,
+            cancelled_at AS cancelledAt,
+            cancelled_by AS cancelledBy
+           FROM bookings
+           WHERE user_id = ? AND status = 'active' AND end_utc_ms > ?`,
+          [userId, nowMs]
+        );
+        const activeBookings = (activeRows || []).map(normalizeBooking).filter(Boolean);
+        const nowIso = new Date().toISOString();
+        const cancelResult = await runSql(
+          env,
+          `UPDATE bookings
+           SET status = 'cancelled', cancelled_at = ?, cancelled_by = ?
+           WHERE user_id = ? AND status = 'active' AND end_utc_ms > ?`,
+          [nowIso, auth.user.id, userId, nowMs]
+        );
+        cancelledBookings = Number(cancelResult?.meta?.changes || 0);
+        if (cancelledBookings > 0) {
+          for (const booking of activeBookings) {
+            await writeCancellationAuditForBooking(env, auth.user, booking, 'user_deleted', {
+              source: 'users_delete',
+              deletedUserId: userId,
+            });
+          }
+          rev = await bumpBookingsRev(env);
+        }
+        await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId).run();
+      });
 
       await revokeUserSessions(env, userId);
-      await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId).run();
       const bookings = await loadBookings(env);
       const { list } = await getUsersMap(env, { withSessionActive: true });
       return reply({ ok: true, users: list, bookings, rev, cancelledBookings });
@@ -1942,9 +2054,6 @@ export async function onRequest(context) {
         return reply({ error: 'Рабочее место не найдено или удалено. Обновите карту и выберите существующее место.' }, 400);
       }
       const spaceName = String(spaceRow.label || valid.spaceId);
-      const nowMs = Date.now();
-      const active = await loadActiveBookingsByDates(env, valid.dates, nowMs);
-
       let created = 0;
       let skippedBusy = 0;
       let skippedUser = 0;
@@ -1955,77 +2064,84 @@ export async function onRequest(context) {
       const skippedUserConflictDates = [];
       const skippedDailyLimitDates = [];
       const skippedPastDates = [];
+      let rev = await getBookingsRev(env);
+      await runInTransaction(env, async () => {
+        const nowMs = Date.now();
+        const active = await loadActiveBookingsByDates(env, valid.dates, nowMs);
 
-      for (const date of valid.dates) {
-        const endMs = parseMskDateTimeToUtcMs(date, valid.slotTo);
-        if (!Number.isFinite(endMs) || endMs <= nowMs) {
-          skippedPast++;
-          skippedPastDates.push(date);
-          continue;
-        }
-
-        const busy = active.find(b =>
-          b.spaceId === valid.spaceId &&
-          b.date === date &&
-          timesOverlap(valid.slotFrom, valid.slotTo, b.slotFrom, b.slotTo)
-        );
-        if (busy) {
-          skippedBusy++;
-          skippedBusyDates.push(date);
-          continue;
-        }
-
-        if (targetUser.role === 'user') {
-          const daily = active.find(b => b.userId === targetUser.id && b.date === date);
-          if (daily) {
-            skippedDailyLimit++;
-            skippedDailyLimitDates.push(date);
+        for (const date of valid.dates) {
+          const endMs = parseMskDateTimeToUtcMs(date, valid.slotTo);
+          if (!Number.isFinite(endMs) || endMs <= nowMs) {
+            skippedPast++;
+            skippedPastDates.push(date);
             continue;
           }
+
+          const busy = active.find(b =>
+            b.spaceId === valid.spaceId &&
+            b.date === date &&
+            timesOverlap(valid.slotFrom, valid.slotTo, b.slotFrom, b.slotTo)
+          );
+          if (busy) {
+            skippedBusy++;
+            skippedBusyDates.push(date);
+            continue;
+          }
+
+          if (targetUser.role === 'user') {
+            const daily = active.find(b => b.userId === targetUser.id && b.date === date);
+            if (daily) {
+              skippedDailyLimit++;
+              skippedDailyLimitDates.push(date);
+              continue;
+            }
+          }
+
+          const userConflict = active.find(b =>
+            b.userId === targetUser.id &&
+            b.date === date &&
+            timesOverlap(valid.slotFrom, valid.slotTo, b.slotFrom, b.slotTo)
+          );
+          if (userConflict) {
+            skippedUser++;
+            skippedUserConflictDates.push(date);
+            continue;
+          }
+
+          const booking = {
+            id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+            userId: targetUser.id,
+            userName: targetUser.name,
+            spaceId: valid.spaceId,
+            spaceName,
+            date,
+            slotFrom: valid.slotFrom,
+            slotTo: valid.slotTo,
+            expiresAt: `${date} ${valid.slotTo}`,
+            createdAt: new Date().toISOString(),
+            status: 'active',
+            createdBy: auth.user.id,
+            cancelledAt: null,
+            cancelledBy: null,
+          };
+
+          const inserted = await insertBookingRecord(env, booking);
+          if (!inserted) {
+            skippedPast++;
+            skippedPastDates.push(date);
+            continue;
+          }
+
+          active.push(booking);
+          created++;
+          createdDates.push(date);
         }
 
-        const userConflict = active.find(b =>
-          b.userId === targetUser.id &&
-          b.date === date &&
-          timesOverlap(valid.slotFrom, valid.slotTo, b.slotFrom, b.slotTo)
-        );
-        if (userConflict) {
-          skippedUser++;
-          skippedUserConflictDates.push(date);
-          continue;
+        if (created > 0) {
+          rev = await bumpBookingsRev(env);
         }
+      });
 
-        const booking = {
-          id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`,
-          userId: targetUser.id,
-          userName: targetUser.name,
-          spaceId: valid.spaceId,
-          spaceName,
-          date,
-          slotFrom: valid.slotFrom,
-          slotTo: valid.slotTo,
-          expiresAt: `${date} ${valid.slotTo}`,
-          createdAt: new Date().toISOString(),
-          status: 'active',
-          createdBy: auth.user.id,
-          cancelledAt: null,
-          cancelledBy: null,
-        };
-
-        const inserted = await insertBookingRecord(env, booking);
-        if (!inserted) {
-          skippedPast++;
-          skippedPastDates.push(date);
-          continue;
-        }
-
-        active.push(booking);
-        created++;
-        createdDates.push(date);
-      }
-
-      let rev = await getBookingsRev(env);
-      if (created > 0) rev = await bumpBookingsRev(env);
       const bookings = await loadBookings(env);
       return reply({
         ok: true,
@@ -2090,33 +2206,129 @@ export async function onRequest(context) {
         return reply({ error: 'Недостаточно прав для отмены' }, 403);
       }
 
-      const cancelledAt = new Date().toISOString();
-      const updateResult = await runSql(
-        env,
-        "UPDATE bookings SET status = 'cancelled', cancelled_at = ?, cancelled_by = ? WHERE id = ? AND status = 'active'",
-        [cancelledAt, auth.user.id, bookingId]
-      );
-      const changed = Number(updateResult?.meta?.changes || 0);
       let rev = await getBookingsRev(env);
-      if (changed > 0) rev = await bumpBookingsRev(env);
+      let changed = 0;
+      await runInTransaction(env, async () => {
+        const cancelledAt = new Date().toISOString();
+        const updateResult = await runSql(
+          env,
+          "UPDATE bookings SET status = 'cancelled', cancelled_at = ?, cancelled_by = ? WHERE id = ? AND status = 'active'",
+          [cancelledAt, auth.user.id, bookingId]
+        );
+        changed = Number(updateResult?.meta?.changes || 0);
+        if (changed > 0) {
+          await writeCancellationAuditForBooking(env, auth.user, current, 'manual_cancel', {
+            source: 'bookings_cancel',
+            ownerRole: owner?.role || null,
+            ownerDepartment: owner?.department || null,
+          });
+          rev = await bumpBookingsRev(env);
+        }
+      });
       const bookings = await loadBookings(env);
       return reply({ ok: true, bookings, rev, cancelled: changed > 0, alreadyCancelled: changed === 0 });
     }
 
-    /* ── POST /bookings/replace-admin (admin) ─────────── */
+    /* ── POST /bookings/cancel-by-spaces (admin) ──────── */
+    if (path === '/bookings/cancel-by-spaces' && method === 'POST') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const { spaceIds = [], reason = 'space_removed', entityName = '' } = await request.json();
+      const ids = Array.from(new Set(
+        (Array.isArray(spaceIds) ? spaceIds : [])
+          .map(id => String(id || '').trim())
+          .filter(Boolean)
+      ));
+      if (!ids.length) return reply({ error: 'Не выбраны зоны для отмены бронирований' }, 400);
+
+      const placeholders = sqlPlaceholders(ids.length);
+      let affectedBookings = [];
+      let rev = await getBookingsRev(env);
+      await runInTransaction(env, async () => {
+        const nowMs = Date.now();
+        const { results } = await allSql(
+          env,
+          `SELECT
+            id,
+            user_id AS userId,
+            user_name AS userName,
+            space_id AS spaceId,
+            space_name AS spaceName,
+            date,
+            slot_from AS slotFrom,
+            slot_to AS slotTo,
+            expires_at AS expiresAt,
+            created_at AS createdAt,
+            status,
+            created_by AS createdBy,
+            cancelled_at AS cancelledAt,
+            cancelled_by AS cancelledBy
+           FROM bookings
+           WHERE status = 'active' AND end_utc_ms > ? AND space_id IN (${placeholders})`,
+          [nowMs, ...ids]
+        );
+        affectedBookings = (results || []).map(normalizeBooking).filter(Boolean);
+        if (!affectedBookings.length) return;
+        const cancelledAt = new Date().toISOString();
+        await runSql(
+          env,
+          `UPDATE bookings
+           SET status = 'cancelled', cancelled_at = ?, cancelled_by = ?
+           WHERE status = 'active' AND end_utc_ms > ? AND space_id IN (${placeholders})`,
+          [cancelledAt, auth.user.id, nowMs, ...ids]
+        );
+        for (const booking of affectedBookings) {
+          await writeCancellationAuditForBooking(env, auth.user, booking, String(reason || 'space_removed'), {
+            source: 'bookings_cancel_by_spaces',
+            entityName: String(entityName || ''),
+          });
+        }
+        rev = await bumpBookingsRev(env);
+      });
+
+      const bookings = await loadBookings(env);
+      return reply({ ok: true, bookings, rev, cancelledCount: affectedBookings.length });
+    }
+
+    /* ── GET /audit/cancellations (admin) ─────────────── */
+    if (path === '/audit/cancellations' && method === 'GET') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const requestedLimit = Number(url.searchParams.get('limit') || 200);
+      const limit = Math.max(1, Math.min(CANCELLATION_AUDIT_LIMIT_MAX, Number.isFinite(requestedLimit) ? requestedLimit : 200));
+      const { results } = await allSql(
+        env,
+        `SELECT
+          id,
+          booking_id AS bookingId,
+          actor_user_id AS actorUserId,
+          actor_name AS actorName,
+          actor_role AS actorRole,
+          target_user_id AS targetUserId,
+          target_user_name AS targetUserName,
+          space_id AS spaceId,
+          space_name AS spaceName,
+          booking_date AS bookingDate,
+          slot_from AS slotFrom,
+          slot_to AS slotTo,
+          reason,
+          details_json AS detailsJson,
+          created_at AS createdAt
+         FROM booking_cancellation_audit
+         WHERE actor_role IN ('manager', 'admin')
+         ORDER BY created_at DESC
+         LIMIT ?`,
+        [limit]
+      );
+      const events = (results || []).map(row => ({
+        ...row,
+        details: parseJsonSafe(row.detailsJson, null),
+      }));
+      return reply({ events });
+    }
+
+    /* ── POST /bookings/replace-admin (disabled) ──────── */
     if (path === '/bookings/replace-admin' && method === 'POST') {
       if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
-      const { bookings } = await request.json();
-      if (!Array.isArray(bookings)) return reply({ error: 'Некорректный формат бронирований' }, 400);
-
-      const nextBookings = trimBookingsRetention(bookings);
-      await runSql(env, 'DELETE FROM bookings');
-      for (const booking of nextBookings) {
-        await insertBookingRecord(env, booking);
-      }
-      const rev = await bumpBookingsRev(env);
-      const freshBookings = await loadBookings(env);
-      return reply({ ok: true, bookings: freshBookings, rev });
+      return reply({ error: 'Массовая замена бронирований отключена. Используйте точечную отмену по зонам.' }, 409);
     }
 
     /* ── GET /kv/:key (auth) ──────────────────────────── */

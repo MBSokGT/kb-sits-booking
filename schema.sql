@@ -108,4 +108,24 @@ CREATE INDEX IF NOT EXISTS idx_bookings_status_end ON bookings(status, end_utc_m
 CREATE INDEX IF NOT EXISTS idx_bookings_space_date ON bookings(space_id, date);
 CREATE INDEX IF NOT EXISTS idx_bookings_user_date ON bookings(user_id, date);
 
+CREATE TABLE IF NOT EXISTS booking_cancellation_audit (
+  id               TEXT PRIMARY KEY,
+  booking_id       TEXT,
+  actor_user_id    TEXT,
+  actor_name       TEXT NOT NULL,
+  actor_role       TEXT NOT NULL,
+  target_user_id   TEXT,
+  target_user_name TEXT NOT NULL,
+  space_id         TEXT,
+  space_name       TEXT NOT NULL,
+  booking_date     TEXT NOT NULL,
+  slot_from        TEXT NOT NULL,
+  slot_to          TEXT NOT NULL,
+  reason           TEXT NOT NULL,
+  details_json     TEXT,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_booking_cancel_audit_created ON booking_cancellation_audit(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_booking_cancel_audit_actor_role ON booking_cancellation_audit(actor_role, created_at DESC);
+
 -- No default accounts here. Use BOOTSTRAP_ADMIN_* env vars or admin UI.

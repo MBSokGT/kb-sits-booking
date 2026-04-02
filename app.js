@@ -327,6 +327,10 @@ let teamViewTab      = 'bookings'; // 'bookings' | 'stats'
 let teamViewSearch   = ''; // filter by employee name
 let myBookingsTab    = 'active'; // 'active' | 'history'
 let adminStatsDept = '';
+let adminCancellationAudit = [];
+let adminCancellationAuditLoadedAt = 0;
+let adminCancellationAuditLoading = false;
+let adminCancellationAuditError = '';
 const deptMemberSearch = {};
 let adminBkSearch     = '';
 let adminBkDateFrom   = '';
@@ -443,6 +447,18 @@ function fmtDate(d) { return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.ge
 function fmtHuman(ds) {
   const d = new Date(ds+'T12:00:00');
   return `${d.getDate()} ${MONTHS_S[d.getMonth()]}`;
+}
+function fmtDateTimeHuman(value) {
+  const dt = new Date(value || '');
+  if (!Number.isFinite(dt.getTime())) return '—';
+  return dt.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Europe/Moscow',
+  });
 }
 function slotLabel(s) {
   if (s.id === 'custom') return `${customFrom}–${customTo}`;
@@ -628,6 +644,11 @@ function doLogout(skipServerLogout = false) {
   editorCoworkingId = null;
   editorFloorId = null;
   editorSpaces = [];
+  selectedMyBookingIds = new Set();
+  adminCancellationAudit = [];
+  adminCancellationAuditLoadedAt = 0;
+  adminCancellationAuditLoading = false;
+  adminCancellationAuditError = '';
   // Сброс настроек календаря (чтобы следующий пользователь не видел чужие)
   includeWeekends = false;
   workingSaturdays = [];
@@ -790,14 +811,17 @@ async function syncBookingsFromServer() {
 }
 
 async function replaceBookingsAsAdmin(nextBookings) {
-  if (currentUser?.role !== 'admin') {
-    saveBookings(nextBookings);
-    return true;
-  }
-  const r = await apiFetch('/api/bookings/replace-admin', {
+  toast('Массовая замена бронирований отключена из-за риска потери данных', 't-red', '✕');
+  return false;
+}
+
+async function cancelBookingsBySpacesAsAdmin(spaceIds, reason, entityName = '') {
+  const ids = Array.from(new Set((spaceIds || []).map(id => String(id || '').trim()).filter(Boolean)));
+  if (!ids.length) return true;
+  const r = await apiFetch('/api/bookings/cancel-by-spaces', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ bookings: nextBookings }),
+    body: JSON.stringify({ spaceIds: ids, reason, entityName }),
   });
   if (r.status === 401) {
     requireRelogin();
@@ -805,10 +829,14 @@ async function replaceBookingsAsAdmin(nextBookings) {
   }
   const data = await r.json();
   if (!r.ok) {
-    toast(data.error || 'Не удалось обновить бронирования', 't-red', '✕');
+    toast(data.error || 'Не удалось отменить бронирования удаляемых зон', 't-red', '✕');
     return false;
   }
   saveBookings(Array.isArray(data.bookings) ? data.bookings : []);
+  if (currentUser?.role === 'admin') {
+    adminCancellationAuditLoadedAt = 0;
+    loadAdminCancellationAudit(true).catch(() => {});
+  }
   return true;
 }
 
@@ -2049,10 +2077,17 @@ function refreshView() {
   renderMiniBookings();
 }
 
-async function cancelBooking(id) {
+async function cancelBooking(id, options = {}) {
   const bk = getBookings().find(b=>b.id===id);
   if (!bk) return;
   if (!canCancelBooking(bk)) return toast('Недостаточно прав для отмены', 't-red', '✕');
+  if (!options.force) {
+    const label = getSpaces().find(s => s.id === bk.spaceId)?.label || bk.spaceName || 'это бронирование';
+    confirmAction(`Отменить бронь «${escapeHtml(label)}» на ${fmtHuman(bk.date)} ${bk.slotFrom}–${bk.slotTo}?`, () => {
+      cancelBooking(id, { force: true });
+    });
+    return;
+  }
 
   const r = await apiFetch('/api/bookings/cancel', {
     method: 'POST',
@@ -2065,6 +2100,10 @@ async function cancelBooking(id) {
 
   saveBookings(Array.isArray(data.bookings) ? data.bookings : []);
   selectedMyBookingIds.delete(id);
+  if (currentUser?.role === 'admin') {
+    adminCancellationAuditLoadedAt = 0;
+    loadAdminCancellationAudit(true).catch(() => {});
+  }
   toast('Бронирование отменено', '', '✓');
   renderCalendar(); renderStats(); renderMiniBookings();
   if (currentView === 'map') renderMapView();
@@ -2122,8 +2161,15 @@ async function _doCancelSelected(ids) {
       continue;
     }
     if (Array.isArray(data.bookings)) saveBookings(data.bookings);
+    if (currentUser?.role === 'admin') {
+      adminCancellationAuditLoadedAt = 0;
+    }
     selectedMyBookingIds.delete(id);
     cancelled++;
+  }
+
+  if (currentUser?.role === 'admin' && cancelled > 0) {
+    loadAdminCancellationAudit(true).catch(() => {});
   }
 
   if (cancelled > 0) {
@@ -2796,8 +2842,14 @@ function renderAdminStats(el, forceDept = null) {
 ═══════════════════════════════════════════════════════ */
 function renderAdminView(activeTab = adminActiveTab) {
   const isManager = currentUser?.role === 'manager';
-  const allowedTabs = new Set(['users', 'floors', 'bookings', 'departments', 'stats']);
-  if (isManager) allowedTabs.delete('users'); // managers don't see all users
+  const allowedTabs = new Set(['users', 'floors', 'bookings', 'departments', 'stats', 'audit']);
+  if (isManager) {
+    allowedTabs.delete('users');
+    allowedTabs.delete('floors');
+    allowedTabs.delete('bookings');
+    allowedTabs.delete('departments');
+    allowedTabs.delete('audit');
+  }
   adminActiveTab = allowedTabs.has(activeTab) ? activeTab : (isManager ? 'stats' : 'floors');
   const el = document.getElementById('view-admin');
   el.innerHTML = `<div class="view-area">
@@ -2807,6 +2859,7 @@ function renderAdminView(activeTab = adminActiveTab) {
       ${!isManager ? `<button class="floor-tab-btn ${adminActiveTab==='floors'?'active':''}" data-admin-tab="floors" onclick="adminTab('floors',this)">Коворкинги и планировки</button>` : ''}
       ${!isManager ? `<button class="floor-tab-btn ${adminActiveTab==='bookings'?'active':''}" data-admin-tab="bookings" onclick="adminTab('bookings',this)">Все брони</button>` : ''}
       ${!isManager ? `<button class="floor-tab-btn ${adminActiveTab==='departments'?'active':''}" data-admin-tab="departments" onclick="adminTab('departments',this)">Департаменты</button>` : ''}
+      ${!isManager ? `<button class="floor-tab-btn ${adminActiveTab==='audit'?'active':''}" data-admin-tab="audit" onclick="adminTab('audit',this)">Журнал отмен</button>` : ''}
       <button class="floor-tab-btn ${adminActiveTab==='stats'?'active':''}" data-admin-tab="stats" onclick="adminTab('stats',this)">Статистика отдела</button>
     </div>
     <div id="admin-tab-content"></div>
@@ -2822,6 +2875,7 @@ function renderAdminTabContent(tab) {
   if (tab === 'bookings')    { renderAdminBookings(el); return; }
   if (tab === 'departments') { renderAdminDepartments(el); return; }
   if (tab === 'stats')       { renderAdminStats(el); return; }
+  if (tab === 'audit')       { renderAdminAudit(el); return; }
 }
 
 function adminTab(tab, btn) {
@@ -3360,7 +3414,7 @@ function renderAdminBookings(el) {
 }
 
 async function adminCancelBk(id) {
-  await cancelBooking(id);
+  await cancelBooking(id, { force: true });
   if (currentView === 'admin') renderAdminView();
 }
 function adminBkSetSearch(v)     { adminBkSearch=String(v||'').toLowerCase(); renderAdminView(); }
@@ -3401,6 +3455,87 @@ function exportCSV() {
   const a = document.createElement('a');
   a.href = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(csv);
   a.download = 'bookings.csv'; a.click();
+}
+
+function cancellationReasonLabel(reason) {
+  const map = {
+    manual_cancel: 'Ручная отмена',
+    floor_deleted: 'Удаление этажа',
+    coworking_deleted: 'Удаление коворкинга',
+    user_deleted: 'Удаление пользователя',
+    space_removed: 'Удаление зоны',
+  };
+  return map[String(reason || '')] || 'Отмена';
+}
+
+async function loadAdminCancellationAudit(force = false) {
+  if (currentUser?.role !== 'admin') return;
+  if (adminCancellationAuditLoading) return;
+  if (!force && adminCancellationAuditLoadedAt && (Date.now() - adminCancellationAuditLoadedAt) < 15000) return;
+
+  adminCancellationAuditLoading = true;
+  adminCancellationAuditError = '';
+  try {
+    const r = await apiFetch('/api/audit/cancellations?limit=300');
+    if (r.status === 401) return requireRelogin();
+    const data = await r.json();
+    if (!r.ok) {
+      adminCancellationAuditError = data.error || 'Не удалось загрузить журнал';
+      return;
+    }
+    adminCancellationAudit = Array.isArray(data.events) ? data.events : [];
+    adminCancellationAuditLoadedAt = Date.now();
+  } catch {
+    adminCancellationAuditError = 'Нет соединения с сервером';
+  } finally {
+    adminCancellationAuditLoading = false;
+    if (currentView === 'admin' && adminActiveTab === 'audit') renderAdminTabContent('audit');
+  }
+}
+
+function renderAdminAudit(el) {
+  const events = adminCancellationAudit.slice();
+  if (!adminCancellationAuditLoadedAt && !adminCancellationAuditLoading) {
+    el.innerHTML = `<div class="card"><div class="card-head">Журнал отмен</div><div style="padding:1rem;color:var(--ink3)">Загружаю журнал…</div></div>`;
+    loadAdminCancellationAudit(true);
+    return;
+  }
+
+  const managerCount = events.filter(e => e.actorRole === 'manager').length;
+  const adminCount = events.filter(e => e.actorRole === 'admin').length;
+  el.innerHTML = `
+    <div class="metrics" style="margin-bottom:1.25rem">
+      <div class="metric mt-red"><div class="metric-n" style="color:var(--red)">${events.length}</div><div class="metric-l">Всего отмен в журнале</div></div>
+      <div class="metric mt-amber"><div class="metric-n" style="color:var(--amber)">${managerCount}</div><div class="metric-l">Отмен руководителями</div></div>
+      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${adminCount}</div><div class="metric-l">Отмен администраторами</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head">Действия руководителей и администраторов
+        <button class="btn btn-ghost btn-sm" onclick="loadAdminCancellationAudit(true)">Обновить</button>
+      </div>
+      <div style="padding:0"><table class="data-table">
+        <thead><tr><th>Когда</th><th>Кто отменил</th><th>Сотрудник</th><th>Место</th><th>Дата</th><th>Время</th><th>Причина</th></tr></thead>
+        <tbody>${
+          adminCancellationAuditLoading
+            ? `<tr><td colspan="7" style="text-align:center;color:var(--ink4);padding:2rem">Загрузка…</td></tr>`
+            : adminCancellationAuditError
+            ? `<tr><td colspan="7" style="text-align:center;color:var(--red);padding:2rem">${escapeHtml(adminCancellationAuditError)}</td></tr>`
+            : !events.length
+            ? `<tr><td colspan="7" style="text-align:center;color:var(--ink4);padding:2rem">Журнал пока пуст</td></tr>`
+            : events.map(e => `
+              <tr>
+                <td style="font-size:12px;color:var(--ink3)">${fmtDateTimeHuman(e.createdAt)}</td>
+                <td><strong>${escapeHtml(e.actorName || '—')}</strong><br><span style="font-size:11px;color:var(--ink4)">${escapeHtml(e.actorRole === 'manager' ? 'Руководитель' : 'Администратор')}</span></td>
+                <td>${escapeHtml(e.targetUserName || '—')}</td>
+                <td>${escapeHtml(e.spaceName || '—')}</td>
+                <td>${e.bookingDate ? fmtHuman(e.bookingDate) : '—'}</td>
+                <td style="font-family:'DM Mono',monospace;font-size:12px">${escapeHtml(e.slotFrom || '—')}–${escapeHtml(e.slotTo || '—')}</td>
+                <td>${escapeHtml(cancellationReasonLabel(e.reason))}${e.details?.entityName ? `<br><span style="font-size:11px;color:var(--ink4)">${escapeHtml(e.details.entityName)}</span>` : ''}</td>
+              </tr>
+            `).join('')
+        }
+        </tbody></table></div>
+    </div>`;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -3630,12 +3765,12 @@ function deleteCoworking(id) {
   confirmAction(`Вы уверены, что хотите удалить коворкинг «${escapeHtml(cw.name)}» со всеми этажами и бронированиями?`, async () => {
     const floorIds = getFloors().filter(f=>f.coworkingId===id).map(f=>f.id);
     const spaceIds = getSpaces().filter(s=>floorIds.includes(s.floorId)).map(s=>s.id);
+    const ok = await cancelBookingsBySpacesAsAdmin(spaceIds, 'coworking_deleted', cw.name);
+    if (!ok) return;
 
     saveCoworkings(coworkings.filter(c=>c.id!==id));
     saveFloors(getFloors().filter(f=>f.coworkingId!==id));
     saveSpaces(getSpaces().filter(s=>!floorIds.includes(s.floorId)));
-    const ok = await replaceBookingsAsAdmin(getBookings().filter(b=>!spaceIds.includes(b.spaceId)));
-    if (!ok) return;
 
     const nextCoworking = getCoworkings()[0];
     editorCoworkingId = nextCoworking?.id || null;
@@ -4154,10 +4289,10 @@ function deleteFloor(id) {
   const floorName = fl?.name || 'этаж';
   confirmAction(`Вы уверены, что хотите удалить этаж «${escapeHtml(floorName)}» и все его зоны?`, async () => {
     const removedSpaceIds = getSpaces().filter(s=>s.floorId===id).map(s=>s.id);
+    const ok = await cancelBookingsBySpacesAsAdmin(removedSpaceIds, 'floor_deleted', floorName);
+    if (!ok) return;
     saveFloors(getFloors().filter(f=>f.id!==id));
     saveSpaces(getSpaces().filter(s=>s.floorId!==id));
-    const ok = await replaceBookingsAsAdmin(getBookings().filter(b => !removedSpaceIds.includes(b.spaceId)));
-    if (!ok) return;
 
     const floors = getFloorsByCoworking(editorCoworkingId);
     editorFloorId = floors[0]?.id || null;
