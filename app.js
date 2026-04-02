@@ -2888,14 +2888,43 @@ function adminTab(tab, btn) {
 }
 
 function setAdminUserSearch(value) {
-  adminUserSearch = String(value || '').trim();
-  if (currentView === 'admin') renderAdminView('users');
+  const input = value && typeof value === 'object' && 'value' in value ? value : null;
+  adminUserSearch = String(input ? input.value : (value || ''));
+  if (currentView === 'admin' && adminActiveTab === 'users') {
+    rerenderAdminUsersPane({
+      focusSearch: !!input,
+      selectionStart: input?.selectionStart ?? null,
+      selectionEnd: input?.selectionEnd ?? null,
+    });
+  }
 }
 
 function setAdminUserSort(value) {
   const next = String(value || '').trim();
   adminUserSort = next || 'lastLogin';
-  if (currentView === 'admin') renderAdminView('users');
+  if (currentView === 'admin' && adminActiveTab === 'users') rerenderAdminUsersPane();
+}
+
+function rerenderAdminUsersPane(options = {}) {
+  const content = document.getElementById('admin-tab-content');
+  const viewArea = content?.closest('.view-area');
+  const scrollTop = viewArea ? viewArea.scrollTop : 0;
+
+  renderAdminTabContent('users');
+
+  const nextContent = document.getElementById('admin-tab-content');
+  const nextViewArea = nextContent?.closest('.view-area');
+  if (nextViewArea) nextViewArea.scrollTop = scrollTop;
+
+  if (options.focusSearch) {
+    const input = document.getElementById('admin-user-search');
+    if (input) {
+      input.focus({ preventScroll: true });
+      const start = Number.isInteger(options.selectionStart) ? options.selectionStart : input.value.length;
+      const end = Number.isInteger(options.selectionEnd) ? options.selectionEnd : start;
+      try { input.setSelectionRange(start, end); } catch {}
+    }
+  }
 }
 
 function setBookingUserSearch(value) {
@@ -2940,7 +2969,7 @@ function renderAdminUsers(el) {
   const users = getUsers();
   const bks   = getActiveBookings(getBookings());
   const roles = { user:'Сотрудник', manager:'Руководитель', admin:'Администратор' };
-  const search = adminUserSearch.trim().toLowerCase();
+  const search = String(adminUserSearch || '').trim().toLowerCase();
   const filtered = search
     ? users.filter(u => `${u.name} ${u.email} ${u.department || ''}`.toLowerCase().includes(search))
     : users;
@@ -2975,8 +3004,8 @@ function renderAdminUsers(el) {
 
   el.innerHTML = `<div style="margin-bottom:1rem;display:flex;justify-content:space-between;gap:.75rem;align-items:center;flex-wrap:wrap">
     <div style="display:flex;gap:.5rem;align-items:center">
-      <input type="text" class="role-sel" placeholder="Поиск сотрудника..." value="${escapeHtml(adminUserSearch)}"
-        oninput="setAdminUserSearch(this.value)" style="min-width:220px">
+      <input type="text" id="admin-user-search" class="role-sel" placeholder="Поиск сотрудника..." value="${escapeHtml(adminUserSearch)}"
+        oninput="setAdminUserSearch(this)" style="min-width:220px">
       <span style="font-size:12px;color:var(--ink4)">Найдено: ${filtered.length}</span>
     </div>
     <button class="btn btn-primary" onclick="showAddUserModal()">+ Добавить аккаунт</button>
