@@ -57,11 +57,14 @@ CREATE TABLE IF NOT EXISTS spaces (
   w          REAL NOT NULL DEFAULT 10,
   h          REAL NOT NULL DEFAULT 10,
   color      TEXT NOT NULL DEFAULT '#059669',
+  archived_at TEXT,
+  archived_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (floor_id) REFERENCES floors(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_spaces_floor ON spaces(floor_id);
+CREATE INDEX IF NOT EXISTS idx_spaces_archived ON spaces(archived_at, floor_id);
 
 -- Departments
 CREATE TABLE IF NOT EXISTS departments (
@@ -127,5 +130,26 @@ CREATE TABLE IF NOT EXISTS booking_cancellation_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_booking_cancel_audit_created ON booking_cancellation_audit(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_booking_cancel_audit_actor_role ON booking_cancellation_audit(actor_role, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS layout_audit (
+  id             TEXT PRIMARY KEY,
+  actor_user_id  TEXT,
+  actor_name     TEXT NOT NULL,
+  actor_role     TEXT NOT NULL,
+  entity_type    TEXT NOT NULL,
+  entity_id      TEXT NOT NULL,
+  entity_name    TEXT NOT NULL,
+  coworking_id   TEXT,
+  coworking_name TEXT,
+  floor_id       TEXT,
+  floor_name     TEXT,
+  space_id       TEXT,
+  action         TEXT NOT NULL,
+  before_json    TEXT,
+  after_json     TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_layout_audit_created ON layout_audit(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_layout_audit_entity ON layout_audit(entity_type, entity_id, created_at DESC);
 
 -- No default accounts here. Use BOOTSTRAP_ADMIN_* env vars or admin UI.

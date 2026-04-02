@@ -17,6 +17,10 @@ const MAX_BOOKING_DATES_DEFAULT = 365;
 const MAX_BOOKING_DATES_ADMIN = 730; // two years, aligns with retention window
 const BOOKING_RETENTION_MS = 2 * 365 * 24 * 60 * 60 * 1000;
 const CANCELLATION_AUDIT_LIMIT_MAX = 500;
+const LAYOUT_AUDIT_LIMIT_MAX = 500;
+const SPACE_HISTORY_LIMIT_MAX = 400;
+const EDITOR_LOCK_TTL_MS = 90 * 1000;
+const EDITOR_LOCK_KEY_PREFIX = 'editor_lock:';
 const BOOKING_STATE_KEY = 'bookings_state';
 const LEGACY_BOOKINGS_KEY = 'bookings';
 const BOOKINGS_REV_KEY = 'bookings_rev';
@@ -699,6 +703,152 @@ function safeJsonStringify(value) {
   }
 }
 
+function editorLockKey(floorId) {
+  return `${EDITOR_LOCK_KEY_PREFIX}${String(floorId || '').trim()}`;
+}
+
+function snapshotCoworkingEntity(row) {
+  if (!row?.id) return null;
+  return {
+    id: String(row.id),
+    name: String(row.name || ''),
+  };
+}
+
+function snapshotFloorEntity(row) {
+  if (!row?.id) return null;
+  return {
+    id: String(row.id),
+    coworkingId: String(row.coworking_id ?? row.coworkingId ?? ''),
+    name: String(row.name || ''),
+    imageUrl: row.image_url ?? row.imageUrl ?? null,
+    imageType: row.image_type ?? row.imageType ?? null,
+    sortOrder: Number.isFinite(Number(row.sort_order ?? row.sortOrder))
+      ? Number(row.sort_order ?? row.sortOrder)
+      : 0,
+  };
+}
+
+function snapshotSpaceEntity(row) {
+  if (!row?.id) return null;
+  return {
+    id: String(row.id),
+    floorId: String(row.floor_id ?? row.floorId ?? ''),
+    label: String(row.label || ''),
+    seats: Number.isFinite(Number(row.seats)) ? Number(row.seats) : 1,
+    x: Number.isFinite(Number(row.x)) ? Number(row.x) : 0,
+    y: Number.isFinite(Number(row.y)) ? Number(row.y) : 0,
+    w: Number.isFinite(Number(row.w)) ? Number(row.w) : 10,
+    h: Number.isFinite(Number(row.h)) ? Number(row.h) : 10,
+    color: normalizeHexColor(row.color, '#059669'),
+    archivedAt: row.archived_at ?? row.archivedAt ?? null,
+    archivedBy: row.archived_by ?? row.archivedBy ?? null,
+  };
+}
+
+function sameSnapshotValue(a, b) {
+  return safeJsonStringify(a) === safeJsonStringify(b);
+}
+
+function spaceChangedMeaningfully(prev, next) {
+  if (!prev || !next) return true;
+  return !sameSnapshotValue(
+    {
+      floorId: prev.floorId,
+      label: prev.label,
+      seats: prev.seats,
+      x: prev.x,
+      y: prev.y,
+      w: prev.w,
+      h: prev.h,
+      color: prev.color,
+      archivedAt: prev.archivedAt || null,
+    },
+    {
+      floorId: next.floorId,
+      label: next.label,
+      seats: next.seats,
+      x: next.x,
+      y: next.y,
+      w: next.w,
+      h: next.h,
+      color: next.color,
+      archivedAt: next.archivedAt || null,
+    }
+  );
+}
+
+function normalizeLayoutEntityType(type) {
+  return ['coworking', 'floor', 'space'].includes(String(type || '')) ? String(type) : 'space';
+}
+
+async function writeLayoutAudit(env, entry) {
+  if (!entry?.entityId) return;
+  await runSql(
+    env,
+    `INSERT INTO layout_audit
+      (id, actor_user_id, actor_name, actor_role, entity_type, entity_id, entity_name,
+       coworking_id, coworking_name, floor_id, floor_name, space_id, action, before_json, after_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      makeAuditId(),
+      entry.actorUserId || null,
+      String(entry.actorName || 'Неизвестный пользователь'),
+      String(entry.actorRole || 'admin'),
+      normalizeLayoutEntityType(entry.entityType),
+      String(entry.entityId),
+      String(entry.entityName || ''),
+      entry.coworkingId || null,
+      entry.coworkingName || null,
+      entry.floorId || null,
+      entry.floorName || null,
+      entry.spaceId || null,
+      String(entry.action || 'update'),
+      safeJsonStringify(entry.before),
+      safeJsonStringify(entry.after),
+      String(entry.createdAt || new Date().toISOString()),
+    ]
+  );
+}
+
+async function writeLayoutAuditForEntity(env, actor, entry) {
+  await writeLayoutAudit(env, {
+    actorUserId: actor?.id || null,
+    actorName: actor?.name || 'Неизвестный пользователь',
+    actorRole: actor?.role || 'admin',
+    ...entry,
+  });
+}
+
+async function readEditorLock(env, floorId) {
+  const key = editorLockKey(floorId);
+  const row = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', [key]);
+  if (!row?.v) return null;
+  const parsed = parseJsonSafe(row.v, null);
+  if (!parsed?.floorId || !parsed?.token || !parsed?.expiresAt) {
+    await runSql(env, 'DELETE FROM kv_store WHERE k = ?', [key]);
+    return null;
+  }
+  const expiresMs = Date.parse(parsed.expiresAt);
+  if (!Number.isFinite(expiresMs) || expiresMs <= Date.now()) {
+    await runSql(env, 'DELETE FROM kv_store WHERE k = ?', [key]);
+    return null;
+  }
+  return parsed;
+}
+
+async function writeEditorLock(env, floorId, lock) {
+  await runSql(
+    env,
+    "INSERT OR REPLACE INTO kv_store (k, v, updated_at) VALUES (?, ?, datetime('now'))",
+    [editorLockKey(floorId), JSON.stringify(lock)]
+  );
+}
+
+async function deleteEditorLock(env, floorId) {
+  await runSql(env, 'DELETE FROM kv_store WHERE k = ?', [editorLockKey(floorId)]);
+}
+
 async function writeCancellationAudit(env, entry) {
   if (!entry) return;
   await runSql(
@@ -834,6 +984,46 @@ async function allSql(env, sql, params = []) {
   return env.DB.prepare(sql).bind(...params).all();
 }
 
+async function tableHasColumn(env, tableName, columnName) {
+  const { results } = await allSql(env, `PRAGMA table_info(${tableName})`);
+  return (results || []).some(row => String(row.name || '').toLowerCase() === String(columnName || '').toLowerCase());
+}
+
+async function ensureTableColumn(env, tableName, columnName, ddlFragment) {
+  if (await tableHasColumn(env, tableName, columnName)) return;
+  await runSql(env, `ALTER TABLE ${tableName} ADD COLUMN ${ddlFragment}`);
+}
+
+async function ensureDomainSchemaExtensions(env) {
+  await ensureTableColumn(env, 'spaces', 'archived_at', 'archived_at TEXT');
+  await ensureTableColumn(env, 'spaces', 'archived_by', 'archived_by TEXT');
+
+  await runSql(
+    env,
+    `CREATE TABLE IF NOT EXISTS layout_audit (
+      id TEXT PRIMARY KEY,
+      actor_user_id TEXT,
+      actor_name TEXT NOT NULL,
+      actor_role TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      entity_name TEXT NOT NULL,
+      coworking_id TEXT,
+      coworking_name TEXT,
+      floor_id TEXT,
+      floor_name TEXT,
+      space_id TEXT,
+      action TEXT NOT NULL,
+      before_json TEXT,
+      after_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`
+  );
+  await runSql(env, 'CREATE INDEX IF NOT EXISTS idx_layout_audit_created ON layout_audit(created_at DESC)');
+  await runSql(env, 'CREATE INDEX IF NOT EXISTS idx_layout_audit_entity ON layout_audit(entity_type, entity_id, created_at DESC)');
+  await runSql(env, 'CREATE INDEX IF NOT EXISTS idx_spaces_archived ON spaces(archived_at, floor_id)');
+}
+
 async function getBookingsRev(env) {
   const row = await firstSql(env, 'SELECT v FROM kv_store WHERE k = ?', [BOOKINGS_REV_KEY]);
   const rev = Number(row?.v);
@@ -951,10 +1141,42 @@ function normalizeWorkingSaturday(raw) {
   return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : '';
 }
 
-async function replaceCoworkingsTable(env, value) {
+async function loadSpaceRows(env, options = {}) {
+  const includeArchived = !!options.includeArchived;
+  const floorId = String(options.floorId || '').trim();
+  const where = [];
+  const params = [];
+  if (!includeArchived) where.push('archived_at IS NULL');
+  if (floorId) {
+    where.push('floor_id = ?');
+    params.push(floorId);
+  }
+  const sql = `SELECT
+      id,
+      floor_id,
+      label,
+      seats,
+      x,
+      y,
+      w,
+      h,
+      color,
+      archived_at,
+      archived_by,
+      created_at,
+      updated_at
+    FROM spaces
+    ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+    ORDER BY floor_id, archived_at IS NOT NULL, label`;
+  const { results } = await allSql(env, sql, params);
+  return results || [];
+}
+
+async function replaceCoworkingsTable(env, value, actor = null) {
   if (!Array.isArray(value)) return { ok: false, status: 400, error: 'Некорректный формат данных' };
   const rows = value.map(normalizeCoworking).filter(Boolean);
-  const { results: existingRows } = await allSql(env, 'SELECT id FROM coworkings');
+  const { results: existingRows } = await allSql(env, 'SELECT id, name FROM coworkings');
+  const existingById = new Map((existingRows || []).map(row => [String(row.id), snapshotCoworkingEntity(row)]));
   const nextIds = new Set(rows.map(row => row.id));
   const removedIds = (existingRows || []).map(row => String(row.id)).filter(id => !nextIds.has(id));
   if (removedIds.length) {
@@ -983,11 +1205,55 @@ async function replaceCoworkingsTable(env, value) {
         [row.id, row.name]
       );
     }
+    if (actor) {
+      for (const row of rows) {
+        const prev = existingById.get(row.id) || null;
+        if (!prev) {
+          await writeLayoutAuditForEntity(env, actor, {
+            entityType: 'coworking',
+            entityId: row.id,
+            entityName: row.name,
+            coworkingId: row.id,
+            coworkingName: row.name,
+            action: 'create',
+            before: null,
+            after: row,
+          });
+          continue;
+        }
+        if (!sameSnapshotValue(prev, row)) {
+          await writeLayoutAuditForEntity(env, actor, {
+            entityType: 'coworking',
+            entityId: row.id,
+            entityName: row.name,
+            coworkingId: row.id,
+            coworkingName: row.name,
+            action: 'update',
+            before: prev,
+            after: row,
+          });
+        }
+      }
+      for (const removedId of removedIds) {
+        const prev = existingById.get(removedId);
+        if (!prev) continue;
+        await writeLayoutAuditForEntity(env, actor, {
+          entityType: 'coworking',
+          entityId: prev.id,
+          entityName: prev.name,
+          coworkingId: prev.id,
+          coworkingName: prev.name,
+          action: 'delete',
+          before: prev,
+          after: null,
+        });
+      }
+    }
   });
   return { ok: true };
 }
 
-async function replaceFloorsTable(env, value) {
+async function replaceFloorsTable(env, value, actor = null) {
   if (!Array.isArray(value)) return { ok: false, status: 400, error: 'Некорректный формат данных' };
   const rows = value.map(normalizeFloor).filter(Boolean);
   const { results } = await allSql(env, 'SELECT id FROM coworkings');
@@ -997,7 +1263,20 @@ async function replaceFloorsTable(env, value) {
     return { ok: false, status: 400, error: `Не найден коворкинг для этажа: ${invalid.name}` };
   }
 
-  const { results: existingRows } = await allSql(env, 'SELECT id FROM floors');
+  const { results: existingRows } = await allSql(
+    env,
+    `SELECT
+      f.id,
+      f.coworking_id,
+      f.name,
+      f.image_url,
+      f.image_type,
+      f.sort_order,
+      c.name AS coworking_name
+     FROM floors f
+     LEFT JOIN coworkings c ON c.id = f.coworking_id`
+  );
+  const existingById = new Map((existingRows || []).map(row => [String(row.id), { ...snapshotFloorEntity(row), coworkingName: row.coworking_name || '' }]));
   const nextIds = new Set(rows.map(row => row.id));
   const removedIds = (existingRows || []).map(row => String(row.id)).filter(id => !nextIds.has(id));
   if (removedIds.length) {
@@ -1026,11 +1305,64 @@ async function replaceFloorsTable(env, value) {
         [row.id, row.coworkingId, row.name, row.imageUrl, row.imageType, row.sortOrder]
       );
     }
+    if (actor) {
+      const { results: coworkingRows } = await allSql(env, 'SELECT id, name FROM coworkings');
+      const coworkingNames = new Map((coworkingRows || []).map(row => [String(row.id), String(row.name || '')]));
+      for (const row of rows) {
+        const prev = existingById.get(row.id) || null;
+        const enriched = { ...row, coworkingName: coworkingNames.get(row.coworkingId) || '' };
+        if (!prev) {
+          await writeLayoutAuditForEntity(env, actor, {
+            entityType: 'floor',
+            entityId: row.id,
+            entityName: row.name,
+            coworkingId: row.coworkingId,
+            coworkingName: enriched.coworkingName,
+            floorId: row.id,
+            floorName: row.name,
+            action: 'create',
+            before: null,
+            after: enriched,
+          });
+          continue;
+        }
+        if (!sameSnapshotValue(prev, enriched)) {
+          await writeLayoutAuditForEntity(env, actor, {
+            entityType: 'floor',
+            entityId: row.id,
+            entityName: row.name,
+            coworkingId: row.coworkingId,
+            coworkingName: enriched.coworkingName,
+            floorId: row.id,
+            floorName: row.name,
+            action: 'update',
+            before: prev,
+            after: enriched,
+          });
+        }
+      }
+      for (const removedId of removedIds) {
+        const prev = existingById.get(removedId);
+        if (!prev) continue;
+        await writeLayoutAuditForEntity(env, actor, {
+          entityType: 'floor',
+          entityId: prev.id,
+          entityName: prev.name,
+          coworkingId: prev.coworkingId,
+          coworkingName: prev.coworkingName,
+          floorId: prev.id,
+          floorName: prev.name,
+          action: 'delete',
+          before: prev,
+          after: null,
+        });
+      }
+    }
   });
   return { ok: true };
 }
 
-async function replaceSpacesTable(env, value) {
+async function replaceSpacesTable(env, value, actor = null) {
   if (!Array.isArray(value)) return { ok: false, status: 400, error: 'Некорректный формат данных' };
   const rows = value.map(normalizeSpace).filter(Boolean);
   const { results } = await allSql(env, 'SELECT id FROM floors');
@@ -1040,33 +1372,175 @@ async function replaceSpacesTable(env, value) {
     return { ok: false, status: 400, error: `Не найден этаж для зоны: ${invalid.label}` };
   }
 
-  const { results: existingRows } = await allSql(env, 'SELECT id FROM spaces');
+  const floorMetaRows = await allSql(
+    env,
+    `SELECT
+      f.id,
+      f.name,
+      f.coworking_id,
+      c.name AS coworking_name
+     FROM floors f
+     LEFT JOIN coworkings c ON c.id = f.coworking_id`
+  );
+  const floorMeta = new Map((floorMetaRows?.results || []).map(row => [String(row.id), {
+    floorId: String(row.id),
+    floorName: String(row.name || ''),
+    coworkingId: String(row.coworking_id || ''),
+    coworkingName: String(row.coworking_name || ''),
+  }]));
+
+  const existingRows = await loadSpaceRows(env, { includeArchived: true });
+  const existingById = new Map(existingRows.map(row => [String(row.id), snapshotSpaceEntity(row)]));
+  const activeExistingIds = new Set(
+    existingRows
+      .filter(row => !row.archived_at)
+      .map(row => String(row.id))
+  );
   const nextIds = new Set(rows.map(row => row.id));
-  const removedIds = (existingRows || []).map(row => String(row.id)).filter(id => !nextIds.has(id));
-  if (removedIds.length) {
-    const placeholders = sqlPlaceholders(removedIds.length);
-    const cutoffMs = Date.now() - BOOKING_RETENTION_MS;
-    const row = await firstSql(
-      env,
-      `SELECT COUNT(*) AS cnt
-       FROM bookings
-       WHERE space_id IN (${placeholders}) AND end_utc_ms >= ?`,
-      [...removedIds, cutoffMs]
-    );
-    const cnt = Number(row?.cnt || 0);
-    if (cnt > 0) {
-      return { ok: false, status: 400, error: 'Нельзя удалить рабочее место, пока есть брони за последние 2 года.' };
-    }
-  }
+  const removedIds = [...activeExistingIds].filter(id => !nextIds.has(id));
 
   await runInTransaction(env, async () => {
-    await runSql(env, 'DELETE FROM spaces');
+    const nowIso = new Date().toISOString();
     for (const row of rows) {
+      const existing = existingById.get(row.id) || null;
+      if (existing) {
+        await runSql(
+          env,
+          `UPDATE spaces
+           SET floor_id = ?, label = ?, seats = ?, x = ?, y = ?, w = ?, h = ?, color = ?,
+               archived_at = NULL, archived_by = NULL, updated_at = datetime('now')
+           WHERE id = ?`,
+          [row.floorId, row.label, row.seats, row.x, row.y, row.w, row.h, row.color, row.id]
+        );
+      } else {
+        await runSql(
+          env,
+          `INSERT INTO spaces
+            (id, floor_id, label, seats, x, y, w, h, color, archived_at, archived_by, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, datetime('now'))`,
+          [row.id, row.floorId, row.label, row.seats, row.x, row.y, row.w, row.h, row.color]
+        );
+      }
+
+      if (actor) {
+        const meta = floorMeta.get(row.floorId) || {};
+        const after = { ...row, archivedAt: null, archivedBy: null };
+        if (!existing) {
+          await writeLayoutAuditForEntity(env, actor, {
+            entityType: 'space',
+            entityId: row.id,
+            entityName: row.label,
+            coworkingId: meta.coworkingId || null,
+            coworkingName: meta.coworkingName || null,
+            floorId: row.floorId,
+            floorName: meta.floorName || null,
+            spaceId: row.id,
+            action: 'create',
+            before: null,
+            after,
+          });
+        } else if (existing.archivedAt) {
+          await writeLayoutAuditForEntity(env, actor, {
+            entityType: 'space',
+            entityId: row.id,
+            entityName: row.label,
+            coworkingId: meta.coworkingId || null,
+            coworkingName: meta.coworkingName || null,
+            floorId: row.floorId,
+            floorName: meta.floorName || null,
+            spaceId: row.id,
+            action: 'restore',
+            before: existing,
+            after,
+          });
+        } else if (spaceChangedMeaningfully(existing, after)) {
+          await writeLayoutAuditForEntity(env, actor, {
+            entityType: 'space',
+            entityId: row.id,
+            entityName: row.label,
+            coworkingId: meta.coworkingId || null,
+            coworkingName: meta.coworkingName || null,
+            floorId: row.floorId,
+            floorName: meta.floorName || null,
+            spaceId: row.id,
+            action: 'update',
+            before: existing,
+            after,
+          });
+        }
+      }
+    }
+
+    if (removedIds.length) {
+      const placeholders = sqlPlaceholders(removedIds.length);
       await runSql(
         env,
-        "INSERT INTO spaces (id, floor_id, label, seats, x, y, w, h, color, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
-        [row.id, row.floorId, row.label, row.seats, row.x, row.y, row.w, row.h, row.color]
+        `UPDATE spaces
+         SET archived_at = ?, archived_by = ?, updated_at = datetime('now')
+         WHERE archived_at IS NULL AND id IN (${placeholders})`,
+        [nowIso, actor?.id || null, ...removedIds]
       );
+
+      const nowMs = Date.now();
+      const { results: activeBookingRows } = await allSql(
+        env,
+        `SELECT
+          id,
+          user_id AS userId,
+          user_name AS userName,
+          space_id AS spaceId,
+          space_name AS spaceName,
+          date,
+          slot_from AS slotFrom,
+          slot_to AS slotTo,
+          expires_at AS expiresAt,
+          created_at AS createdAt,
+          status,
+          created_by AS createdBy,
+          cancelled_at AS cancelledAt,
+          cancelled_by AS cancelledBy
+         FROM bookings
+         WHERE status = 'active' AND end_utc_ms > ? AND space_id IN (${placeholders})`,
+        [nowMs, ...removedIds]
+      );
+      const affectedBookings = (activeBookingRows || []).map(normalizeBooking).filter(Boolean);
+      if (affectedBookings.length) {
+        await runSql(
+          env,
+          `UPDATE bookings
+           SET status = 'cancelled', cancelled_at = ?, cancelled_by = ?
+           WHERE status = 'active' AND end_utc_ms > ? AND space_id IN (${placeholders})`,
+          [nowIso, actor?.id || null, nowMs, ...removedIds]
+        );
+        for (const booking of affectedBookings) {
+          await writeCancellationAuditForBooking(env, actor, booking, 'space_removed', {
+            source: 'replace_spaces_archive',
+            entityName: booking.spaceName,
+          });
+        }
+        await bumpBookingsRev(env);
+      }
+
+      if (actor) {
+        for (const removedId of removedIds) {
+          const prev = existingById.get(removedId);
+          if (!prev) continue;
+          const meta = floorMeta.get(prev.floorId) || {};
+          await writeLayoutAuditForEntity(env, actor, {
+            entityType: 'space',
+            entityId: prev.id,
+            entityName: prev.label,
+            coworkingId: meta.coworkingId || null,
+            coworkingName: meta.coworkingName || null,
+            floorId: prev.floorId,
+            floorName: meta.floorName || null,
+            spaceId: prev.id,
+            action: 'archive',
+            before: prev,
+            after: { ...prev, archivedAt: nowIso, archivedBy: actor.id || null },
+          });
+        }
+      }
     }
   });
   return { ok: true };
@@ -1134,11 +1608,7 @@ async function readFloorsTable(env) {
 }
 
 async function readSpacesTable(env) {
-  const { results } = await allSql(
-    env,
-    'SELECT id, floor_id, label, seats, x, y, w, h, color FROM spaces ORDER BY floor_id, label'
-  );
-  const rows = results || [];
+  const rows = await loadSpaceRows(env, { includeArchived: false });
   if (!rows.length) return null;
   return rows.map(row => ({
     id: row.id,
@@ -1191,10 +1661,10 @@ async function readDomainValue(env, key) {
   return null;
 }
 
-async function writeDomainValue(env, key, value) {
-  if (key === 'coworkings') return replaceCoworkingsTable(env, value);
-  if (key === 'floors') return replaceFloorsTable(env, value);
-  if (key === 'spaces') return replaceSpacesTable(env, value);
+async function writeDomainValue(env, key, value, actor = null) {
+  if (key === 'coworkings') return replaceCoworkingsTable(env, value, actor);
+  if (key === 'floors') return replaceFloorsTable(env, value, actor);
+  if (key === 'spaces') return replaceSpacesTable(env, value, actor);
   if (key === 'departments') return replaceDepartmentsTable(env, value);
   return { ok: false, status: 400, error: 'Недопустимый ключ' };
 }
@@ -1292,6 +1762,181 @@ async function loadActiveBookingsByDates(env, dates, nowMs = Date.now()) {
   return (results || []).map(normalizeBooking).filter(Boolean);
 }
 
+async function loadArchivedSpaces(env, floorId = '') {
+  const rows = await loadSpaceRows(env, { includeArchived: true, floorId });
+  return rows
+    .filter(row => !!row.archived_at)
+    .map(row => ({
+      ...snapshotSpaceEntity(row),
+      archivedAt: row.archived_at || null,
+      archivedBy: row.archived_by || null,
+    }));
+}
+
+async function loadLayoutAuditEvents(env, options = {}) {
+  const limitRequested = Number(options.limit || 100);
+  const limit = Math.max(1, Math.min(LAYOUT_AUDIT_LIMIT_MAX, Number.isFinite(limitRequested) ? limitRequested : 100));
+  const entityType = String(options.entityType || '').trim();
+  const entityId = String(options.entityId || '').trim();
+  const where = [];
+  const params = [];
+  if (entityType) {
+    where.push('entity_type = ?');
+    params.push(entityType);
+  }
+  if (entityId) {
+    where.push('entity_id = ?');
+    params.push(entityId);
+  }
+  const { results } = await allSql(
+    env,
+    `SELECT
+      id,
+      actor_user_id AS actorUserId,
+      actor_name AS actorName,
+      actor_role AS actorRole,
+      entity_type AS entityType,
+      entity_id AS entityId,
+      entity_name AS entityName,
+      coworking_id AS coworkingId,
+      coworking_name AS coworkingName,
+      floor_id AS floorId,
+      floor_name AS floorName,
+      space_id AS spaceId,
+      action,
+      before_json AS beforeJson,
+      after_json AS afterJson,
+      created_at AS createdAt
+     FROM layout_audit
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY created_at DESC
+     LIMIT ?`,
+    [...params, limit]
+  );
+  return (results || []).map(row => ({
+    ...row,
+    before: parseJsonSafe(row.beforeJson, null),
+    after: parseJsonSafe(row.afterJson, null),
+  }));
+}
+
+async function loadSpaceHistory(env, spaceId, limit = 120) {
+  const safeLimit = Math.max(1, Math.min(SPACE_HISTORY_LIMIT_MAX, Number.isFinite(Number(limit)) ? Number(limit) : 120));
+  const { results: bookingRows } = await allSql(
+    env,
+    `SELECT
+      b.id,
+      b.user_id AS userId,
+      b.user_name AS userName,
+      b.space_id AS spaceId,
+      b.space_name AS spaceName,
+      b.date,
+      b.slot_from AS slotFrom,
+      b.slot_to AS slotTo,
+      b.expires_at AS expiresAt,
+      b.created_at AS createdAt,
+      b.status,
+      b.created_by AS createdBy,
+      b.cancelled_at AS cancelledAt,
+      b.cancelled_by AS cancelledBy,
+      cu.name AS cancelledByName
+     FROM bookings b
+     LEFT JOIN users cu ON cu.id = b.cancelled_by
+     WHERE b.space_id = ?
+     ORDER BY b.date DESC, b.slot_from DESC, b.created_at DESC
+     LIMIT ?`,
+    [spaceId, safeLimit]
+  );
+  const bookings = (bookingRows || []).map(row => ({
+    ...normalizeBooking(row),
+    cancelledByName: row.cancelledByName || null,
+  })).filter(Boolean);
+  const events = await loadLayoutAuditEvents(env, { entityType: 'space', entityId: spaceId, limit: safeLimit });
+  const current = await firstSql(
+    env,
+    `SELECT
+      s.id,
+      s.floor_id,
+      s.label,
+      s.seats,
+      s.x,
+      s.y,
+      s.w,
+      s.h,
+      s.color,
+      s.archived_at,
+      s.archived_by,
+      f.name AS floor_name,
+      f.coworking_id,
+      c.name AS coworking_name
+     FROM spaces s
+     LEFT JOIN floors f ON f.id = s.floor_id
+     LEFT JOIN coworkings c ON c.id = f.coworking_id
+     WHERE s.id = ?`,
+    [spaceId]
+  );
+  return {
+    current: current ? {
+      ...snapshotSpaceEntity(current),
+      floorName: current.floor_name || '',
+      coworkingId: current.coworking_id || '',
+      coworkingName: current.coworking_name || '',
+    } : null,
+    bookings,
+    events,
+  };
+}
+
+function parseCsvRow(line) {
+  const values = [];
+  let current = '';
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch === '"' && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else if (ch === '"') {
+        quoted = false;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      quoted = true;
+      continue;
+    }
+    if (ch === ',') {
+      values.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  values.push(current.trim());
+  return values;
+}
+
+function parseCsvText(text) {
+  const lines = String(text || '')
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return [];
+  const headers = parseCsvRow(lines[0]).map(v => String(v || '').trim().toLowerCase());
+  return lines.slice(1).map(line => {
+    const values = parseCsvRow(line);
+    const row = {};
+    headers.forEach((header, index) => {
+      row[header] = String(values[index] || '').trim();
+    });
+    return row;
+  });
+}
+
 async function createDomainTables(env) {
   const statements = [
     `CREATE TABLE IF NOT EXISTS coworkings (
@@ -1321,6 +1966,8 @@ async function createDomainTables(env) {
       w REAL NOT NULL DEFAULT 10,
       h REAL NOT NULL DEFAULT 10,
       color TEXT NOT NULL DEFAULT '#059669',
+      archived_at TEXT,
+      archived_by TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (floor_id) REFERENCES floors(id) ON DELETE CASCADE
@@ -1376,8 +2023,27 @@ async function createDomainTables(env) {
       details_json TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
+    `CREATE TABLE IF NOT EXISTS layout_audit (
+      id TEXT PRIMARY KEY,
+      actor_user_id TEXT,
+      actor_name TEXT NOT NULL,
+      actor_role TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      entity_name TEXT NOT NULL,
+      coworking_id TEXT,
+      coworking_name TEXT,
+      floor_id TEXT,
+      floor_name TEXT,
+      space_id TEXT,
+      action TEXT NOT NULL,
+      before_json TEXT,
+      after_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
     'CREATE INDEX IF NOT EXISTS idx_floors_coworking ON floors(coworking_id)',
     'CREATE INDEX IF NOT EXISTS idx_spaces_floor ON spaces(floor_id)',
+    'CREATE INDEX IF NOT EXISTS idx_spaces_archived ON spaces(archived_at, floor_id)',
     'CREATE INDEX IF NOT EXISTS idx_dept_members_dept ON department_members(department_id)',
     'CREATE INDEX IF NOT EXISTS idx_dept_members_user ON department_members(user_id)',
     'CREATE INDEX IF NOT EXISTS idx_bookings_status_end ON bookings(status, end_utc_ms)',
@@ -1385,6 +2051,8 @@ async function createDomainTables(env) {
     'CREATE INDEX IF NOT EXISTS idx_bookings_user_date ON bookings(user_id, date)',
     'CREATE INDEX IF NOT EXISTS idx_booking_cancel_audit_created ON booking_cancellation_audit(created_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_booking_cancel_audit_actor_role ON booking_cancellation_audit(actor_role, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_layout_audit_created ON layout_audit(created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_layout_audit_entity ON layout_audit(entity_type, entity_id, created_at DESC)',
   ];
 
   for (const sql of statements) {
@@ -1588,6 +2256,7 @@ async function ensureDomainTablesReady(env) {
     domainInitPromise = (async () => {
       await createDomainTables(env);
       await migrateDomainSchemaToRelational(env);
+      await ensureDomainSchemaExtensions(env);
       await migrateLegacyDomainData(env);
       await ensureDomainRevisions(env);
     })().catch(error => {
@@ -1940,6 +2609,83 @@ export async function onRequest(context) {
       return reply({ ok: true, users: list, revokedSessions });
     }
 
+    /* ── POST /users/import-csv (admin) ───────────────── */
+    if (path === '/users/import-csv' && method === 'POST') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const body = await request.json();
+      const csvText = String(body?.csvText || '');
+      const defaultPassword = String(body?.defaultPassword || '').trim();
+      const parsedRows = parseCsvText(csvText);
+      if (!parsedRows.length) return reply({ error: 'CSV пустой или не распознан' }, 400);
+
+      let created = 0;
+      let updated = 0;
+      let skipped = 0;
+      const errors = [];
+      const createdCredentials = [];
+
+      for (const rawRow of parsedRows) {
+        const name = String(rawRow.name || rawRow.fullname || rawRow.fio || rawRow['фио'] || '').trim();
+        const email = String(rawRow.email || rawRow.login || rawRow.mail || '').trim().toLowerCase();
+        const department = String(rawRow.department || rawRow.dept || rawRow['отдел'] || rawRow['департамент'] || '').trim();
+        const role = normalizeRole(String(rawRow.role || rawRow['роль'] || '').trim(), 'user');
+        const rowPassword = String(rawRow.password || rawRow['пароль'] || defaultPassword || '').trim();
+
+        if (!name || !email || !department) {
+          skipped++;
+          errors.push(`Пропущена строка: заполните name/email/department (${email || name || 'пустая строка'})`);
+          continue;
+        }
+        if (!isValidEmail(email)) {
+          skipped++;
+          errors.push(`Некорректный email: ${email}`);
+          continue;
+        }
+
+        const existing = await env.DB.prepare('SELECT id, password FROM users WHERE email = ?').bind(email).first();
+        if (existing?.id) {
+          if (isLdapExternalPassword(existing.password)) {
+            await env.DB.prepare(
+              'UPDATE users SET name = ?, department = ?, role = ? WHERE id = ?'
+            ).bind(name, department, role, existing.id).run();
+          } else {
+            if (rowPassword && rowPassword.length < 6) {
+              skipped++;
+              errors.push(`Пароль слишком короткий для ${email}`);
+              continue;
+            }
+            const nextPassword = rowPassword
+              ? await hashPassword(rowPassword)
+              : existing.password;
+            await env.DB.prepare(
+              'UPDATE users SET name = ?, department = ?, role = ?, password = ? WHERE id = ?'
+            ).bind(name, department, role, nextPassword, existing.id).run();
+          }
+          await ensureUserDepartmentMembership(env, existing.id, department);
+          updated++;
+          continue;
+        }
+
+        const generatedPassword = rowPassword || `Kb${randomHex(4)}`;
+        if (generatedPassword.length < 6) {
+          skipped++;
+          errors.push(`Не удалось создать ${email}: пароль меньше 6 символов`);
+          continue;
+        }
+        const id = `usr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+        const passwordHash = await hashPassword(generatedPassword);
+        await env.DB.prepare(
+          'INSERT INTO users (id, email, password, name, department, role) VALUES (?, ?, ?, ?, ?, ?)'
+        ).bind(id, email, passwordHash, name, department, role).run();
+        await ensureUserDepartmentMembership(env, id, department);
+        created++;
+        createdCredentials.push({ email, password: generatedPassword, name, role, department });
+      }
+
+      const { list } = await getUsersMap(env, { withSessionActive: true });
+      return reply({ ok: true, users: list, created, updated, skipped, errors, createdCredentials });
+    }
+
     /* ── POST /users/prefs (self) ─────────────────────── */
     if (path === '/users/prefs' && method === 'POST') {
       const body = await request.json();
@@ -2018,6 +2764,84 @@ export async function onRequest(context) {
       return reply({ ok: true, users: list, bookings, rev, cancelledBookings });
     }
 
+    /* ── GET /spaces/archived (admin) ─────────────────── */
+    if (path === '/spaces/archived' && method === 'GET') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const floorId = String(url.searchParams.get('floorId') || '').trim();
+      const spaces = await loadArchivedSpaces(env, floorId);
+      return reply({ spaces });
+    }
+
+    /* ── POST /spaces/restore (admin) ─────────────────── */
+    if (path === '/spaces/restore' && method === 'POST') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const { id = '' } = await request.json();
+      const spaceId = String(id).trim();
+      if (!spaceId) return reply({ error: 'Не указана зона' }, 400);
+
+      const row = await firstSql(
+        env,
+        `SELECT
+          s.id,
+          s.floor_id,
+          s.label,
+          s.seats,
+          s.x,
+          s.y,
+          s.w,
+          s.h,
+          s.color,
+          s.archived_at,
+          s.archived_by,
+          f.name AS floor_name,
+          f.coworking_id,
+          c.name AS coworking_name
+         FROM spaces s
+         LEFT JOIN floors f ON f.id = s.floor_id
+         LEFT JOIN coworkings c ON c.id = f.coworking_id
+         WHERE s.id = ?`,
+        [spaceId]
+      );
+      if (!row?.id) return reply({ error: 'Зона не найдена' }, 404);
+      if (!row.archived_at) return reply({ ok: true, alreadyActive: true });
+      if (!row.floor_id) return reply({ error: 'Нельзя восстановить зону без существующего этажа' }, 400);
+
+      await runInTransaction(env, async () => {
+        await runSql(
+          env,
+          `UPDATE spaces
+           SET archived_at = NULL, archived_by = NULL, updated_at = datetime('now')
+           WHERE id = ?`,
+          [spaceId]
+        );
+        await writeLayoutAuditForEntity(env, auth.user, {
+          entityType: 'space',
+          entityId: spaceId,
+          entityName: String(row.label || ''),
+          coworkingId: row.coworking_id || null,
+          coworkingName: row.coworking_name || null,
+          floorId: row.floor_id || null,
+          floorName: row.floor_name || null,
+          spaceId,
+          action: 'restore',
+          before: snapshotSpaceEntity(row),
+          after: { ...snapshotSpaceEntity(row), archivedAt: null, archivedBy: null },
+        });
+      });
+
+      const rev = await bumpDomainRev(env, 'spaces');
+      return reply({ ok: true, rev });
+    }
+
+    /* ── GET /spaces/:id/history (auth) ──────────────── */
+    if (path.startsWith('/spaces/') && path.endsWith('/history') && method === 'GET') {
+      const spaceId = decodeURIComponent(path.slice('/spaces/'.length, -'/history'.length)).trim();
+      if (!spaceId) return reply({ error: 'Не указана зона' }, 400);
+      const requestedLimit = Number(url.searchParams.get('limit') || 120);
+      const history = await loadSpaceHistory(env, spaceId, requestedLimit);
+      return reply(history);
+    }
+
     /* ── GET /bookings (auth) ─────────────────────────── */
     if (path === '/bookings' && method === 'GET') {
       const bookings = await loadBookings(env);
@@ -2047,7 +2871,7 @@ export async function onRequest(context) {
 
       const spaceRow = await firstSql(
         env,
-        'SELECT id, label FROM spaces WHERE id = ?',
+        'SELECT id, label FROM spaces WHERE id = ? AND archived_at IS NULL',
         [valid.spaceId]
       );
       if (!spaceRow?.id) {
@@ -2229,6 +3053,95 @@ export async function onRequest(context) {
       return reply({ ok: true, bookings, rev, cancelled: changed > 0, alreadyCancelled: changed === 0 });
     }
 
+    /* ── POST /bookings/restore (admin/manager) ──────── */
+    if (path === '/bookings/restore' && method === 'POST') {
+      if (!['admin', 'manager'].includes(auth.user.role)) {
+        return reply({ error: 'Недостаточно прав' }, 403);
+      }
+      const { id = '' } = await request.json();
+      const bookingId = String(id).trim();
+      if (!bookingId) return reply({ error: 'Не указан ID брони' }, 400);
+
+      const row = await firstSql(
+        env,
+        `SELECT
+          id,
+          user_id AS userId,
+          user_name AS userName,
+          space_id AS spaceId,
+          space_name AS spaceName,
+          date,
+          slot_from AS slotFrom,
+          slot_to AS slotTo,
+          expires_at AS expiresAt,
+          created_at AS createdAt,
+          status,
+          created_by AS createdBy,
+          cancelled_at AS cancelledAt,
+          cancelled_by AS cancelledBy
+         FROM bookings
+         WHERE id = ?`,
+        [bookingId]
+      );
+      const booking = normalizeBooking(row);
+      if (!booking) return reply({ error: 'Бронирование не найдено' }, 404);
+      if (booking.status !== 'cancelled') return reply({ error: 'Бронирование уже активно' }, 400);
+      if (!isBookingActive({ ...booking, status: 'active' })) {
+        return reply({ error: 'Нельзя восстановить завершённую бронь' }, 400);
+      }
+
+      const owner = await getTargetUser(env, booking.userId);
+      if (!owner) return reply({ error: 'Сотрудник не найден' }, 404);
+      if (!canManageTarget(auth.user, owner)) return reply({ error: 'Недостаточно прав' }, 403);
+
+      const spaceRow = await firstSql(
+        env,
+        'SELECT id, label, archived_at FROM spaces WHERE id = ?',
+        [booking.spaceId]
+      );
+      if (!spaceRow?.id || spaceRow.archived_at) {
+        return reply({ error: 'Рабочее место удалено или архивировано. Сначала восстановите зону.' }, 400);
+      }
+
+      const active = await loadActiveBookingsByDates(env, [booking.date], Date.now());
+      const spaceConflict = active.find(b =>
+        b.id !== booking.id &&
+        b.spaceId === booking.spaceId &&
+        b.date === booking.date &&
+        timesOverlap(booking.slotFrom, booking.slotTo, b.slotFrom, b.slotTo)
+      );
+      if (spaceConflict) return reply({ error: 'Место уже занято на это время' }, 409);
+
+      if (owner.role === 'user') {
+        const sameDay = active.find(b => b.id !== booking.id && b.userId === owner.id && b.date === booking.date);
+        if (sameDay) return reply({ error: 'У сотрудника уже есть бронь на этот день' }, 409);
+      }
+      const userConflict = active.find(b =>
+        b.id !== booking.id &&
+        b.userId === owner.id &&
+        b.date === booking.date &&
+        timesOverlap(booking.slotFrom, booking.slotTo, b.slotFrom, b.slotTo)
+      );
+      if (userConflict) return reply({ error: 'У сотрудника конфликт по времени' }, 409);
+
+      let rev = await getBookingsRev(env);
+      let restored = 0;
+      await runInTransaction(env, async () => {
+        const result = await runSql(
+          env,
+          `UPDATE bookings
+           SET status = 'active', cancelled_at = NULL, cancelled_by = NULL, space_name = ?
+           WHERE id = ? AND status = 'cancelled'`,
+          [String(spaceRow.label || booking.spaceName || ''), bookingId]
+        );
+        restored = Number(result?.meta?.changes || 0);
+        if (restored > 0) rev = await bumpBookingsRev(env);
+      });
+
+      const bookings = await loadBookings(env);
+      return reply({ ok: true, restored: restored > 0, rev, bookings });
+    }
+
     /* ── POST /bookings/cancel-by-spaces (admin) ──────── */
     if (path === '/bookings/cancel-by-spaces' && method === 'POST') {
       if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
@@ -2325,6 +3238,74 @@ export async function onRequest(context) {
       return reply({ events });
     }
 
+    /* ── GET /audit/layout (admin) ───────────────────── */
+    if (path === '/audit/layout' && method === 'GET') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const entityType = String(url.searchParams.get('entityType') || '').trim();
+      const entityId = String(url.searchParams.get('entityId') || '').trim();
+      const requestedLimit = Number(url.searchParams.get('limit') || 200);
+      const events = await loadLayoutAuditEvents(env, { entityType, entityId, limit: requestedLimit });
+      return reply({ events });
+    }
+
+    /* ── Editor locks (admin) ─────────────────────────── */
+    if (path === '/editor-locks' && method === 'GET') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const floorId = String(url.searchParams.get('floorId') || '').trim();
+      if (!floorId) return reply({ error: 'Не указан этаж' }, 400);
+      const lock = await readEditorLock(env, floorId);
+      return reply({ lock, mine: !!lock && String(lock.userId || '') === String(auth.user.id) });
+    }
+
+    if (path === '/editor-locks/acquire' && method === 'POST') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const { floorId = '' } = await request.json();
+      const cleanFloorId = String(floorId).trim();
+      if (!cleanFloorId) return reply({ error: 'Не указан этаж' }, 400);
+      const existing = await readEditorLock(env, cleanFloorId);
+      if (existing && String(existing.userId || '') !== String(auth.user.id)) {
+        return reply({ error: `Этаж уже редактирует ${existing.userName || 'другой администратор'}`, lock: existing }, 409);
+      }
+      const lock = {
+        floorId: cleanFloorId,
+        token: existing?.token || makeSessionToken(),
+        userId: auth.user.id,
+        userName: auth.user.name,
+        userRole: auth.user.role,
+        acquiredAt: existing?.acquiredAt || new Date().toISOString(),
+        expiresAt: new Date(Date.now() + EDITOR_LOCK_TTL_MS).toISOString(),
+      };
+      await writeEditorLock(env, cleanFloorId, lock);
+      return reply({ ok: true, lock, mine: true });
+    }
+
+    if (path === '/editor-locks/heartbeat' && method === 'POST') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const { floorId = '', token = '' } = await request.json();
+      const cleanFloorId = String(floorId).trim();
+      const cleanToken = String(token).trim();
+      if (!cleanFloorId || !cleanToken) return reply({ error: 'Некорректный запрос' }, 400);
+      const existing = await readEditorLock(env, cleanFloorId);
+      if (!existing || existing.token !== cleanToken || String(existing.userId || '') !== String(auth.user.id)) {
+        return reply({ error: 'Блокировка потеряна', lock: existing || null }, 409);
+      }
+      const next = { ...existing, expiresAt: new Date(Date.now() + EDITOR_LOCK_TTL_MS).toISOString() };
+      await writeEditorLock(env, cleanFloorId, next);
+      return reply({ ok: true, lock: next, mine: true });
+    }
+
+    if (path === '/editor-locks/release' && method === 'POST') {
+      if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
+      const { floorId = '', token = '' } = await request.json();
+      const cleanFloorId = String(floorId).trim();
+      if (!cleanFloorId) return reply({ error: 'Не указан этаж' }, 400);
+      const existing = await readEditorLock(env, cleanFloorId);
+      if (existing && (!token || existing.token === token || String(existing.userId || '') === String(auth.user.id))) {
+        await deleteEditorLock(env, cleanFloorId);
+      }
+      return reply({ ok: true });
+    }
+
     /* ── POST /bookings/replace-admin (disabled) ──────── */
     if (path === '/bookings/replace-admin' && method === 'POST') {
       if (auth.user.role !== 'admin') return reply({ error: 'Недостаточно прав' }, 403);
@@ -2369,7 +3350,7 @@ export async function onRequest(context) {
       }
       let result;
       try {
-        result = await writeDomainValue(env, key, value);
+        result = await writeDomainValue(env, key, value, auth.user);
       } catch (error) {
         const msg = String(error?.message || '');
         if (msg.includes('FOREIGN KEY') || msg.includes('constraint')) {
@@ -2389,3 +3370,12 @@ export async function onRequest(context) {
     return reply({ error: 'Internal error' }, 500);
   }
 }
+
+export const __test__ = {
+  parseMskDateTimeToUtcMs,
+  bookingEndUtcMs,
+  timesOverlap,
+  normalizeSpace,
+  parseCsvRow,
+  parseCsvText,
+};

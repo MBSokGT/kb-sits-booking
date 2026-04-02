@@ -331,6 +331,10 @@ let adminCancellationAudit = [];
 let adminCancellationAuditLoadedAt = 0;
 let adminCancellationAuditLoading = false;
 let adminCancellationAuditError = '';
+let adminLayoutAudit = [];
+let adminLayoutAuditLoadedAt = 0;
+let adminLayoutAuditLoading = false;
+let adminLayoutAuditError = '';
 const deptMemberSearch = {};
 let adminBkSearch     = '';
 let adminBkDateFrom   = '';
@@ -339,17 +343,25 @@ let adminBkSortBy     = 'date';
 let adminBkSortDir    = 1;
 let adminBkSelected   = new Set();
 let adminBkUserFilter = '';
+let adminBkStatusFilter = 'active';
+let adminBkCoworkingFilter = '';
+let adminBkFloorFilter = '';
 
 // Editor state
 let editorCoworkingId = null;
 let editorFloorId   = null;
 let editorSpaces    = [];
+let editorArchivedSpaces = [];
+let editorArchivedLoading = false;
+let editorArchivedLoadedFloorId = null;
 let editorDrawing   = false;
 let editorDrag = null;
 let editorDrawStart = null;
 let editorNewZone   = { label:'', seats:1, color:'#059669' };
 let editorSelectedZoneId = null;
 let editorClipboardZone = null;
+let editorLockState = { floorId: null, token: '', mine: false, lock: null, error: '' };
+let editorLockTimer = null;
 let lastPurgeTime   = 0;
 let purgeTimer      = null;
 let sessionCheckTimer = null;
@@ -509,12 +521,15 @@ function bookingEndUtcMs(b) {
   }
   return NaN;
 }
+function isBookingActive(booking, nowUtcMs = Date.now()) {
+  if (!booking || booking.status === 'cancelled') return false;
+  const endMs = bookingEndUtcMs(booking);
+  return Number.isFinite(endMs) && endMs > nowUtcMs;
+}
 function getActiveBookings(source = getBookings(), nowUtcMs = Date.now()) {
   if (!Array.isArray(source)) return [];
   return source.filter(b => {
-    if (b?.status === 'cancelled') return false;
-    const endMs = bookingEndUtcMs(b);
-    return Number.isFinite(endMs) && endMs > nowUtcMs;
+    return isBookingActive(b, nowUtcMs);
   });
 }
 function findBookingForSpace(spaceId, date, from, to) {
@@ -649,6 +664,21 @@ function doLogout(skipServerLogout = false) {
   adminCancellationAuditLoadedAt = 0;
   adminCancellationAuditLoading = false;
   adminCancellationAuditError = '';
+  adminLayoutAudit = [];
+  adminLayoutAuditLoadedAt = 0;
+  adminLayoutAuditLoading = false;
+  adminLayoutAuditError = '';
+  adminBkStatusFilter = 'active';
+  adminBkCoworkingFilter = '';
+  adminBkFloorFilter = '';
+  if (editorLockState.mine && editorLockState.floorId) {
+    releaseEditorLock(editorLockState.floorId).catch(() => {});
+  }
+  stopEditorLockHeartbeat();
+  editorLockState = { floorId: null, token: '', mine: false, lock: null, error: '' };
+  editorArchivedSpaces = [];
+  editorArchivedLoading = false;
+  editorArchivedLoadedFloorId = null;
   // Сброс настроек календаря (чтобы следующий пользователь не видел чужие)
   includeWeekends = false;
   workingSaturdays = [];
@@ -864,6 +894,106 @@ function stopCloudSync() {
     clearInterval(cloudSyncFullTimer);
     cloudSyncFullTimer = null;
   }
+}
+
+function stopEditorLockHeartbeat() {
+  if (editorLockTimer) {
+    clearInterval(editorLockTimer);
+    editorLockTimer = null;
+  }
+}
+
+function startEditorLockHeartbeat() {
+  stopEditorLockHeartbeat();
+  if (!editorLockState.mine || !editorLockState.floorId || !editorLockState.token) return;
+  editorLockTimer = setInterval(async () => {
+    if (!currentUser || currentUser.role !== 'admin') return;
+    const floorId = editorLockState.floorId;
+    const token = editorLockState.token;
+    try {
+      const r = await apiFetch('/api/editor-locks/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ floorId, token }),
+      });
+      if (r.status === 401) return requireRelogin();
+      const data = await r.json();
+      if (!r.ok) {
+        editorLockState = {
+          floorId,
+          token: '',
+          mine: false,
+          lock: data?.lock || null,
+          error: data?.error || 'Блокировка редактирования потеряна',
+        };
+        stopEditorLockHeartbeat();
+        if (currentView === 'admin' && adminActiveTab === 'floors') renderAdminTabContent('floors');
+        return;
+      }
+      editorLockState = { floorId, token: data.lock?.token || token, mine: true, lock: data.lock || null, error: '' };
+    } catch {}
+  }, 30 * 1000);
+}
+
+async function acquireEditorLock(floorId) {
+  const id = String(floorId || '').trim();
+  if (!id || currentUser?.role !== 'admin') return { ok: false };
+  if (editorLockState.mine && editorLockState.floorId === id && editorLockState.token) {
+    return { ok: true, lock: editorLockState.lock };
+  }
+
+  if (editorLockState.mine && editorLockState.floorId && editorLockState.floorId !== id) {
+    await releaseEditorLock(editorLockState.floorId).catch(() => {});
+  }
+
+  const r = await apiFetch('/api/editor-locks/acquire', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ floorId: id }),
+  });
+  if (r.status === 401) {
+    requireRelogin();
+    return { ok: false };
+  }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    editorLockState = {
+      floorId: id,
+      token: '',
+      mine: false,
+      lock: data?.lock || null,
+      error: data?.error || 'Этаж уже редактируется другим администратором',
+    };
+    stopEditorLockHeartbeat();
+    return { ok: false, error: editorLockState.error, lock: editorLockState.lock };
+  }
+
+  editorLockState = {
+    floorId: id,
+    token: data.lock?.token || '',
+    mine: true,
+    lock: data.lock || null,
+    error: '',
+  };
+  startEditorLockHeartbeat();
+  return { ok: true, lock: data.lock || null };
+}
+
+async function releaseEditorLock(floorId) {
+  const id = String(floorId || '').trim();
+  if (!id || !currentUser || currentUser.role !== 'admin') return;
+  const token = editorLockState.floorId === id ? editorLockState.token : '';
+  try {
+    await apiFetch('/api/editor-locks/release', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ floorId: id, token }),
+    });
+  } catch {}
+  if (editorLockState.floorId === id) {
+    editorLockState = { floorId: null, token: '', mine: false, lock: null, error: '' };
+  }
+  stopEditorLockHeartbeat();
 }
 
 async function initApp() {
@@ -1868,6 +1998,18 @@ function canCancelBooking(booking) {
   return false;
 }
 
+function canRestoreBookingEntry(booking) {
+  if (!currentUser || !booking) return false;
+  if (booking.status !== 'cancelled') return false;
+  if (!isBookingActive({ ...booking, status: 'active' })) return false;
+  if (currentUser.role === 'admin') return true;
+  if (currentUser.role !== 'manager') return false;
+  const owner = getUsers().find(u => sameId(u.id, booking.userId));
+  if (!owner) return false;
+  if (sameId(owner.id, currentUser.id)) return true;
+  return owner.role === 'user' && owner.department === currentUser.department;
+}
+
 /* ═══════════════════════════════════════════════════════
    SPACE CLICK → MODAL
 ═══════════════════════════════════════════════════════ */
@@ -1962,16 +2104,20 @@ function spaceClick(spaceId) {
 
   if (isBusy) {
     footEl.innerHTML = canCancelBusy
-      ? `<button class="btn btn-ghost" onclick="closeModal()">Закрыть</button>
+      ? `<button class="btn btn-ghost" onclick="showSpaceHistoryModal('${spaceId}')">История</button>
+         <button class="btn btn-ghost" onclick="closeModal()">Закрыть</button>
          <button class="btn btn-danger" onclick="cancelBooking('${bk.id}');closeModal()">Отменить бронь</button>`
-      : `<button class="btn btn-ghost" onclick="closeModal()">Закрыть</button>`;
+      : `<button class="btn btn-ghost" onclick="showSpaceHistoryModal('${spaceId}')">История</button>
+         <button class="btn btn-ghost" onclick="closeModal()">Закрыть</button>`;
   } else if (isMine) {
     footEl.innerHTML = `
+      <button class="btn btn-ghost" onclick="showSpaceHistoryModal('${spaceId}')">История</button>
       <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
       <button class="btn btn-danger" onclick="cancelBooking('${bk.id}');closeModal()">Отменить бронирование</button>`;
   } else {
     const isFav = getFavoriteSpaceId() === spaceId;
     footEl.innerHTML = `
+      <button class="btn btn-ghost" onclick="showSpaceHistoryModal('${spaceId}')">История</button>
       <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
       <button class="btn btn-primary" onclick="bookSpace('${spaceId}')">
         Забронировать${selDates.length>1?' ('+selDates.length+' дней)':''}
@@ -1980,6 +2126,63 @@ function spaceClick(spaceId) {
 
   document.getElementById('modal-overlay').classList.add('open');
   updateBookingModalSummary();
+}
+
+async function showSpaceHistoryModal(spaceId) {
+  const sp = getSpaces().find(s => sameId(s.id, spaceId));
+  if (!sp) {
+    toast('Место не найдено', 't-red', '✕');
+    return;
+  }
+  const r = await apiFetch(`/api/spaces/${encodeURIComponent(spaceId)}/history?limit=80`);
+  if (r.status === 401) return requireRelogin();
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    toast(data.error || 'Не удалось загрузить историю', 't-red', '✕');
+    return;
+  }
+
+  const bookingRows = Array.isArray(data.bookings) ? data.bookings : [];
+  const eventRows = Array.isArray(data.events) ? data.events : [];
+  document.getElementById('modal-title').textContent = `История: ${escapeHtml(sp.label)}`;
+  document.getElementById('modal-body').innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:1rem;max-height:65vh;overflow:auto">
+      <div class="card" style="padding:.75rem">
+        <div class="card-head" style="padding:0 0 .5rem">Бронирования (${bookingRows.length})</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${bookingRows.length
+            ? bookingRows.slice(0, 30).map(b => `
+              <div style="padding:.5rem;border:1px solid var(--line);border-radius:6px">
+                <div style="display:flex;justify-content:space-between;gap:.5rem;align-items:center">
+                  <strong>${escapeHtml(b.userName || '—')}</strong>
+                  <span class="badge ${b.status === 'cancelled' ? 'badge-red' : 'badge-green'}">${b.status === 'cancelled' ? 'Отменено' : 'Активно'}</span>
+                </div>
+                <div style="font-size:12px;color:var(--ink3)">${fmtHuman(b.date)} · ${escapeHtml(b.slotFrom)}–${escapeHtml(b.slotTo)}</div>
+              </div>
+            `).join('')
+            : `<div style="font-size:12px;color:var(--ink4)">История бронирований пустая</div>`}
+        </div>
+      </div>
+      <div class="card" style="padding:.75rem">
+        <div class="card-head" style="padding:0 0 .5rem">Изменения зоны (${eventRows.length})</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${eventRows.length
+            ? eventRows.slice(0, 30).map(e => `
+              <div style="padding:.5rem;border:1px solid var(--line);border-radius:6px">
+                <div style="display:flex;justify-content:space-between;gap:.5rem;align-items:center">
+                  <strong>${escapeHtml(layoutActionLabel(e.action))}</strong>
+                  <span style="font-size:11px;color:var(--ink4)">${fmtDateTimeHuman(e.createdAt)}</span>
+                </div>
+                <div style="font-size:12px;color:var(--ink3)">Автор: ${escapeHtml(e.actorName || '—')}</div>
+              </div>
+            `).join('')
+            : `<div style="font-size:12px;color:var(--ink4)">Изменений не зафиксировано</div>`}
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-primary" onclick="closeModal()">Закрыть</button>`;
+  document.getElementById('modal-overlay').classList.add('open');
 }
 
 async function bookSpace(spaceId) {
@@ -2196,9 +2399,13 @@ async function _doCancelSelected(ids) {
    VIEW SWITCHING
 ═══════════════════════════════════════════════════════ */
 function switchView(view, btn) {
+  const prevView = currentView;
   // Access control
   if (view === 'admin' && currentUser?.role === 'manager') view = 'team';
   if ((view === 'admin' || view === 'team') && currentUser?.role === 'user') view = 'map';
+  if (prevView === 'admin' && view !== 'admin' && editorLockState.mine && editorLockState.floorId) {
+    releaseEditorLock(editorLockState.floorId).catch(() => {});
+  }
   currentView = view;
   try { localStorage.setItem('lastView', view); } catch(e) {}
 
@@ -2758,6 +2965,31 @@ function renderAdminStats(el, forceDept = null) {
   });
   const maxDay = Math.max(...byDay, 1);
 
+  // Heatmap by weekday × time bucket
+  const bucketDefs = [
+    { id: 'morning', label: 'Утро', from: '08:00', to: '12:00' },
+    { id: 'day', label: 'День', from: '12:00', to: '15:00' },
+    { id: 'evening', label: 'Вечер', from: '15:00', to: '19:00' },
+    { id: 'late', label: 'Позже', from: '19:00', to: '23:00' },
+  ];
+  const heat = dayNames.map(() => bucketDefs.map(() => 0));
+  bks.forEach(b => {
+    const d = new Date(`${b.date}T12:00:00`);
+    const dayIdx = d.getDay() === 0 ? 6 : d.getDay() - 1;
+    bucketDefs.forEach((bucket, idx) => {
+      if (timesOverlap(b.slotFrom, b.slotTo, bucket.from, bucket.to)) {
+        heat[dayIdx][idx] += 1;
+      }
+    });
+  });
+  const heatMax = Math.max(1, ...heat.flat());
+  const heatCell = (value) => {
+    const ratio = value <= 0 ? 0 : value / heatMax;
+    if (ratio === 0) return 'background:rgba(30,41,59,.06);color:var(--ink4)';
+    const alpha = Math.min(0.9, 0.15 + ratio * 0.75);
+    return `background:rgba(37,99,235,${alpha.toFixed(3)});color:#fff`;
+  };
+
   // By space
   const spaceCount = {};
   bks.forEach(b => {
@@ -2821,6 +3053,33 @@ function renderAdminStats(el, forceDept = null) {
       </div>
     </div>
 
+    <div style="margin-bottom:1rem">
+      <div class="card" style="padding:1.25rem">
+        <div class="card-head" style="padding:0 0 1rem">Тепловая карта занятости</div>
+        <div style="overflow:auto">
+          <table class="data-table" style="min-width:520px">
+            <thead>
+              <tr>
+                <th>День</th>
+                ${bucketDefs.map(b => `<th>${b.label}</th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${dayNames.map((day, dayIdx) => `
+                <tr>
+                  <td><strong>${day}</strong></td>
+                  ${bucketDefs.map((_, bucketIdx) => {
+                    const value = heat[dayIdx][bucketIdx];
+                    return `<td style="${heatCell(value)};text-align:center;font-weight:700">${value}</td>`;
+                  }).join('')}
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <div class="card" style="padding:0">
       <div class="card-head">Посещаемость сотрудников</div>
       <div style="padding:0"><table class="data-table">
@@ -2842,13 +3101,14 @@ function renderAdminStats(el, forceDept = null) {
 ═══════════════════════════════════════════════════════ */
 function renderAdminView(activeTab = adminActiveTab) {
   const isManager = currentUser?.role === 'manager';
-  const allowedTabs = new Set(['users', 'floors', 'bookings', 'departments', 'stats', 'audit']);
+  const allowedTabs = new Set(['users', 'floors', 'bookings', 'departments', 'stats', 'audit', 'layoutAudit']);
   if (isManager) {
     allowedTabs.delete('users');
     allowedTabs.delete('floors');
     allowedTabs.delete('bookings');
     allowedTabs.delete('departments');
     allowedTabs.delete('audit');
+    allowedTabs.delete('layoutAudit');
   }
   adminActiveTab = allowedTabs.has(activeTab) ? activeTab : (isManager ? 'stats' : 'floors');
   const el = document.getElementById('view-admin');
@@ -2860,6 +3120,7 @@ function renderAdminView(activeTab = adminActiveTab) {
       ${!isManager ? `<button class="floor-tab-btn ${adminActiveTab==='bookings'?'active':''}" data-admin-tab="bookings" onclick="adminTab('bookings',this)">Все брони</button>` : ''}
       ${!isManager ? `<button class="floor-tab-btn ${adminActiveTab==='departments'?'active':''}" data-admin-tab="departments" onclick="adminTab('departments',this)">Департаменты</button>` : ''}
       ${!isManager ? `<button class="floor-tab-btn ${adminActiveTab==='audit'?'active':''}" data-admin-tab="audit" onclick="adminTab('audit',this)">Журнал отмен</button>` : ''}
+      ${!isManager ? `<button class="floor-tab-btn ${adminActiveTab==='layoutAudit'?'active':''}" data-admin-tab="layoutAudit" onclick="adminTab('layoutAudit',this)">Журнал планировки</button>` : ''}
       <button class="floor-tab-btn ${adminActiveTab==='stats'?'active':''}" data-admin-tab="stats" onclick="adminTab('stats',this)">Статистика отдела</button>
     </div>
     <div id="admin-tab-content"></div>
@@ -2876,11 +3137,16 @@ function renderAdminTabContent(tab) {
   if (tab === 'departments') { renderAdminDepartments(el); return; }
   if (tab === 'stats')       { renderAdminStats(el); return; }
   if (tab === 'audit')       { renderAdminAudit(el); return; }
+  if (tab === 'layoutAudit') { renderAdminLayoutAudit(el); return; }
 }
 
 function adminTab(tab, btn) {
+  const prevTab = adminActiveTab;
   adminActiveTab = tab;
   try { localStorage.setItem('adminActiveTab', tab); } catch(e) {}
+  if (prevTab === 'floors' && tab !== 'floors' && editorLockState.mine && editorLockState.floorId) {
+    releaseEditorLock(editorLockState.floorId).catch(() => {});
+  }
   document.querySelectorAll('#admin-tabs .floor-tab-btn').forEach(b=>b.classList.remove('active'));
   const activeBtn = btn || document.querySelector(`#admin-tabs [data-admin-tab="${tab}"]`);
   if (activeBtn) activeBtn.classList.add('active');
@@ -3008,7 +3274,10 @@ function renderAdminUsers(el) {
         oninput="setAdminUserSearch(this)" style="min-width:220px">
       <span style="font-size:12px;color:var(--ink4)">Найдено: ${filtered.length}</span>
     </div>
-    <button class="btn btn-primary" onclick="showAddUserModal()">+ Добавить аккаунт</button>
+    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-ghost" onclick="showImportUsersModal()">Импорт CSV</button>
+      <button class="btn btn-primary" onclick="showAddUserModal()">+ Добавить аккаунт</button>
+    </div>
   </div>
   <div class="metrics" style="margin-bottom:1.25rem">
     <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${users.length}</div><div class="metric-l">Пользователей</div></div>
@@ -3222,6 +3491,61 @@ function showAddUserModal() {
   document.getElementById('modal-overlay').classList.add('open');
 }
 
+function showImportUsersModal() {
+  document.getElementById('modal-title').textContent = 'Импорт пользователей из CSV';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="field"><label>CSV (колонки: name,email,department,role,password)</label>
+      <textarea id="iu-csv" rows="10" style="width:100%;resize:vertical" placeholder="name,email,department,role,password&#10;Иван Иванов,ivan@company.ru,IT,user,Temp1234"></textarea>
+    </div>
+    <div class="field"><label>Пароль по умолчанию (если в строке нет password)</label>
+      <input type="text" id="iu-default-password" placeholder="Например: Temp1234">
+    </div>
+    <div style="font-size:12px;color:var(--ink4)">
+      role: user | manager | admin
+    </div>
+    <div id="iu-err" style="display:none;color:var(--red);font-size:13px"></div>`;
+  document.getElementById('modal-foot').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+    <button class="btn btn-primary" onclick="importUsersFromCsv()">Импортировать</button>`;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+async function importUsersFromCsv() {
+  const csvText = document.getElementById('iu-csv')?.value || '';
+  const defaultPassword = document.getElementById('iu-default-password')?.value || '';
+  const err = document.getElementById('iu-err');
+  const showErr = (msg) => { if (err) { err.textContent = msg; err.style.display = 'block'; } };
+  if (!csvText.trim()) return showErr('Вставьте CSV');
+  if (defaultPassword && defaultPassword.length < 6) return showErr('Пароль по умолчанию минимум 6 символов');
+
+  const r = await apiFetch('/api/users/import-csv', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ csvText, defaultPassword }),
+  });
+  if (r.status === 401) return requireRelogin();
+  const data = await r.json();
+  if (!r.ok) return showErr(data.error || 'Не удалось выполнить импорт');
+
+  if (Array.isArray(data.users)) saveUsers(data.users);
+  closeModal();
+  const errText = Array.isArray(data.errors) && data.errors.length
+    ? ` Ошибок: ${data.errors.length}.`
+    : '';
+  toast(`Импорт завершён. Создано: ${data.created || 0}, обновлено: ${data.updated || 0}, пропущено: ${data.skipped || 0}.${errText}`, 't-green', '✓');
+  if (currentView === 'admin') renderAdminView('users');
+
+  if (Array.isArray(data.createdCredentials) && data.createdCredentials.length) {
+    const credsCsv = ['email,password,name,role,department']
+      .concat(data.createdCredentials.map(c => `${escapeCSV(c.email)},${escapeCSV(c.password)},${escapeCSV(c.name)},${escapeCSV(c.role)},${escapeCSV(c.department)}`))
+      .join('\n');
+    const a = document.createElement('a');
+    a.href = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(credsCsv);
+    a.download = `created-users-${fmtDate(new Date())}.csv`;
+    a.click();
+  }
+}
+
 async function createAdminUser() {
   const name = document.getElementById('au-name')?.value.trim() || '';
   const department = document.getElementById('au-dept')?.value.trim() || '';
@@ -3310,12 +3634,46 @@ async function deleteUser(uid, name) {
 }
 
 /* ── Admin: All bookings ──────────────────────────────────────────────────── */
-function renderAdminBookings(el) {
-  purgeExpired();
-  const bksAll = getBookings().sort((a,b)=>a.date.localeCompare(b.date));
-  const bks    = getActiveBookings(bksAll);
+function getAdminFilteredBookings() {
+  const bksAll = getBookings().sort((a, b) => a.date.localeCompare(b.date));
   const spaces = getSpaces();
   const floors = getFloors();
+
+  let scoped = bksAll;
+  if (adminBkStatusFilter === 'active') scoped = getActiveBookings(bksAll);
+  if (adminBkStatusFilter === 'cancelled') scoped = bksAll.filter(b => b.status === 'cancelled');
+
+  let filtered = scoped;
+  if (adminBkUserFilter) filtered = filtered.filter(b => sameId(b.userId, adminBkUserFilter));
+  if (adminBkCoworkingFilter || adminBkFloorFilter || adminBkSearch) {
+    filtered = filtered.filter(b => {
+      const sp = spaces.find(s => sameId(s.id, b.spaceId));
+      const fl = floors.find(f => sameId(f.id, sp?.floorId));
+      if (adminBkCoworkingFilter && !sameId(fl?.coworkingId, adminBkCoworkingFilter)) return false;
+      if (adminBkFloorFilter && !sameId(fl?.id, adminBkFloorFilter)) return false;
+      if (adminBkSearch) {
+        const q = adminBkSearch.toLowerCase();
+        const hay = `${b.userName} ${sp?.label || ''} ${fl?.name || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }
+  if (adminBkDateFrom) filtered = filtered.filter(b => b.date >= adminBkDateFrom);
+  if (adminBkDateTo) filtered = filtered.filter(b => b.date <= adminBkDateTo);
+
+  filtered = [...filtered].sort((a, b) => {
+    if (adminBkSortBy === 'name') return adminBkSortDir * a.userName.localeCompare(b.userName, 'ru');
+    return adminBkSortDir * a.date.localeCompare(b.date);
+  });
+
+  return { bksAll, scoped, filtered, spaces, floors };
+}
+
+function renderAdminBookings(el) {
+  purgeExpired();
+  const { bksAll, scoped, filtered, spaces, floors } = getAdminFilteredBookings();
+  const bks = getActiveBookings(bksAll);
   const users  = getUsers();
   const totalSpaces = spaces.length;
   const today = new Date();
@@ -3348,28 +3706,20 @@ function renderAdminBookings(el) {
     dailyRows.push({ds,dayBookings,dayUniqueSpaces,loadPct});
   }
 
-  // --- Filter & sort ---
-  let filtered = bks;
-  if (adminBkUserFilter) filtered = filtered.filter(b=>b.userId===adminBkUserFilter);
-  if (adminBkSearch) {
-    const q=adminBkSearch.toLowerCase();
-    filtered = filtered.filter(b=>b.userName.toLowerCase().includes(q)||(spaces.find(s=>s.id===b.spaceId)?.label||'').toLowerCase().includes(q));
-  }
-  if (adminBkDateFrom) filtered = filtered.filter(b=>b.date>=adminBkDateFrom);
-  if (adminBkDateTo)   filtered = filtered.filter(b=>b.date<=adminBkDateTo);
-  filtered = [...filtered].sort((a,b)=>{
-    if (adminBkSortBy==='name') return adminBkSortDir*a.userName.localeCompare(b.userName,'ru');
-    return adminBkSortDir*a.date.localeCompare(b.date);
-  });
-  adminBkSelected = new Set([...adminBkSelected].filter(id=>filtered.some(b=>b.id===id)));
-  const allChecked = filtered.length>0 && filtered.every(b=>adminBkSelected.has(b.id));
+  adminBkSelected = new Set([...adminBkSelected].filter(id => filtered.some(b => b.id === id && canCancelBooking(b))));
+  const cancelableRows = filtered.filter(b => canCancelBooking(b));
+  const allChecked = cancelableRows.length > 0 && cancelableRows.every(b => adminBkSelected.has(b.id));
   const someChecked = adminBkSelected.size>0;
-  const hasFilters = adminBkSearch||adminBkDateFrom||adminBkDateTo||adminBkUserFilter;
+  const hasFilters = adminBkSearch || adminBkDateFrom || adminBkDateTo || adminBkUserFilter || adminBkStatusFilter !== 'active' || adminBkCoworkingFilter || adminBkFloorFilter;
 
   const uPill = adminBkUserFilter ? (()=>{
     const u=users.find(u=>u.id===adminBkUserFilter);
     return `<span class="filter-pill">${escapeHtml(u?.name||'?')}<button onclick="adminBkSetUserFilter('')">×</button></span>`;
   })() : '';
+  const coworkings = getCoworkings();
+  const floorOptions = adminBkCoworkingFilter
+    ? floors.filter(f => sameId(f.coworkingId, adminBkCoworkingFilter))
+    : floors;
 
   el.innerHTML = `
     <div class="metrics" style="margin-bottom:1.25rem">
@@ -3401,31 +3751,47 @@ function renderAdminBookings(el) {
 
     <div class="card">
       <div class="card-head" style="flex-wrap:wrap;gap:.5rem">
-        <span>Все бронирования (${filtered.length}${hasFilters?` из ${bks.length}`:''})</span>
+        <span>Бронирования (${filtered.length}${hasFilters?` из ${scoped.length}`:''})</span>
         ${uPill}
         <div style="display:flex;gap:.5rem;align-items:center;margin-left:auto;flex-wrap:wrap">
           ${someChecked?`<button class="btn btn-danger btn-sm" onclick="adminBkCancelSelected()">Отменить выбранные (${adminBkSelected.size})</button>`:''}
+          <select class="role-sel" onchange="adminBkSetStatus(this.value)" style="width:140px">
+            <option value="active" ${adminBkStatusFilter==='active'?'selected':''}>Активные</option>
+            <option value="cancelled" ${adminBkStatusFilter==='cancelled'?'selected':''}>Отменённые</option>
+            <option value="all" ${adminBkStatusFilter==='all'?'selected':''}>Все</option>
+          </select>
+          <select class="role-sel" onchange="adminBkSetCoworking(this.value)" style="width:170px">
+            <option value="">Все коворкинги</option>
+            ${coworkings.map(c => `<option value="${c.id}" ${sameId(c.id, adminBkCoworkingFilter)?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+          <select class="role-sel" onchange="adminBkSetFloor(this.value)" style="width:150px">
+            <option value="">Все этажи</option>
+            ${floorOptions.map(f => `<option value="${f.id}" ${sameId(f.id, adminBkFloorFilter)?'selected':''}>${escapeHtml(f.name)}</option>`).join('')}
+          </select>
           <input type="text" class="search-input" placeholder="Поиск по имени, месту…" value="${escapeHtml(adminBkSearch)}"
             oninput="adminBkSetSearch(this.value)" style="width:190px">
           <input type="date" class="search-input" value="${adminBkDateFrom}" onchange="adminBkSetDateFrom(this.value)" title="С даты" style="width:130px">
           <input type="date" class="search-input" value="${adminBkDateTo}" onchange="adminBkSetDateTo(this.value)" title="По дату" style="width:130px">
           ${hasFilters?`<button class="btn btn-ghost btn-sm" onclick="adminBkClearFilters()">✕ Сбросить</button>`:''}
-          <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇ CSV</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportCSV(getAdminFilteredBookings().filtered)">⬇ CSV</button>
         </div>
       </div>
       <div style="padding:0"><table class="data-table">
         <thead><tr>
-          <th style="width:32px"><input type="checkbox" ${allChecked?'checked':''} ${!filtered.length?'disabled':''} onchange="adminBkToggleAll(this.checked)"></th>
+          <th style="width:32px"><input type="checkbox" ${allChecked?'checked':''} ${!cancelableRows.length?'disabled':''} onchange="adminBkToggleAll(this.checked)"></th>
           <th class="col-sortable" onclick="adminBkSort('date')">Дата ${adminBkSortBy==='date'?(adminBkSortDir===1?'↑':'↓'):'↕'}</th>
           <th class="col-sortable" onclick="adminBkSort('name')">Сотрудник ${adminBkSortBy==='name'?(adminBkSortDir===1?'↑':'↓'):'↕'}</th>
-          <th>Отдел</th><th>Место</th><th>Время</th><th></th>
+          <th>Отдел</th><th>Место</th><th>Время</th><th>Статус</th><th></th>
         </tr></thead>
-        <tbody>${!filtered.length?`<tr><td colspan="7" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>`:
+        <tbody>${!filtered.length?`<tr><td colspan="9" style="text-align:center;color:var(--ink4);padding:2rem">Нет бронирований</td></tr>`:
           filtered.map(b=>{
             const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
             const u=users.find(u=>u.id===b.userId); const checked=adminBkSelected.has(b.id);
+            const cancelled = b.status === 'cancelled';
+            const canCancel = canCancelBooking(b);
+            const canRestore = canRestoreBookingEntry(b);
             return `<tr class="${checked?'row-selected':''}">
-              <td><input type="checkbox" ${checked?'checked':''} onchange="adminBkToggle('${b.id}',this.checked)"></td>
+              <td><input type="checkbox" ${checked?'checked':''} ${!canCancel?'disabled':''} onchange="adminBkToggle('${b.id}',this.checked)"></td>
               <td>${fmtHuman(b.date)}</td>
               <td>
                 <button class="btn-link" onclick="adminBkSetUserFilter('${escapeHtml(b.userId)}')">${escapeHtml(b.userName)}</button>
@@ -3434,7 +3800,14 @@ function renderAdminBookings(el) {
               <td style="font-size:12px;color:var(--ink3)">${escapeHtml(u?.department||'—')}</td>
               <td><strong>${escapeHtml(sp?.label||b.spaceName||'?')}</strong><br><span style="font-size:11px;color:var(--ink3)">${escapeHtml(fl?.name||'?')}</span></td>
               <td style="font-family:'DM Mono',monospace;font-size:12px">${b.slotFrom}–${b.slotTo}</td>
-              <td>${canCancelBooking(b)?`<button class="btn btn-danger btn-xs" onclick="adminCancelBk('${b.id}')">Отменить</button>`:'<span style="color:var(--ink4)">—</span>'}</td>
+              <td>${cancelled
+                ? `<span class="badge badge-red">Отменено</span>`
+                : `<span class="badge badge-green">Активно</span>`}</td>
+              <td>${canCancel
+                ? `<button class="btn btn-danger btn-xs" onclick="adminCancelBk('${b.id}')">Отменить</button>`
+                : canRestore
+                ? `<button class="btn btn-ghost btn-xs" onclick="adminRestoreBk('${b.id}')">Восстановить</button>`
+                : '<span style="color:var(--ink4)">—</span>'}</td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -3446,44 +3819,90 @@ async function adminCancelBk(id) {
   await cancelBooking(id, { force: true });
   if (currentView === 'admin') renderAdminView();
 }
-function adminBkSetSearch(v)     { adminBkSearch=String(v||'').toLowerCase(); renderAdminView(); }
-function adminBkSetDateFrom(v)   { adminBkDateFrom=v||''; renderAdminView(); }
-function adminBkSetDateTo(v)     { adminBkDateTo=v||''; renderAdminView(); }
-function adminBkSetUserFilter(v) { adminBkUserFilter=v||''; adminBkSelected=new Set(); renderAdminView(); }
-function adminBkClearFilters()   { adminBkSearch='';adminBkDateFrom='';adminBkDateTo='';adminBkUserFilter='';adminBkSelected=new Set(); renderAdminView(); }
+async function adminRestoreBk(id) {
+  const r = await apiFetch('/api/bookings/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+  if (r.status === 401) return requireRelogin();
+  const data = await r.json();
+  if (!r.ok) return toast(data.error || 'Не удалось восстановить бронирование', 't-red', '✕');
+  if (Array.isArray(data.bookings)) saveBookings(data.bookings);
+  toast('Бронирование восстановлено', 't-green', '✓');
+  if (currentView === 'admin') renderAdminView('bookings');
+}
+function adminBkSetSearch(v)     { adminBkSearch=String(v||'').toLowerCase(); renderAdminView('bookings'); }
+function adminBkSetDateFrom(v)   { adminBkDateFrom=v||''; renderAdminView('bookings'); }
+function adminBkSetDateTo(v)     { adminBkDateTo=v||''; renderAdminView('bookings'); }
+function adminBkSetUserFilter(v) { adminBkUserFilter=v||''; adminBkSelected=new Set(); renderAdminView('bookings'); }
+function adminBkSetStatus(v)     { adminBkStatusFilter=String(v||'active'); adminBkSelected=new Set(); renderAdminView('bookings'); }
+function adminBkSetCoworking(v)  {
+  adminBkCoworkingFilter = String(v || '');
+  if (adminBkFloorFilter) {
+    const floor = getFloors().find(f => sameId(f.id, adminBkFloorFilter));
+    if (!floor || !sameId(floor.coworkingId, adminBkCoworkingFilter)) adminBkFloorFilter = '';
+  }
+  adminBkSelected = new Set();
+  renderAdminView('bookings');
+}
+function adminBkSetFloor(v)      { adminBkFloorFilter=String(v||''); adminBkSelected=new Set(); renderAdminView('bookings'); }
+function adminBkClearFilters()   {
+  adminBkSearch='';adminBkDateFrom='';adminBkDateTo='';adminBkUserFilter='';adminBkSelected=new Set();
+  adminBkStatusFilter='active';
+  adminBkCoworkingFilter='';
+  adminBkFloorFilter='';
+  renderAdminView('bookings');
+}
 function adminBkSort(by) {
   if (adminBkSortBy===by) adminBkSortDir*=-1; else { adminBkSortBy=by; adminBkSortDir=1; }
-  renderAdminView();
+  renderAdminView('bookings');
 }
 function adminBkToggle(id, checked) {
   if (checked) adminBkSelected.add(id); else adminBkSelected.delete(id);
-  renderAdminView();
+  renderAdminView('bookings');
 }
 function adminBkToggleAll(checked) {
-  const filtered = getActiveBookings(getBookings());
-  if (checked) filtered.forEach(b=>adminBkSelected.add(b.id)); else adminBkSelected.clear();
-  renderAdminView();
+  const filtered = getAdminFilteredBookings().filtered;
+  if (checked) filtered.forEach(b => { if (canCancelBooking(b)) adminBkSelected.add(b.id); });
+  else adminBkSelected.clear();
+  renderAdminView('bookings');
 }
 function adminBkCancelSelected() {
   const ids=[...adminBkSelected]; if(!ids.length) return;
   confirmAction(`Отменить ${ids.length} бронирование(й)?`, async ()=>{
-    for (const id of ids) await cancelBooking(id);
+    for (const id of ids) await cancelBooking(id, { force: true });
     adminBkSelected=new Set();
-    renderAdminView();
+    renderAdminView('bookings');
   });
 }
 
-function exportCSV() {
-  const bks = getBookings(); const spaces = getSpaces(); const floors = getFloors();
-  const rows = [['Место','Этаж','Сотрудник','Дата','Слот от','Слот до','Истекает']];
+function exportCSV(inputBookings = null) {
+  const bks = Array.isArray(inputBookings) ? inputBookings : getBookings();
+  const spaces = getSpaces();
+  const floors = getFloors();
+  const rows = [['Коворкинг','Этаж','Место','Сотрудник','Дата','Слот от','Слот до','Статус','Истекает']];
   bks.forEach(b => {
-    const sp=spaces.find(s=>s.id===b.spaceId); const fl=floors.find(f=>f.id===sp?.floorId);
-    rows.push([escapeCSV(sp?.label || b.spaceName || '?'), escapeCSV(fl?.name||'?'), escapeCSV(b.userName), escapeCSV(b.date), escapeCSV(b.slotFrom), escapeCSV(b.slotTo), escapeCSV(b.expiresAt)]);
+    const sp = spaces.find(s => sameId(s.id, b.spaceId));
+    const fl = floors.find(f => sameId(f.id, sp?.floorId));
+    const cw = getCoworkings().find(c => sameId(c.id, fl?.coworkingId));
+    rows.push([
+      escapeCSV(cw?.name || '?'),
+      escapeCSV(fl?.name || '?'),
+      escapeCSV(sp?.label || b.spaceName || '?'),
+      escapeCSV(b.userName),
+      escapeCSV(b.date),
+      escapeCSV(b.slotFrom),
+      escapeCSV(b.slotTo),
+      escapeCSV(b.status === 'cancelled' ? 'cancelled' : 'active'),
+      escapeCSV(b.expiresAt),
+    ]);
   });
   const csv = rows.map(r=>r.join(',')).join('\n');
   const a = document.createElement('a');
   a.href = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(csv);
-  a.download = 'bookings.csv'; a.click();
+  a.download = `bookings-${fmtDate(new Date())}.csv`;
+  a.click();
 }
 
 function cancellationReasonLabel(reason) {
@@ -3567,9 +3986,142 @@ function renderAdminAudit(el) {
     </div>`;
 }
 
+async function loadAdminLayoutAudit(force = false) {
+  if (currentUser?.role !== 'admin') return;
+  if (adminLayoutAuditLoading) return;
+  if (!force && adminLayoutAuditLoadedAt && (Date.now() - adminLayoutAuditLoadedAt) < 15000) return;
+  adminLayoutAuditLoading = true;
+  adminLayoutAuditError = '';
+  try {
+    const r = await apiFetch('/api/audit/layout?limit=400');
+    if (r.status === 401) return requireRelogin();
+    const data = await r.json();
+    if (!r.ok) {
+      adminLayoutAuditError = data.error || 'Не удалось загрузить журнал';
+      return;
+    }
+    adminLayoutAudit = Array.isArray(data.events) ? data.events : [];
+    adminLayoutAuditLoadedAt = Date.now();
+  } catch {
+    adminLayoutAuditError = 'Нет соединения с сервером';
+  } finally {
+    adminLayoutAuditLoading = false;
+    if (currentView === 'admin' && adminActiveTab === 'layoutAudit') renderAdminTabContent('layoutAudit');
+  }
+}
+
+function layoutActionLabel(action) {
+  const map = {
+    create: 'Создание',
+    update: 'Изменение',
+    archive: 'Архивация',
+    restore: 'Восстановление',
+    delete: 'Удаление',
+  };
+  return map[String(action || '')] || 'Изменение';
+}
+
+function entityTypeLabel(entityType) {
+  const map = {
+    coworking: 'Коворкинг',
+    floor: 'Этаж',
+    space: 'Зона',
+  };
+  return map[String(entityType || '')] || 'Сущность';
+}
+
+function renderAdminLayoutAudit(el) {
+  const events = adminLayoutAudit.slice();
+  if (!adminLayoutAuditLoadedAt && !adminLayoutAuditLoading) {
+    el.innerHTML = `<div class="card"><div class="card-head">Журнал планировки</div><div style="padding:1rem;color:var(--ink3)">Загружаю журнал…</div></div>`;
+    loadAdminLayoutAudit(true);
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="metrics" style="margin-bottom:1.25rem">
+      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${events.length}</div><div class="metric-l">Событий</div></div>
+      <div class="metric mt-amber"><div class="metric-n" style="color:var(--amber)">${events.filter(e => e.entityType === 'space').length}</div><div class="metric-l">Операций по зонам</div></div>
+      <div class="metric mt-purple"><div class="metric-n" style="color:var(--purple)">${events.filter(e => e.entityType === 'floor').length}</div><div class="metric-l">Операций по этажам</div></div>
+      <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${events.filter(e => e.entityType === 'coworking').length}</div><div class="metric-l">Операций по коворкингам</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head">История изменений планировки
+        <button class="btn btn-ghost btn-sm" onclick="loadAdminLayoutAudit(true)">Обновить</button>
+      </div>
+      <div style="padding:0"><table class="data-table">
+        <thead><tr><th>Когда</th><th>Кто</th><th>Тип</th><th>Объект</th><th>Действие</th><th>Этаж / Коворкинг</th></tr></thead>
+        <tbody>${
+          adminLayoutAuditLoading
+            ? `<tr><td colspan="6" style="text-align:center;color:var(--ink4);padding:2rem">Загрузка…</td></tr>`
+            : adminLayoutAuditError
+            ? `<tr><td colspan="6" style="text-align:center;color:var(--red);padding:2rem">${escapeHtml(adminLayoutAuditError)}</td></tr>`
+            : !events.length
+            ? `<tr><td colspan="6" style="text-align:center;color:var(--ink4);padding:2rem">Журнал пока пуст</td></tr>`
+            : events.map(e => `
+              <tr>
+                <td style="font-size:12px;color:var(--ink3)">${fmtDateTimeHuman(e.createdAt)}</td>
+                <td>${escapeHtml(e.actorName || '—')}<br><span style="font-size:11px;color:var(--ink4)">${escapeHtml(e.actorRole || '')}</span></td>
+                <td>${escapeHtml(entityTypeLabel(e.entityType))}</td>
+                <td>${escapeHtml(e.entityName || e.entityId || '—')}</td>
+                <td><span class="badge badge-blue">${escapeHtml(layoutActionLabel(e.action))}</span></td>
+                <td style="font-size:12px;color:var(--ink3)">${escapeHtml(e.floorName || '—')} / ${escapeHtml(e.coworkingName || '—')}</td>
+              </tr>
+            `).join('')
+        }
+        </tbody></table></div>
+    </div>`;
+}
+
 /* ═══════════════════════════════════════════════════════
    ADMIN: FLOOR EDITOR
 ═══════════════════════════════════════════════════════ */
+async function loadEditorArchivedSpaces(force = false) {
+  if (!editorFloorId || currentUser?.role !== 'admin') return;
+  if (editorArchivedLoading) return;
+  if (!force && sameId(editorArchivedLoadedFloorId, editorFloorId)) return;
+  editorArchivedLoading = true;
+  try {
+    const r = await apiFetch(`/api/spaces/archived?floorId=${encodeURIComponent(editorFloorId)}`);
+    if (r.status === 401) return requireRelogin();
+    const data = await r.json();
+    if (!r.ok) {
+      toast(data.error || 'Не удалось загрузить архив зон', 't-red', '✕');
+      return;
+    }
+    editorArchivedSpaces = Array.isArray(data.spaces) ? data.spaces : [];
+    editorArchivedLoadedFloorId = editorFloorId;
+  } catch {
+    toast('Нет соединения с сервером', 't-red', '✕');
+  } finally {
+    editorArchivedLoading = false;
+    if (currentView === 'admin' && adminActiveTab === 'floors') renderAdminTabContent('floors');
+  }
+}
+
+async function restoreArchivedZone(spaceId) {
+  const id = String(spaceId || '').trim();
+  if (!id) return;
+  const r = await apiFetch('/api/spaces/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+  if (r.status === 401) return requireRelogin();
+  const data = await r.json();
+  if (!r.ok) return toast(data.error || 'Не удалось восстановить зону', 't-red', '✕');
+  await syncFromServer().catch(() => {});
+  editorArchivedSpaces = editorArchivedSpaces.filter(z => !sameId(z.id, id));
+  editorArchivedLoadedFloorId = null;
+  renderAdminTabContent('floors');
+  toast('Зона восстановлена', 't-green', '✓');
+}
+
+function retryEditorLock() {
+  editorLockState.error = '';
+  renderEditorForFloor();
+}
+
 function renderAdminFloors(el) {
   if (!el) return;
   const coworkings = getCoworkings();
@@ -3793,6 +4345,9 @@ function deleteCoworking(id) {
   if (!cw) return;
   confirmAction(`Вы уверены, что хотите удалить коворкинг «${escapeHtml(cw.name)}» со всеми этажами и бронированиями?`, async () => {
     const floorIds = getFloors().filter(f=>f.coworkingId===id).map(f=>f.id);
+    if (editorLockState.mine && floorIds.some(fid => sameId(fid, editorLockState.floorId))) {
+      await releaseEditorLock(editorLockState.floorId);
+    }
     const spaceIds = getSpaces().filter(s=>floorIds.includes(s.floorId)).map(s=>s.id);
     const ok = await cancelBookingsBySpacesAsAdmin(spaceIds, 'coworking_deleted', cw.name);
     if (!ok) return;
@@ -3818,10 +4373,16 @@ function deleteCoworking(id) {
 }
 
 function selectEditorFloor(id, btn) {
+  const prevFloorId = editorFloorId;
   editorFloorId = id;
   editorZoom = 1.0;
+  editorArchivedSpaces = [];
+  editorArchivedLoadedFloorId = null;
   document.querySelectorAll('#editor-floor-tabs .floor-tab-btn').forEach(b=>b.classList.remove('active'));
   if (btn) btn.classList.add('active');
+  if (prevFloorId && prevFloorId !== id) {
+    releaseEditorLock(prevFloorId).catch(() => {});
+  }
   renderEditorForFloor();
 }
 
@@ -3874,6 +4435,9 @@ function renderEditorForFloor() {
   const layout = document.getElementById('editor-layout');
   if (!layout) return;
   if (!floor) {
+    if (editorLockState.mine && editorLockState.floorId) {
+      releaseEditorLock(editorLockState.floorId).catch(() => {});
+    }
     layout.innerHTML = `<div class="empty" style="grid-column:1/-1;padding:2rem">
       <p>Создайте этаж для этого коворкинга</p>
     </div>`;
@@ -3881,9 +4445,35 @@ function renderEditorForFloor() {
   }
   editorSpaces = getSpaces().filter(s=>s.floorId===editorFloorId).map(s=>({...s}));
 
+  if (currentUser?.role === 'admin' && floor?.id) {
+    const shouldAcquire = !sameId(editorLockState.floorId, floor.id) || (!editorLockState.mine && !editorLockState.error);
+    if (shouldAcquire) {
+      acquireEditorLock(floor.id).then(() => {
+        if (currentView === 'admin' && adminActiveTab === 'floors') renderAdminTabContent('floors');
+      }).catch(() => {});
+    }
+    if (!sameId(editorArchivedLoadedFloorId, floor.id) && !editorArchivedLoading) {
+      loadEditorArchivedSpaces().catch(() => {});
+    }
+  }
+
+  const lockMine = currentUser?.role !== 'admin'
+    ? true
+    : (sameId(editorLockState.floorId, floor.id) && editorLockState.mine);
+  const lockError = currentUser?.role === 'admin' && sameId(editorLockState.floorId, floor.id)
+    ? String(editorLockState.error || '')
+    : '';
+  const lockOwner = currentUser?.role === 'admin' && editorLockState.lock && !lockMine
+    ? String(editorLockState.lock.userName || 'другой администратор')
+    : '';
+
   layout.innerHTML = `
     <!-- CANVAS CARD -->
     <div class="editor-canvas-card">
+      ${lockMine ? '' : `<div style="margin:.75rem .75rem 0 .75rem;padding:.6rem .75rem;border:1px solid rgba(239,68,68,.25);background:var(--red-l);color:var(--red);border-radius:8px;font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:.75rem">
+        <span>${escapeHtml(lockError || `Этаж сейчас редактирует ${lockOwner}. Просмотр доступен, сохранение заблокировано.`)}</span>
+        <button class="btn btn-ghost btn-xs" onclick="retryEditorLock()">Повторить</button>
+      </div>`}
       <div class="editor-toolbar">
         <span style="font-size:12px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.7px">
           ${escapeHtml(floor.name)}
@@ -3944,7 +4534,7 @@ function renderEditorForFloor() {
       <div class="panel-card">
         <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
           Зоны (${editorSpaces.length})
-          <button class="btn btn-primary btn-sm" onclick="saveEditorSpaces()">💾 Сохранить</button>
+          <button class="btn btn-primary btn-sm" onclick="saveEditorSpaces()" ${lockMine ? '' : 'disabled title="Сохранение заблокировано: этаж редактирует другой администратор"'}>💾 Сохранить</button>
         </div>
         <div id="editor-zones-list" style="display:flex;flex-direction:column;gap:5px;max-height:300px;overflow-y:auto">
           ${editorSpaces.length ? editorSpaces.map(sp=>`
@@ -3958,6 +4548,24 @@ function renderEditorForFloor() {
               <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')" title="Удалить">✕</button>
             </div>`).join('') :
             `<div style="font-size:12px;color:var(--ink4);text-align:center;padding:.75rem">Нет зон</div>`}
+        </div>
+        <div style="margin-top:.75rem;border-top:1px dashed var(--line);padding-top:.6rem">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-bottom:.4rem">
+            <div style="font-size:12px;font-weight:700;color:var(--ink3)">Архивированные зоны (${editorArchivedSpaces.length})</div>
+            <button class="btn btn-ghost btn-xs" onclick="loadEditorArchivedSpaces(true)" ${editorArchivedLoading ? 'disabled' : ''}>Обновить</button>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:5px;max-height:160px;overflow:auto">
+            ${editorArchivedLoading
+              ? `<div style="font-size:12px;color:var(--ink4)">Загрузка…</div>`
+              : editorArchivedSpaces.length
+              ? editorArchivedSpaces.map(sp => `
+                <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;font-size:12px">
+                  <span style="flex:1">${escapeHtml(sp.label || sp.id)}</span>
+                  <button class="btn btn-ghost btn-xs" onclick="restoreArchivedZone('${sp.id}')">Восстановить</button>
+                </div>
+              `).join('')
+              : `<div style="font-size:12px;color:var(--ink4)">Архив пуст</div>`}
+          </div>
         </div>
       </div>
 
@@ -4226,6 +4834,13 @@ function updateEditorZonesList() {
 }
 
 async function saveEditorSpaces() {
+  if (currentUser?.role === 'admin') {
+    const lockMine = sameId(editorLockState.floorId, editorFloorId) && editorLockState.mine;
+    if (!lockMine) {
+      toast(editorLockState.error || 'Сохранение заблокировано: этаж редактируется другим администратором', 't-red', '✕');
+      return;
+    }
+  }
   const allSpaces   = getSpaces().filter(s=>s.floorId!==editorFloorId);
   const finalSpaces = [...allSpaces, ...editorSpaces];
   const floorIds = new Set(getFloors().map(f => f.id));
@@ -4244,6 +4859,8 @@ async function saveEditorSpaces() {
   // Refresh floors/spaces in main view
   if (!selFloorId) selFloorId = editorFloorId;
   renderFloors(); renderStats(); renderMiniBookings();
+  adminLayoutAuditLoadedAt = 0;
+  loadAdminLayoutAudit(true).catch(() => {});
   toast('Планировка сохранена ✓', 't-green', '✓');
 }
 
@@ -4317,6 +4934,9 @@ function deleteFloor(id) {
   const fl = getFloors().find(f=>f.id===id);
   const floorName = fl?.name || 'этаж';
   confirmAction(`Вы уверены, что хотите удалить этаж «${escapeHtml(floorName)}» и все его зоны?`, async () => {
+    if (editorLockState.mine && sameId(editorLockState.floorId, id)) {
+      await releaseEditorLock(id);
+    }
     const removedSpaceIds = getSpaces().filter(s=>s.floorId===id).map(s=>s.id);
     const ok = await cancelBookingsBySpacesAsAdmin(removedSpaceIds, 'floor_deleted', floorName);
     if (!ok) return;
@@ -4422,6 +5042,15 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   if (sessionData) {
     DB.set('session', null); // drop legacy/invalid sessions
+  }
+});
+
+window.addEventListener('beforeunload', () => {
+  if (editorLockState.mine && editorLockState.floorId) {
+    navigator.sendBeacon(
+      '/api/editor-locks/release',
+      new Blob([JSON.stringify({ floorId: editorLockState.floorId, token: editorLockState.token })], { type: 'application/json' })
+    );
   }
 });
 
