@@ -23,6 +23,27 @@ const sqlite = new Database(DB_FILE);
 sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('foreign_keys = ON');
 
+function sqliteColumns(tableName) {
+  try {
+    return sqlite.prepare(`PRAGMA table_info(${tableName})`).all();
+  } catch {
+    return [];
+  }
+}
+
+function ensureSqliteColumn(tableName, columnName, ddlFragment) {
+  const cols = sqliteColumns(tableName);
+  if (!cols.length || cols.some(col => col.name === columnName)) return;
+  sqlite.exec(`ALTER TABLE ${tableName} ADD COLUMN ${ddlFragment}`);
+}
+
+function ensurePreSchemaMigrations() {
+  ensureSqliteColumn('spaces', 'archived_at', 'archived_at TEXT');
+  ensureSqliteColumn('spaces', 'archived_by', 'archived_by TEXT');
+}
+
+ensurePreSchemaMigrations();
+
 const schemaPath = path.join(PROJECT_ROOT, 'schema.sql');
 if (fs.existsSync(schemaPath)) {
   const schemaSql = fs.readFileSync(schemaPath, 'utf8');

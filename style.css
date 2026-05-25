@@ -867,6 +867,37 @@ table.data-table tr:hover td{background:var(--paper)}
 .sort-col-btn:hover{color:var(--blue)}
 .sort-col-btn.active{color:var(--blue)}
 
+/* Admin accounting statistics */
+.stats-report{display:flex;flex-direction:column;gap:1.25rem}
+.stats-filter-panel{background:var(--white);border:1px solid var(--line);border-radius:var(--radius-lg);
+  padding:1rem 1.25rem;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:.875rem}
+.stats-filter-grid{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:.75rem;align-items:end}
+.stats-filter-grid label{display:flex;flex-direction:column;gap:5px;min-width:0}
+.stats-filter-grid label>span{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--ink3)}
+.stats-filter-grid input,.stats-filter-grid select{width:100%;height:32px}
+.stats-filter-actions{display:flex;gap:.5rem;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+.stats-kpi-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem}
+.stats-kpi-strip>div{background:var(--white);border:1px solid var(--line);border-radius:var(--radius);
+  padding:.875rem 1rem;display:flex;flex-direction:column;gap:4px}
+.stats-kpi-strip span{font-size:11px;color:var(--ink3);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.stats-kpi-strip strong{font-size:14px;color:var(--ink)}
+.stats-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem}
+.stats-table-scroll{overflow:auto}
+.stats-table{min-width:680px}
+.stats-table th,.stats-table td{white-space:nowrap}
+.stats-empty{text-align:center;color:var(--ink4);padding:2rem!important}
+.stats-bar{width:120px;height:8px;background:var(--paper);border-radius:999px;overflow:hidden}
+.stats-bar>div{height:100%;border-radius:999px}
+
+@media (max-width:1200px){
+  .stats-filter-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}
+  .stats-grid-2,.stats-kpi-strip{grid-template-columns:1fr 1fr}
+}
+@media (max-width:760px){
+  .stats-filter-grid,.stats-grid-2,.stats-kpi-strip{grid-template-columns:1fr}
+  .stats-filter-actions{justify-content:flex-start}
+}
+
 /* Dept autocomplete dropdown */
 .dept-dropdown{position:absolute;top:100%;left:0;right:0;background:var(--white);
   border:1px solid var(--line);border-radius:var(--radius);box-shadow:0 8px 24px rgba(0,0,0,.12);

@@ -13,6 +13,10 @@ function escapeCSV(value) {
   return /[,"\n]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/`/g, '&#096;');
+}
+
 // Разрешаем только hex-цвета (#rgb / #rrggbb / #rrggbbaa) — больше ничего в style-атрибуты
 function safeCssColor(color, fallback = '#059669') {
   return /^#[0-9a-fA-F]{3,8}$/.test(String(color)) ? color : fallback;
@@ -322,11 +326,16 @@ let selectedMyBookingIds = new Set();
 let adminUserSearch = '';
 let adminUserSort = 'lastLogin';
 let adminStatsPeriod = 30;
+let adminStatsDateFrom = '';
+let adminStatsDateTo = '';
+let adminStatsDept = '';
+let adminStatsCoworking = '';
+let adminStatsFloor = '';
+let adminStatsSearch = '';
 let teamViewPeriod   = 'active'; // 'active' | '30' | 'all'
 let teamViewTab      = 'bookings'; // 'bookings' | 'stats'
 let teamViewSearch   = ''; // filter by employee name
 let myBookingsTab    = 'active'; // 'active' | 'history'
-let adminStatsDept = '';
 let adminCancellationAudit = [];
 let adminCancellationAuditLoadedAt = 0;
 let adminCancellationAuditLoading = false;
@@ -456,6 +465,23 @@ function pluralRu(n, one, few, many) {
   return many;
 }
 function fmtDate(d) { return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}`; }
+function fmtDateRu(ds) {
+  const m = String(ds || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : '';
+}
+function parseDateRu(value) {
+  const raw = String(value || '').trim();
+  let m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return raw;
+  m = raw.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+  if (!m) return '';
+  const day = Number(m[1]);
+  const month = Number(m[2]);
+  const year = Number(m[3]);
+  const d = new Date(year, month - 1, day);
+  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return '';
+  return `${year}-${p2(month)}-${p2(day)}`;
+}
 function fmtHuman(ds) {
   const d = new Date(ds+'T12:00:00');
   return `${d.getDate()} ${MONTHS_S[d.getMonth()]}`;
@@ -2923,177 +2949,382 @@ function showForgotPasswordModal() {
 /* ═══════════════════════════════════════════════════════
    ADMIN STATS
 ═══════════════════════════════════════════════════════ */
-function setAdminStatsPeriod(v) { adminStatsPeriod = Number(v); renderAdminTabContent('stats'); }
-function setAdminStatsDept(v)   { adminStatsDept = v; renderAdminTabContent('stats'); }
+function setAdminStatsPeriod(v) {
+  adminStatsPeriod = Number(v) || 30;
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - adminStatsPeriod + 1);
+  adminStatsDateFrom = fmtDate(start);
+  adminStatsDateTo = fmtDate(end);
+  renderAdminTabContent('stats');
+}
+function setAdminStatsDateFrom(v) {
+  const parsed = parseDateRu(v);
+  if (!parsed && String(v || '').trim()) {
+    toast('Введите дату в формате дд.мм.гггг', 't-red', '✕');
+    renderAdminTabContent('stats');
+    return;
+  }
+  adminStatsDateFrom = parsed;
+  renderAdminTabContent('stats');
+}
+function setAdminStatsDateTo(v) {
+  const parsed = parseDateRu(v);
+  if (!parsed && String(v || '').trim()) {
+    toast('Введите дату в формате дд.мм.гггг', 't-red', '✕');
+    renderAdminTabContent('stats');
+    return;
+  }
+  adminStatsDateTo = parsed;
+  renderAdminTabContent('stats');
+}
+function setAdminStatsDept(v)     { adminStatsDept = v || ''; renderAdminTabContent('stats'); }
+function setAdminStatsCoworking(v) {
+  adminStatsCoworking = v || '';
+  if (adminStatsFloor) {
+    const floor = getFloors().find(f => sameId(f.id, adminStatsFloor));
+    if (!floor || !sameId(floor.coworkingId, adminStatsCoworking)) adminStatsFloor = '';
+  }
+  renderAdminTabContent('stats');
+}
+function setAdminStatsFloor(v)    { adminStatsFloor = v || ''; renderAdminTabContent('stats'); }
+function setAdminStatsSearch(v)   { adminStatsSearch = String(v || '').trim().toLowerCase(); renderAdminTabContent('stats'); }
+function clearAdminStatsFilters() {
+  adminStatsDept = '';
+  adminStatsCoworking = '';
+  adminStatsFloor = '';
+  adminStatsSearch = '';
+  setAdminStatsPeriod(30);
+}
+
+function adminStatsDefaultRange() {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - 29);
+  return { from: fmtDate(start), to: fmtDate(end) };
+}
+
+function minutesBetween(from, to) {
+  return Math.max(0, timeToMinutes(to || '00:00') - timeToMinutes(from || '00:00'));
+}
+
+function enrichBookingForStats(b, users, spaces, floors, coworkings) {
+  const user = users.find(u => sameId(u.id, b.userId));
+  const space = spaces.find(s => sameId(s.id, b.spaceId));
+  const floor = floors.find(f => sameId(f.id, space?.floorId));
+  const coworking = coworkings.find(c => sameId(c.id, floor?.coworkingId));
+  const d = new Date(`${b.date}T12:00:00`);
+  const weekdayIdx = d.getDay() === 0 ? 6 : d.getDay() - 1;
+  return {
+    booking: b,
+    user,
+    space,
+    floor,
+    coworking,
+    userId: b.userId,
+    userName: user?.name || b.userName || '—',
+    email: user?.email || '',
+    department: user?.department || '',
+    coworkingName: coworking?.name || '—',
+    floorName: floor?.name || '—',
+    spaceName: space?.label || b.spaceName || '—',
+    date: b.date,
+    weekdayIdx,
+    weekdayName: ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][weekdayIdx],
+    slotFrom: b.slotFrom || '',
+    slotTo: b.slotTo || '',
+    hours: Math.round((minutesBetween(b.slotFrom, b.slotTo) / 60) * 100) / 100,
+    status: b.status === 'cancelled' ? 'Отменено' : 'Активно',
+  };
+}
+
+function groupStats(rows, keyFn, labelFn) {
+  const map = new Map();
+  rows.forEach(r => {
+    const key = keyFn(r) || '—';
+    const current = map.get(key) || {
+      label: labelFn ? labelFn(r) : key,
+      bookings: 0,
+      hours: 0,
+      users: new Set(),
+      dates: new Set(),
+      lastDate: '',
+    };
+    current.bookings += 1;
+    current.hours += r.hours;
+    current.users.add(r.userId);
+    current.dates.add(r.date);
+    if (!current.lastDate || r.date > current.lastDate) current.lastDate = r.date;
+    map.set(key, current);
+  });
+  return [...map.values()]
+    .map(r => ({ ...r, usersCount: r.users.size, daysCount: r.dates.size }))
+    .sort((a, b) => b.bookings - a.bookings || a.label.localeCompare(b.label, 'ru'));
+}
+
+function getAdminStatsData(forceDept = null) {
+  const users = getUsers();
+  const spaces = getSpaces();
+  const floors = getFloors();
+  const coworkings = getCoworkings();
+  const isManager = currentUser?.role === 'manager';
+  const lockedDept = forceDept !== null || isManager;
+  const deptName = forceDept !== null ? forceDept : (isManager ? (currentUser.department || '') : adminStatsDept);
+  const defaults = adminStatsDefaultRange();
+  const from = adminStatsDateFrom || defaults.from;
+  const to = adminStatsDateTo || defaults.to;
+  const normalizedFrom = from <= to ? from : to;
+  const normalizedTo = from <= to ? to : from;
+
+  const deptUsers = deptName ? users.filter(u => u.department === deptName) : users;
+  const deptUserIds = new Set(deptUsers.map(u => u.id));
+  const rows = getBookings()
+    .filter(b => b.status !== 'cancelled')
+    .filter(b => b.date >= normalizedFrom && b.date <= normalizedTo)
+    .map(b => enrichBookingForStats(b, users, spaces, floors, coworkings))
+    .filter(r => deptUserIds.has(r.userId))
+    .filter(r => !adminStatsCoworking || sameId(r.coworking?.id, adminStatsCoworking))
+    .filter(r => !adminStatsFloor || sameId(r.floor?.id, adminStatsFloor))
+    .filter(r => {
+      if (!adminStatsSearch) return true;
+      const hay = `${r.userName} ${r.email} ${r.department} ${r.coworkingName} ${r.floorName} ${r.spaceName} ${r.date}`.toLowerCase();
+      return hay.includes(adminStatsSearch);
+    })
+    .sort((a, b) => a.date.localeCompare(b.date) || a.userName.localeCompare(b.userName, 'ru'));
+
+  const activeUserIds = new Set(rows.map(r => r.userId));
+  const dates = new Set(rows.map(r => r.date));
+  const totalHours = Math.round(rows.reduce((sum, r) => sum + r.hours, 0) * 100) / 100;
+  const employeeRows = deptUsers.map(u => {
+    const own = rows.filter(r => sameId(r.userId, u.id));
+    const ownDates = new Set(own.map(r => r.date));
+    return {
+      label: u.name || '—',
+      email: u.email || '',
+      department: u.department || '',
+      bookings: own.length,
+      hours: Math.round(own.reduce((sum, r) => sum + r.hours, 0) * 100) / 100,
+      daysCount: ownDates.size,
+      lastDate: own.map(r => r.date).sort().at(-1) || '',
+    };
+  }).sort((a, b) => b.bookings - a.bookings || a.label.localeCompare(b.label, 'ru'));
+
+  const dailyRows = groupStats(rows, r => r.date, r => fmtHuman(r.date));
+  const deptRows = groupStats(rows, r => r.department || 'Без отдела');
+  const coworkingRows = groupStats(rows, r => r.coworkingName);
+  const spaceRows = groupStats(rows, r => `${r.coworkingName} / ${r.floorName} / ${r.spaceName}`);
+  const weekdayRows = groupStats(rows, r => String(r.weekdayIdx), r => r.weekdayName)
+    .sort((a, b) => ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].indexOf(a.label) - ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].indexOf(b.label));
+
+  return {
+    users,
+    floors,
+    coworkings,
+    deptName,
+    lockedDept,
+    from: normalizedFrom,
+    to: normalizedTo,
+    rows,
+    totalStaff: deptUsers.length,
+    activeUsers: activeUserIds.size,
+    totalHours,
+    activeDays: dates.size,
+    employeeRows,
+    dailyRows,
+    deptRows,
+    coworkingRows,
+    spaceRows,
+    weekdayRows,
+  };
+}
+
+function percentBar(value, max, color = 'var(--blue)') {
+  const pct = max > 0 ? Math.round((value / max) * 100) : 0;
+  return `<div class="stats-bar"><div style="width:${pct}%;background:${color}"></div></div>`;
+}
+
+function renderStatsSummaryTable(title, rows, emptyText = 'Нет данных') {
+  const max = Math.max(1, ...rows.map(r => r.bookings));
+  return `<div class="card">
+    <div class="card-head">${title}</div>
+    <div class="stats-table-scroll"><table class="data-table stats-table">
+      <thead><tr><th>Разрез</th><th>Брони</th><th>Часы</th><th>Сотрудники</th><th>Дни</th><th>Доля</th></tr></thead>
+      <tbody>${rows.length ? rows.slice(0, 20).map(r => `<tr>
+        <td><strong>${escapeHtml(r.label)}</strong></td>
+        <td>${r.bookings}</td>
+        <td>${Math.round(r.hours * 100) / 100}</td>
+        <td>${r.usersCount}</td>
+        <td>${r.daysCount}</td>
+        <td>${percentBar(r.bookings, max)}</td>
+      </tr>`).join('') : `<tr><td colspan="6" class="stats-empty">${emptyText}</td></tr>`}</tbody>
+    </table></div>
+  </div>`;
+}
 
 function renderAdminStats(el, forceDept = null) {
-  const allUsers    = getUsers();
-  const allBookings = getBookings().filter(b => b.status !== 'cancelled');
-  const depts       = getDepartments();
-  const isManager   = currentUser?.role === 'manager';
-  const lockDept    = forceDept !== null;
-
-  // Dept filter
-  const deptName = lockDept ? forceDept : (isManager ? (currentUser.department || '') : adminStatsDept);
-  const deptUsers = deptName
-    ? allUsers.filter(u => u.department === deptName)
-    : allUsers;
-  const deptUserIds = new Set(deptUsers.map(u => u.id));
-
-  // Period filter
-  const periodDays = adminStatsPeriod || 30;
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - periodDays);
-  const cutoffStr = fmtDate(cutoff);
-  const todayStr  = fmtDate(new Date());
-
-  const bks = allBookings.filter(b =>
-    b.date >= cutoffStr && b.date <= todayStr && deptUserIds.has(b.userId)
-  );
-
-  // Unique attendees
-  const attendeeIds = new Set(bks.map(b => b.userId));
-  const totalStaff  = deptUsers.length;
-  const attendees   = attendeeIds.size;
-
-  // By weekday (0=Mon..4=Fri)
-  const dayNames = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
-  const byDay = [0,0,0,0,0,0,0];
-  bks.forEach(b => {
-    const d = new Date(b.date + 'T12:00:00');
-    byDay[d.getDay() === 0 ? 6 : d.getDay() - 1]++;
-  });
-  const maxDay = Math.max(...byDay, 1);
-
-  // Heatmap by weekday × time bucket
-  const bucketDefs = [
-    { id: 'morning', label: 'Утро', from: '08:00', to: '12:00' },
-    { id: 'day', label: 'День', from: '12:00', to: '15:00' },
-    { id: 'evening', label: 'Вечер', from: '15:00', to: '19:00' },
-    { id: 'late', label: 'Позже', from: '19:00', to: '23:00' },
-  ];
-  const heat = dayNames.map(() => bucketDefs.map(() => 0));
-  bks.forEach(b => {
-    const d = new Date(`${b.date}T12:00:00`);
-    const dayIdx = d.getDay() === 0 ? 6 : d.getDay() - 1;
-    bucketDefs.forEach((bucket, idx) => {
-      if (timesOverlap(b.slotFrom, b.slotTo, bucket.from, bucket.to)) {
-        heat[dayIdx][idx] += 1;
-      }
-    });
-  });
-  const heatMax = Math.max(1, ...heat.flat());
-  const heatCell = (value) => {
-    const ratio = value <= 0 ? 0 : value / heatMax;
-    if (ratio === 0) return 'background:rgba(30,41,59,.06);color:var(--ink4)';
-    const alpha = Math.min(0.9, 0.15 + ratio * 0.75);
-    return `background:rgba(37,99,235,${alpha.toFixed(3)});color:#fff`;
-  };
-
-  // By space
-  const spaceCount = {};
-  bks.forEach(b => {
-    const k = b.spaceName || b.spaceId || '?';
-    spaceCount[k] = (spaceCount[k] || 0) + 1;
-  });
-  const topSpaces = Object.entries(spaceCount)
-    .sort((a,b) => b[1]-a[1]).slice(0, 5);
-
-  // Per employee
-  const empCount = {};
-  bks.forEach(b => { empCount[b.userId] = (empCount[b.userId] || 0) + 1; });
-  const empRows = deptUsers.map(u => ({
-    name: u.name, dept: u.department || '',
-    count: empCount[u.id] || 0,
-    lastDate: bks.filter(b=>b.userId===u.id).map(b=>b.date).sort().at(-1) || '—'
-  })).sort((a,b) => b.count - a.count);
-
-  // Daily activity (last periodDays)
-  const dailyCounts = {};
-  bks.forEach(b => { dailyCounts[b.date] = (dailyCounts[b.date] || 0) + 1; });
-  const topDate = Object.entries(dailyCounts).sort((a,b)=>b[1]-a[1])[0];
-
-  const deptSelector = (!isManager && !lockDept) ? `
+  const data = getAdminStatsData(forceDept);
+  const deptOptions = [...new Set(data.users.map(u => u.department).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
+  const floorOptions = adminStatsCoworking
+    ? data.floors.filter(f => sameId(f.coworkingId, adminStatsCoworking))
+    : data.floors;
+  const hasFilters = data.deptName || adminStatsCoworking || adminStatsFloor || adminStatsSearch ||
+    adminStatsDateFrom || adminStatsDateTo;
+  const attendancePct = data.totalStaff > 0 ? Math.round((data.activeUsers / data.totalStaff) * 100) : 0;
+  const avgHours = data.activeUsers > 0 ? Math.round((data.totalHours / data.activeUsers) * 10) / 10 : 0;
+  const topDay = data.dailyRows[0];
+  const periodLabel = `${fmtHuman(data.from)} - ${fmtHuman(data.to)}`;
+  const deptSelector = data.lockedDept ? `<strong>${escapeHtml(data.deptName || 'Все отделы')}</strong>` : `
     <select class="role-sel" onchange="setAdminStatsDept(this.value)" style="min-width:180px">
       <option value="" ${!adminStatsDept?'selected':''}>Все отделы</option>
-      ${[...new Set(allUsers.map(u=>u.department).filter(Boolean))].sort()
-        .map(d=>`<option value="${escapeHtml(d)}" ${adminStatsDept===d?'selected':''}>${escapeHtml(d)}</option>`).join('')}
-    </select>` : `<strong>${escapeHtml(deptName || 'Все отделы')}</strong>`;
+      ${deptOptions.map(d => `<option value="${escapeAttr(d)}" ${adminStatsDept===d?'selected':''}>${escapeHtml(d)}</option>`).join('')}
+    </select>`;
 
   el.innerHTML = `
-  <div style="padding:1rem 0">
-    <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;margin-bottom:1.25rem">
-      ${deptSelector}
-      <select class="role-sel" onchange="setAdminStatsPeriod(this.value)" style="min-width:160px">
-        <option value="30" ${adminStatsPeriod===30?'selected':''}>За 30 дней</option>
-        <option value="90" ${adminStatsPeriod===90?'selected':''}>За 90 дней</option>
-        <option value="180" ${adminStatsPeriod===180?'selected':''}>За 180 дней</option>
-      </select>
-    </div>
-
-    <div class="metrics" style="margin-bottom:1.5rem">
-      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${attendees}<span style="font-size:14px;font-weight:500;color:var(--ink3)">/${totalStaff}</span></div><div class="metric-l">Посетили за период</div></div>
-      <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${bks.length}</div><div class="metric-l">Бронирований</div></div>
-      <div class="metric mt-purple"><div class="metric-n" style="color:var(--purple)">${totalStaff > 0 ? Math.round(attendees/totalStaff*100) : 0}%</div><div class="metric-l">Посещаемость</div></div>
-    </div>
-
-    <div style="margin-bottom:1rem">
-      <div class="card" style="padding:1.25rem">
-        <div class="card-head" style="padding:0 0 1rem">По дням недели</div>
-        <div style="display:flex;flex-direction:column;gap:6px">
-          ${byDay.map((cnt, i) => `
-            <div style="display:flex;align-items:center;gap:8px">
-              <span style="width:22px;font-size:12px;font-weight:600;color:var(--ink3)">${dayNames[i]}</span>
-              <div style="flex:1;height:18px;background:var(--bg2);border-radius:4px;overflow:hidden">
-                <div style="height:100%;width:${Math.round(cnt/maxDay*100)}%;background:var(--blue);border-radius:4px;transition:width .3s"></div>
-              </div>
-              <span style="width:28px;text-align:right;font-size:12px;color:var(--ink3)">${cnt}</span>
-            </div>`).join('')}
-        </div>
+  <div class="stats-report">
+    <div class="stats-filter-panel">
+      <div class="stats-filter-grid">
+        <label><span>Период с</span><input type="text" class="search-input" value="${fmtDateRu(data.from)}" placeholder="дд.мм.гггг" inputmode="numeric" onkeydown="if(event.key==='Enter')this.blur()" onblur="setAdminStatsDateFrom(this.value)"></label>
+        <label><span>Период по</span><input type="text" class="search-input" value="${fmtDateRu(data.to)}" placeholder="дд.мм.гггг" inputmode="numeric" onkeydown="if(event.key==='Enter')this.blur()" onblur="setAdminStatsDateTo(this.value)"></label>
+        <label><span>Отдел</span>${deptSelector}</label>
+        <label><span>Коворкинг</span><select class="role-sel" onchange="setAdminStatsCoworking(this.value)">
+          <option value="" ${!adminStatsCoworking?'selected':''}>Все коворкинги</option>
+          ${data.coworkings.map(c => `<option value="${escapeAttr(c.id)}" ${sameId(c.id, adminStatsCoworking)?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select></label>
+        <label><span>Этаж</span><select class="role-sel" onchange="setAdminStatsFloor(this.value)">
+          <option value="" ${!adminStatsFloor?'selected':''}>Все этажи</option>
+          ${floorOptions.map(f => `<option value="${escapeAttr(f.id)}" ${sameId(f.id, adminStatsFloor)?'selected':''}>${escapeHtml(f.name)}</option>`).join('')}
+        </select></label>
+        <label><span>Поиск</span><input type="text" class="search-input" placeholder="ФИО, место, отдел..." value="${escapeAttr(adminStatsSearch)}" oninput="setAdminStatsSearch(this.value)"></label>
+      </div>
+      <div class="stats-filter-actions">
+        <button class="btn btn-ghost btn-sm" onclick="setAdminStatsPeriod(30)">30 дней</button>
+        <button class="btn btn-ghost btn-sm" onclick="setAdminStatsPeriod(90)">90 дней</button>
+        <button class="btn btn-ghost btn-sm" onclick="setAdminStatsPeriod(180)">180 дней</button>
+        ${hasFilters ? `<button class="btn btn-ghost btn-sm" onclick="clearAdminStatsFilters()">Сбросить</button>` : ''}
+        <button class="btn btn-primary btn-sm" onclick="exportAdminStatsExcel()">Выгрузить Excel</button>
       </div>
     </div>
 
-    <div style="margin-bottom:1rem">
-      <div class="card" style="padding:1.25rem">
-        <div class="card-head" style="padding:0 0 1rem">Тепловая карта занятости</div>
-        <div style="overflow:auto">
-          <table class="data-table" style="min-width:520px">
-            <thead>
-              <tr>
-                <th>День</th>
-                ${bucketDefs.map(b => `<th>${b.label}</th>`).join('')}
-              </tr>
-            </thead>
-            <tbody>
-              ${dayNames.map((day, dayIdx) => `
-                <tr>
-                  <td><strong>${day}</strong></td>
-                  ${bucketDefs.map((_, bucketIdx) => {
-                    const value = heat[dayIdx][bucketIdx];
-                    return `<td style="${heatCell(value)};text-align:center;font-weight:700">${value}</td>`;
-                  }).join('')}
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>
+    <div class="metrics">
+      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${data.activeUsers}<span style="font-size:14px;font-weight:500;color:var(--ink3)">/${data.totalStaff}</span></div><div class="metric-l">Сотрудников с визитами</div></div>
+      <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${data.rows.length}</div><div class="metric-l">Бронирований за период</div></div>
+      <div class="metric mt-purple"><div class="metric-n" style="color:var(--purple)">${attendancePct}%</div><div class="metric-l">Охват сотрудников</div></div>
+      <div class="metric mt-amber"><div class="metric-n" style="color:var(--amber)">${data.totalHours}</div><div class="metric-l">Часов забронировано</div></div>
     </div>
 
-    <div class="card" style="padding:0">
-      <div class="card-head">Посещаемость сотрудников</div>
-      <div style="padding:0"><table class="data-table">
-        <thead><tr><th>Сотрудник</th>${!deptName?'<th>Отдел</th>':''}<th>Визитов</th><th>Последний визит</th></tr></thead>
-        <tbody>${empRows.map(r => `<tr>
-          <td><strong>${escapeHtml(r.name)}</strong></td>
-          ${!deptName?`<td style="color:var(--ink3)">${escapeHtml(r.dept)}</td>`:''}
-          <td><span class="badge ${r.count > 0 ? 'badge-blue' : ''}" style="${r.count===0?'color:var(--ink4)':''}">${r.count}</span></td>
-          <td style="font-size:12px;color:var(--ink3)">${r.lastDate !== '—' ? fmtHuman(r.lastDate) : '—'}</td>
-        </tr>`).join('')}
-        </tbody>
+    <div class="stats-kpi-strip">
+      <div><span>Период</span><strong>${escapeHtml(periodLabel)}</strong></div>
+      <div><span>Активных дней</span><strong>${data.activeDays}</strong></div>
+      <div><span>Средне часов на сотрудника</span><strong>${avgHours}</strong></div>
+      <div><span>Пиковый день</span><strong>${topDay ? `${escapeHtml(topDay.label)} (${topDay.bookings})` : '—'}</strong></div>
+    </div>
+
+    <div class="stats-grid-2">
+      ${renderStatsSummaryTable('По коворкингам', data.coworkingRows)}
+      ${renderStatsSummaryTable('По отделам', data.deptRows)}
+    </div>
+    <div class="stats-grid-2">
+      ${renderStatsSummaryTable('По дням недели', data.weekdayRows)}
+      ${renderStatsSummaryTable('Топ мест', data.spaceRows)}
+    </div>
+
+    <div class="card">
+      <div class="card-head">Сотрудники (${data.employeeRows.length})</div>
+      <div class="stats-table-scroll"><table class="data-table stats-table">
+        <thead><tr><th>Сотрудник</th><th>Email</th><th>Отдел</th><th>Брони</th><th>Дни</th><th>Часы</th><th>Последний визит</th></tr></thead>
+        <tbody>${data.employeeRows.map(r => `<tr>
+          <td><strong>${escapeHtml(r.label)}</strong></td>
+          <td>${escapeHtml(r.email || '—')}</td>
+          <td>${escapeHtml(r.department || '—')}</td>
+          <td><span class="badge ${r.bookings ? 'badge-blue' : ''}">${r.bookings}</span></td>
+          <td>${r.daysCount}</td>
+          <td>${r.hours}</td>
+          <td>${r.lastDate ? fmtHuman(r.lastDate) : '—'}</td>
+        </tr>`).join('')}</tbody>
       </table></div>
     </div>
   </div>`;
+}
+
+function excelText(value) {
+  const raw = value === null || typeof value === 'undefined' ? '' : String(value);
+  const safe = /^[=+\-@]/.test(raw) ? `'${raw}` : raw;
+  return escapeHtml(safe);
+}
+
+function excelXmlText(value) {
+  return excelText(value)
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#039;/g, '&apos;')
+    .replace(/&#096;/g, '`');
+}
+
+function excelWorksheet(title, headers, rows) {
+  const safeTitle = String(title || 'Лист').replace(/[\[\]:*?/\\]/g, ' ').slice(0, 31);
+  const rowXml = [headers, ...rows].map((row, rowIdx) => `<Row>${row.map(cell => {
+    const value = cell === null || typeof cell === 'undefined' ? '' : cell;
+    const isNumber = typeof value === 'number' && Number.isFinite(value);
+    const style = rowIdx === 0 ? ' ss:StyleID="header"' : '';
+    const type = isNumber ? 'Number' : 'String';
+    return `<Cell${style}><Data ss:Type="${type}">${excelXmlText(value)}</Data></Cell>`;
+  }).join('')}</Row>`).join('');
+  return `<Worksheet ss:Name="${excelXmlText(safeTitle)}"><Table>${rowXml}</Table></Worksheet>`;
+}
+
+function exportExcelWorkbook(filename, sheets) {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+  xmlns:o="urn:schemas-microsoft-com:office:office"
+  xmlns:x="urn:schemas-microsoft-com:office:excel"
+  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+  <Styles>
+    <Style ss:ID="header"><Font ss:Bold="1"/><Interior ss:Color="#E5E7EB" ss:Pattern="Solid"/></Style>
+  </Styles>
+  ${sheets.join('')}
+</Workbook>`;
+  const blob = new Blob(['\uFEFF', xml], { type: 'application/vnd.ms-excel;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast(`Excel выгружен: ${filename}`, 't-green', '✓');
+}
+
+function exportAdminStatsExcel() {
+  const data = getAdminStatsData();
+  const period = `${data.from}_${data.to}`;
+  const summaryRows = [
+    ['Период с', data.from],
+    ['Период по', data.to],
+    ['Отдел', data.deptName || 'Все отделы'],
+    ['Бронирований', data.rows.length],
+    ['Сотрудников с визитами', data.activeUsers],
+    ['Сотрудников в выборке', data.totalStaff],
+    ['Активных дней', data.activeDays],
+    ['Часов забронировано', data.totalHours],
+  ];
+  const employeeRows = data.employeeRows.map(r => [
+    r.label, r.email, r.department || '—', r.bookings, r.daysCount, r.hours, r.lastDate || '—',
+  ]);
+  const detailRows = data.rows.map(r => [
+    r.date, r.weekdayName, r.userName, r.email, r.department || '—', r.coworkingName,
+    r.floorName, r.spaceName, r.slotFrom, r.slotTo, r.hours, r.status,
+  ]);
+  const groupRows = (rows) => rows.map(r => [
+    r.label, r.bookings, Math.round(r.hours * 100) / 100, r.usersCount, r.daysCount, r.lastDate || '—',
+  ]);
+
+  exportExcelWorkbook(`accounting-stats-${period}.xls`, [
+    excelWorksheet('Сводка', ['Показатель', 'Значение'], summaryRows),
+    excelWorksheet('Сотрудники', ['Сотрудник', 'Email', 'Отдел', 'Брони', 'Дни', 'Часы', 'Последний визит'], employeeRows),
+    excelWorksheet('Детальный реестр', ['Дата', 'День', 'Сотрудник', 'Email', 'Отдел', 'Коворкинг', 'Этаж', 'Место', 'Слот от', 'Слот до', 'Часы', 'Статус'], detailRows),
+    excelWorksheet('Коворкинги', ['Коворкинг', 'Брони', 'Часы', 'Сотрудники', 'Дни', 'Последняя дата'], groupRows(data.coworkingRows)),
+    excelWorksheet('Отделы', ['Отдел', 'Брони', 'Часы', 'Сотрудники', 'Дни', 'Последняя дата'], groupRows(data.deptRows)),
+    excelWorksheet('Места', ['Место', 'Брони', 'Часы', 'Сотрудники', 'Дни', 'Последняя дата'], groupRows(data.spaceRows)),
+    excelWorksheet('Дни недели', ['День', 'Брони', 'Часы', 'Сотрудники', 'Дни', 'Последняя дата'], groupRows(data.weekdayRows)),
+  ]);
 }
 
 /* ═══════════════════════════════════════════════════════
