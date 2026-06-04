@@ -3201,7 +3201,8 @@ function renderAdminStats(el, forceDept = null) {
         <button class="btn btn-ghost btn-sm" onclick="setAdminStatsPeriod(90)">90 дней</button>
         <button class="btn btn-ghost btn-sm" onclick="setAdminStatsPeriod(180)">180 дней</button>
         ${hasFilters ? `<button class="btn btn-ghost btn-sm" onclick="clearAdminStatsFilters()">Сбросить</button>` : ''}
-        <button class="btn btn-primary btn-sm" onclick="exportAdminStatsExcel()">Выгрузить Excel</button>
+        <button class="btn btn-primary btn-sm" onclick="exportAdminStatsSimpleExcel()">Реестр Excel</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportAdminStatsExcel()">Полный Excel</button>
       </div>
     </div>
 
@@ -3324,6 +3325,30 @@ function exportAdminStatsExcel() {
     excelWorksheet('Отделы', ['Отдел', 'Брони', 'Часы', 'Сотрудники', 'Дни', 'Последняя дата'], groupRows(data.deptRows)),
     excelWorksheet('Места', ['Место', 'Брони', 'Часы', 'Сотрудники', 'Дни', 'Последняя дата'], groupRows(data.spaceRows)),
     excelWorksheet('Дни недели', ['День', 'Брони', 'Часы', 'Сотрудники', 'Дни', 'Последняя дата'], groupRows(data.weekdayRows)),
+  ]);
+}
+
+function exportAdminStatsSimpleExcel() {
+  const data = getAdminStatsData();
+  const period = `${data.from}_${data.to}`;
+  const weekdayFull = {
+    'Пн': 'Понедельник',
+    'Вт': 'Вторник',
+    'Ср': 'Среда',
+    'Чт': 'Четверг',
+    'Пт': 'Пятница',
+    'Сб': 'Суббота',
+    'Вс': 'Воскресенье',
+  };
+  const rows = data.rows.map(r => [
+    r.userName,
+    fmtDateRu(r.date),
+    weekdayFull[r.weekdayName] || r.weekdayName,
+    r.spaceName,
+  ]);
+
+  exportExcelWorkbook(`stats-register-${period}.xls`, [
+    excelWorksheet('Реестр', ['ФИ сотрудника', 'Дата', 'День недели', 'Помещение'], rows),
   ]);
 }
 
