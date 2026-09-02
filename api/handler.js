@@ -1756,9 +1756,26 @@ async function purgeOldBookings(env) {
   await runSql(env, 'DELETE FROM bookings WHERE end_utc_ms < ?', [cutoffMs]);
 }
 
-async function loadBookings(env) {
+function isDateOnly(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+async function loadBookings(env, range = {}) {
   await purgeOldBookings(env);
   const cutoffMs = Date.now() - BOOKING_RETENTION_MS;
+  const where = ['end_utc_ms >= ?'];
+  const params = [cutoffMs];
+  // Optional date-only range (inclusive) — lets callers ask for a bounded
+  // window (the live map poll) instead of the full retention window every
+  // time, while reports/exports can still request any range up to 2 years.
+  if (isDateOnly(range.from)) {
+    where.push('date >= ?');
+    params.push(range.from);
+  }
+  if (isDateOnly(range.to)) {
+    where.push('date <= ?');
+    params.push(range.to);
+  }
   const { results } = await allSql(
     env,
     `SELECT
@@ -1777,9 +1794,9 @@ async function loadBookings(env) {
       cancelled_at AS cancelledAt,
       cancelled_by AS cancelledBy
      FROM bookings
-     WHERE end_utc_ms >= ?
+     WHERE ${where.join(' AND ')}
      ORDER BY date ASC, slot_from ASC, created_at ASC`,
-    [cutoffMs]
+    params
   );
   return (results || []).map(normalizeBooking).filter(Boolean);
 }
@@ -2928,7 +2945,9 @@ export async function onRequest(context) {
 
     /* ── GET /bookings (auth) ─────────────────────────── */
     if (path === '/bookings' && method === 'GET') {
-      const bookings = await loadBookings(env);
+      const rangeFrom = url.searchParams.get('from') || '';
+      const rangeTo = url.searchParams.get('to') || '';
+      const bookings = await loadBookings(env, { from: rangeFrom, to: rangeTo });
       const rev = await getBookingsRev(env);
       return reply({ bookings, rev });
     }

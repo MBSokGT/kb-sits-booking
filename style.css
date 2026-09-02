@@ -887,6 +887,7 @@ table.data-table tr:hover td{background:var(--paper)}
 .stats-table{min-width:680px}
 .stats-table th,.stats-table td{white-space:nowrap}
 .stats-empty{text-align:center;color:var(--ink4);padding:2rem!important}
+.stats-loading{text-align:center;color:var(--ink4);padding:3rem 1rem}
 .stats-bar{width:120px;height:8px;background:var(--paper);border-radius:999px;overflow:hidden}
 .stats-bar>div{height:100%;border-radius:999px}
 

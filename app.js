@@ -873,9 +873,29 @@ async function pushDomainKey(key, value) {
   }
 }
 
+// The 10s live poll only needs to cover what the map/mini-bookings/"Мои
+// брони" widgets can actually show: a rolling window around today, wide
+// enough for the furthest advance booking (12 months) plus recent history.
+// It deliberately does NOT try to hold the full 2-year retention window —
+// that's what made ws_bookings grow without bound and blow the browser's
+// localStorage quota. Anything older/further belongs to an on-demand
+// range fetch instead (see fetchBookingsRangeFromApi), which the server
+// can always serve since it keeps the full 2 years regardless of what any
+// one client has cached.
+const LIVE_BOOKINGS_SYNC_DAYS_BACK = 90;
+const LIVE_BOOKINGS_SYNC_DAYS_FORWARD = 400;
+
+function liveBookingsSyncRange() {
+  const today = new Date();
+  const from = new Date(today); from.setDate(from.getDate() - LIVE_BOOKINGS_SYNC_DAYS_BACK);
+  const to = new Date(today); to.setDate(to.getDate() + LIVE_BOOKINGS_SYNC_DAYS_FORWARD);
+  return { from: fmtDate(from), to: fmtDate(to) };
+}
+
 async function fetchBookingsFromApi() {
   if (!currentUser) return false;
-  const r = await apiFetch('/api/bookings');
+  const range = liveBookingsSyncRange();
+  const r = await apiFetch(`/api/bookings?from=${range.from}&to=${range.to}`);
   if (r.status === 401) { requireRelogin(); return false; }
   if (!r.ok) return false;
   const d = await r.json();
@@ -883,13 +903,27 @@ async function fetchBookingsFromApi() {
   try {
     localStorage.setItem('ws_bookings', JSON.stringify(bookings));
   } catch (e) {
-    // Booking history can outgrow the browser's localStorage quota over
-    // time (this poll runs every 10s). Failing to cache it locally must
-    // not crash init/sync — the map still renders from whatever was
-    // cached last, degraded but alive, instead of a hard error screen.
+    // Kept as a safety net: even the bounded window above could still be
+    // large for a very active company, so a full crash here must still be
+    // impossible — the map renders from whatever was cached last instead.
     console.error('Не удалось сохранить брони локально (переполнено хранилище браузера):', e);
   }
   return true;
+}
+
+// On-demand fetch for a specific date range, independent of the live
+// window above — used by reports/exports that need any slice of the full
+// 2-year retention, not just what's currently cached for the map.
+async function fetchBookingsRangeFromApi(from, to) {
+  if (!currentUser) return [];
+  const params = new URLSearchParams();
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  const r = await apiFetch('/api/bookings?' + params.toString());
+  if (r.status === 401) { requireRelogin(); return []; }
+  if (!r.ok) return [];
+  const d = await r.json();
+  return Array.isArray(d.bookings) ? d.bookings : [];
 }
 
 async function syncBookingsFromServer() {
@@ -3164,7 +3198,11 @@ function groupStats(rows, keyFn, labelFn) {
     .sort((a, b) => b.bookings - a.bookings || a.label.localeCompare(b.label, 'ru'));
 }
 
-function getAdminStatsData(forceDept = null) {
+// Everything needed to draw the filter bar (dept/date/coworking/floor
+// options + the current normalized range) without touching bookings at
+// all — this stays synchronous so the filter inputs (and focus on the
+// search box) never wait on a network round trip.
+function buildAdminStatsContext(forceDept = null) {
   const users = getUsers();
   const spaces = getSpaces();
   const floors = getFloors();
@@ -3177,12 +3215,21 @@ function getAdminStatsData(forceDept = null) {
   const to = adminStatsDateTo || defaults.to;
   const normalizedFrom = from <= to ? from : to;
   const normalizedTo = from <= to ? to : from;
+  return { users, spaces, floors, coworkings, deptName, lockedDept, from: normalizedFrom, to: normalizedTo };
+}
 
+// Pure aggregation over an already-fetched bookings array (for the exact
+// [ctx.from, ctx.to] range, requested on demand — see
+// fetchBookingsRangeFromApi) plus the current dept/coworking/floor/search
+// filters. Kept separate from the fetch itself so exports and the on-screen
+// panel can share identical logic.
+function computeAdminStatsData(bookings, ctx) {
+  const { users, spaces, floors, coworkings, deptName, lockedDept, from, to } = ctx;
   const deptUsers = deptName ? users.filter(u => u.department === deptName) : users;
   const deptUserIds = new Set(deptUsers.map(u => u.id));
-  const rows = getBookings()
+  const rows = bookings
     .filter(b => b.status !== 'cancelled')
-    .filter(b => b.date >= normalizedFrom && b.date <= normalizedTo)
+    .filter(b => b.date >= from && b.date <= to)
     .map(b => enrichBookingForStats(b, users, spaces, floors, coworkings))
     .filter(r => deptUserIds.has(r.userId))
     .filter(r => !adminStatsCoworking || sameId(r.coworking?.id, adminStatsCoworking))
@@ -3224,8 +3271,8 @@ function getAdminStatsData(forceDept = null) {
     coworkings,
     deptName,
     lockedDept,
-    from: normalizedFrom,
-    to: normalizedTo,
+    from,
+    to,
     rows,
     totalStaff: deptUsers.length,
     activeUsers: activeUserIds.size,
@@ -3238,6 +3285,15 @@ function getAdminStatsData(forceDept = null) {
     spaceRows,
     weekdayRows,
   };
+}
+
+// Fetches bookings for ctx's range on demand (bypassing the bounded live
+// cache — see fetchBookingsRangeFromApi) and aggregates them. Used by both
+// the on-screen panel and the export buttons so they always agree.
+async function loadAdminStatsData(forceDept = null) {
+  const ctx = buildAdminStatsContext(forceDept);
+  const bookings = await fetchBookingsRangeFromApi(ctx.from, ctx.to);
+  return computeAdminStatsData(bookings, ctx);
 }
 
 function percentBar(value, max, color = 'var(--blue)') {
@@ -3263,19 +3319,18 @@ function renderStatsSummaryTable(title, rows, emptyText = 'Нет данных')
   </div>`;
 }
 
+let adminStatsRenderToken = 0;
+
 function renderAdminStats(el, forceDept = null) {
-  const data = getAdminStatsData(forceDept);
-  const deptOptions = [...new Set(data.users.map(u => u.department).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
+  const token = ++adminStatsRenderToken;
+  const ctx = buildAdminStatsContext(forceDept);
+  const deptOptions = [...new Set(ctx.users.map(u => u.department).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
   const floorOptions = adminStatsCoworking
-    ? data.floors.filter(f => sameId(f.coworkingId, adminStatsCoworking))
-    : data.floors;
-  const hasFilters = data.deptName || adminStatsCoworking || adminStatsFloor || adminStatsSearch ||
+    ? ctx.floors.filter(f => sameId(f.coworkingId, adminStatsCoworking))
+    : ctx.floors;
+  const hasFilters = ctx.deptName || adminStatsCoworking || adminStatsFloor || adminStatsSearch ||
     adminStatsDateFrom || adminStatsDateTo;
-  const attendancePct = data.totalStaff > 0 ? Math.round((data.activeUsers / data.totalStaff) * 100) : 0;
-  const avgHours = data.activeUsers > 0 ? Math.round((data.totalHours / data.activeUsers) * 10) / 10 : 0;
-  const topDay = data.dailyRows[0];
-  const periodLabel = `${fmtHuman(data.from)} - ${fmtHuman(data.to)}`;
-  const deptSelector = data.lockedDept ? `<strong>${escapeHtml(data.deptName || 'Все отделы')}</strong>` : `
+  const deptSelector = ctx.lockedDept ? `<strong>${escapeHtml(ctx.deptName || 'Все отделы')}</strong>` : `
     <select class="role-sel" onchange="setAdminStatsDept(this.value)" style="min-width:180px">
       <option value="" ${!adminStatsDept?'selected':''}>Все отделы</option>
       ${deptOptions.map(d => `<option value="${escapeAttr(d)}" ${adminStatsDept===d?'selected':''}>${escapeHtml(d)}</option>`).join('')}
@@ -3285,18 +3340,18 @@ function renderAdminStats(el, forceDept = null) {
   <div class="stats-report">
     <div class="stats-filter-panel">
       <div class="stats-filter-grid">
-        <label><span>Период с</span><input type="text" class="search-input" value="${fmtDateRu(data.from)}" placeholder="дд.мм.гггг" inputmode="numeric" onkeydown="if(event.key==='Enter')this.blur()" onblur="setAdminStatsDateFrom(this.value)"></label>
-        <label><span>Период по</span><input type="text" class="search-input" value="${fmtDateRu(data.to)}" placeholder="дд.мм.гггг" inputmode="numeric" onkeydown="if(event.key==='Enter')this.blur()" onblur="setAdminStatsDateTo(this.value)"></label>
+        <label><span>Период с</span><input type="text" class="role-sel" value="${fmtDateRu(ctx.from)}" placeholder="дд.мм.гггг" inputmode="numeric" onkeydown="if(event.key==='Enter')this.blur()" onblur="setAdminStatsDateFrom(this.value)"></label>
+        <label><span>Период по</span><input type="text" class="role-sel" value="${fmtDateRu(ctx.to)}" placeholder="дд.мм.гггг" inputmode="numeric" onkeydown="if(event.key==='Enter')this.blur()" onblur="setAdminStatsDateTo(this.value)"></label>
         <label><span>Отдел</span>${deptSelector}</label>
         <label><span>Коворкинг</span><select class="role-sel" onchange="setAdminStatsCoworking(this.value)">
           <option value="" ${!adminStatsCoworking?'selected':''}>Все коворкинги</option>
-          ${data.coworkings.map(c => `<option value="${escapeAttr(c.id)}" ${sameId(c.id, adminStatsCoworking)?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
+          ${ctx.coworkings.map(c => `<option value="${escapeAttr(c.id)}" ${sameId(c.id, adminStatsCoworking)?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}
         </select></label>
         <label><span>Этаж</span><select class="role-sel" onchange="setAdminStatsFloor(this.value)">
           <option value="" ${!adminStatsFloor?'selected':''}>Все этажи</option>
           ${floorOptions.map(f => `<option value="${escapeAttr(f.id)}" ${sameId(f.id, adminStatsFloor)?'selected':''}>${escapeHtml(f.name)}</option>`).join('')}
         </select></label>
-        <label><span>Поиск</span><input type="text" id="admin-stats-search" class="search-input" placeholder="ФИО, место, отдел..." value="${escapeAttr(adminStatsSearch)}" oninput="setAdminStatsSearch(this.value)"></label>
+        <label><span>Поиск</span><input type="text" id="admin-stats-search" class="role-sel" placeholder="ФИО, место, отдел..." value="${escapeAttr(adminStatsSearch)}" oninput="setAdminStatsSearch(this.value)"></label>
       </div>
       <div class="stats-filter-actions">
         <button class="btn btn-ghost btn-sm" onclick="setAdminStatsPeriod(30)">30 дней</button>
@@ -3308,6 +3363,27 @@ function renderAdminStats(el, forceDept = null) {
       </div>
     </div>
 
+    <div id="admin-stats-results">
+      <div class="stats-loading">Загрузка статистики…</div>
+    </div>
+  </div>`;
+
+  loadAndRenderAdminStatsResults(token, ctx);
+}
+
+async function loadAndRenderAdminStatsResults(token, ctx) {
+  const bookings = await fetchBookingsRangeFromApi(ctx.from, ctx.to);
+  if (token !== adminStatsRenderToken) return; // a newer filter change superseded this request
+  const resultsEl = document.getElementById('admin-stats-results');
+  if (!resultsEl) return; // panel navigated away before the fetch resolved
+
+  const data = computeAdminStatsData(bookings, ctx);
+  const attendancePct = data.totalStaff > 0 ? Math.round((data.activeUsers / data.totalStaff) * 100) : 0;
+  const avgHours = data.activeUsers > 0 ? Math.round((data.totalHours / data.activeUsers) * 10) / 10 : 0;
+  const topDay = data.dailyRows[0];
+  const periodLabel = `${fmtHuman(data.from)} - ${fmtHuman(data.to)}`;
+
+  resultsEl.innerHTML = `
     <div class="metrics">
       <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${data.activeUsers}<span style="font-size:14px;font-weight:500;color:var(--ink3)">/${data.totalStaff}</span></div><div class="metric-l">Сотрудников с визитами</div></div>
       <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${data.rows.length}</div><div class="metric-l">Бронирований за период</div></div>
@@ -3345,8 +3421,7 @@ function renderAdminStats(el, forceDept = null) {
           <td>${r.lastDate ? fmtHuman(r.lastDate) : '—'}</td>
         </tr>`).join('')}</tbody>
       </table></div>
-    </div>
-  </div>`;
+    </div>`;
 }
 
 function excelText(value) {
@@ -3395,8 +3470,9 @@ function exportExcelWorkbook(filename, sheets) {
   toast(`Excel выгружен: ${filename}`, 't-green', '✓');
 }
 
-function exportAdminStatsExcel() {
-  const data = getAdminStatsData();
+async function exportAdminStatsExcel() {
+  toast('Формируем отчёт…', '', '⏳');
+  const data = await loadAdminStatsData();
   const period = `${data.from}_${data.to}`;
   const summaryRows = [
     ['Период с', data.from],
@@ -3430,8 +3506,9 @@ function exportAdminStatsExcel() {
   ]);
 }
 
-function exportAdminStatsSimpleExcel() {
-  const data = getAdminStatsData();
+async function exportAdminStatsSimpleExcel() {
+  toast('Формируем отчёт…', '', '⏳');
+  const data = await loadAdminStatsData();
   const period = `${data.from}_${data.to}`;
   const weekdayFull = {
     'Пн': 'Понедельник',
