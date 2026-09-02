@@ -469,6 +469,13 @@ function fmtDateRu(ds) {
   const m = String(ds || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   return m ? `${m[3]}.${m[2]}.${m[1]}` : '';
 }
+const MONTHS_GENITIVE = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+// "3 августа 2026" — long form used in printed/accounting reports.
+function fmtDateRuFull(ds) {
+  const m = String(ds || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '';
+  return `${Number(m[3])} ${MONTHS_GENITIVE[Number(m[2]) - 1]} ${m[1]}`;
+}
 function parseDateRu(value) {
   const raw = String(value || '').trim();
   let m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -559,7 +566,13 @@ function getActiveBookings(source = getBookings(), nowUtcMs = Date.now()) {
   });
 }
 function findBookingForSpace(spaceId, date, from, to) {
-  return getActiveBookings().find(b =>
+  // Deliberately not using getActiveBookings() here: that filter drops any
+  // booking whose slot end-time has passed, which is correct for "still
+  // blocks a new booking" checks but wrong for occupancy lookups on past
+  // dates — every booking for a past day has "expired" by definition, so
+  // that filter would hide all history from the map/list/stats views.
+  return getBookings().find(b =>
+    b.status !== 'cancelled' &&
     b.spaceId === spaceId &&
     b.date === date &&
     timesOverlap(from, to, b.slotFrom, b.slotTo)
@@ -735,13 +748,22 @@ function applyUserUI() {
   document.getElementById('user-avatar').textContent    = userInitials(u.name);
   document.getElementById('user-name-lbl').textContent  = u.name;
   const rp = document.getElementById('role-pill');
-  const labels = { user:'Сотрудник', manager:'Руководитель', admin:'Администратор' };
+  const labels = { user:'Сотрудник', manager:'Руководитель', admin:'Администратор', accounting:'Бухгалтерия' };
   rp.textContent = labels[u.role] || u.role;
   rp.className   = 'role-pill rp-' + u.role;
-  document.querySelectorAll('.manager-only').forEach(el =>
-    el.style.display = (u.role==='manager'||u.role==='admin') ? 'block' : 'none');
-  document.querySelectorAll('.admin-only').forEach(el =>
-    el.style.display = u.role==='admin' ? 'block' : 'none');
+  // Accounting is a stats-only role: hide the regular nav (Карта/Мои брони)
+  // and show only its own "Статистика" tab, alongside the usual role gates.
+  document.querySelectorAll('.tnav').forEach(el => {
+    if (el.classList.contains('accounting-only')) {
+      el.style.display = u.role==='accounting' ? 'block' : 'none';
+    } else if (el.classList.contains('manager-only')) {
+      el.style.display = (u.role==='manager'||u.role==='admin') ? 'block' : 'none';
+    } else if (el.classList.contains('admin-only')) {
+      el.style.display = u.role==='admin' ? 'block' : 'none';
+    } else {
+      el.style.display = u.role==='accounting' ? 'none' : 'block';
+    }
+  });
 }
 
 function syncCurrentUserProfile(users) {
@@ -1057,11 +1079,13 @@ async function initApp() {
   renderFavoriteSpace();
 
   // Restore last visited tab, but only if the user is allowed to see it
-  const allowed = new Set(['map', 'mybookings', 'team', 'admin', 'cabinet']);
-  if (currentUser?.role === 'user')    { allowed.delete('team'); allowed.delete('admin'); }
-  if (currentUser?.role === 'manager') { allowed.delete('admin'); }
+  const allowed = new Set(['map', 'mybookings', 'team', 'admin', 'cabinet', 'accstats']);
+  if (currentUser?.role === 'user')       { allowed.delete('team'); allowed.delete('admin'); allowed.delete('accstats'); }
+  if (currentUser?.role === 'manager')    { allowed.delete('admin'); allowed.delete('accstats'); }
+  if (currentUser?.role === 'accounting') { allowed.clear(); allowed.add('accstats'); allowed.add('cabinet'); }
   const savedView = localStorage.getItem('lastView');
-  const startView = savedView && allowed.has(savedView) ? savedView : 'map';
+  const defaultView = currentUser?.role === 'accounting' ? 'accstats' : 'map';
+  const startView = savedView && allowed.has(savedView) ? savedView : defaultView;
   const savedAdminTab = localStorage.getItem('adminActiveTab');
   if (savedAdminTab) adminActiveTab = savedAdminTab;
   switchView(startView);
@@ -1435,7 +1459,9 @@ function renderYearCalendar(grid, todayDs, bookings) {
 function renderCalendar() {
   const grid    = document.getElementById('cal-grid');
   const todayDs = fmtDate(new Date());
-  const bookings = getActiveBookings(getBookings()).filter(b => isMineBooking(b));
+  // Same reasoning as findBookingForSpace: don't drop past (expired) bookings,
+  // or the "has booking" dot disappears for any day once its slot has ended.
+  const bookings = getBookings().filter(b => b.status !== 'cancelled' && isMineBooking(b));
   const modeBtn = document.getElementById('cal-mode-btn');
   const weekendsInp = document.getElementById('opt-weekends');
   const satInp = document.getElementById('opt-saturday');
@@ -2429,6 +2455,9 @@ function switchView(view, btn) {
   // Access control
   if (view === 'admin' && currentUser?.role === 'manager') view = 'team';
   if ((view === 'admin' || view === 'team') && currentUser?.role === 'user') view = 'map';
+  // Accounting is a stats-only role — every other view redirects to its
+  // report screen, except the personal cabinet (own password change).
+  if (currentUser?.role === 'accounting' && view !== 'cabinet') view = 'accstats';
   if (prevView === 'admin' && view !== 'admin' && editorLockState.mine && editorLockState.floorId) {
     releaseEditorLock(editorLockState.floorId).catch(() => {});
   }
@@ -2443,7 +2472,7 @@ function switchView(view, btn) {
   document.getElementById('app').dataset.view = view;
 
 
-  ['view-map','view-mybookings','view-team','view-admin','view-cabinet'].forEach(id=>{
+  ['view-map','view-mybookings','view-team','view-admin','view-cabinet','view-accstats'].forEach(id=>{
     const el = document.getElementById(id);
     if (!el) return;
     el.style.display  = 'none';
@@ -2460,6 +2489,7 @@ function switchView(view, btn) {
   if (view === 'team')       { document.getElementById('view-team').style.display = 'flex';       renderTeamView(); }
   if (view === 'admin')      { document.getElementById('view-admin').style.display = 'flex';      renderAdminView(); }
   if (view === 'cabinet')    { document.getElementById('view-cabinet').style.display = 'flex';    renderCabinetView(); }
+  if (view === 'accstats')   { document.getElementById('view-accstats').style.display = 'flex';   renderAccountingStatsView(); }
 }
 
 
@@ -2572,7 +2602,7 @@ function renderCabinetView() {
     ? activeBookings.filter(b => team.some(u => u.id === b.userId))
                    .sort((a, b) => a.date.localeCompare(b.date))
     : [];
-  const roleLabels = { user: 'Сотрудник', manager: 'Руководитель', admin: 'Администратор' };
+  const roleLabels = { user: 'Сотрудник', manager: 'Руководитель', admin: 'Администратор', accounting: 'Бухгалтерия' };
 
   el.innerHTML = `<div class="view-area">
 
@@ -2651,7 +2681,10 @@ function renderCabinetView() {
 ═══════════════════════════════════════════════════════ */
 function setTeamViewPeriod(v) { teamViewPeriod = v; renderTeamView(); }
 function setTeamViewTab(v) { teamViewTab = v; renderTeamView(); }
-function setTeamViewSearch(v) { teamViewSearch = String(v||'').trim().toLowerCase(); renderTeamView(); }
+function setTeamViewSearch(v) {
+  teamViewSearch = String(v||'').trim().toLowerCase();
+  rerenderKeepingFocus('team-view-search', renderTeamView);
+}
 
 function renderTeamView() {
   purgeExpired();
@@ -2710,7 +2743,7 @@ function renderTeamView() {
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
         <span>Бронирования отдела</span>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <input type="text" class="role-sel" placeholder="Поиск по сотруднику..."
+          <input type="text" id="team-view-search" class="role-sel" placeholder="Поиск по сотруднику..."
             value="${escapeHtml(teamViewSearch)}"
             oninput="setTeamViewSearch(this.value)"
             style="min-width:180px;font-size:13px">
@@ -2949,6 +2982,58 @@ function showForgotPasswordModal() {
 /* ═══════════════════════════════════════════════════════
    ADMIN STATS
 ═══════════════════════════════════════════════════════ */
+// The stats panel is shared by three hosts: the admin "Статистика отдела" tab
+// (#admin-tab-content), the "Отдел" team view's own "Статистика" sub-tab
+// (#team-tab-content), and the accounting-only "Статистика" view
+// (#accstats-content). renderAdminTabContent('stats') only ever targets the
+// admin tab, so calling it while the panel is mounted elsewhere silently
+// re-renders the OTHER (hidden) copy and every filter appears to do nothing.
+// Always refresh whichever host is actually on screen.
+function rerenderAdminStats() {
+  if (currentView === 'team' && teamViewTab === 'stats') {
+    const content = document.getElementById('team-tab-content');
+    if (content) renderAdminStats(content, currentUser?.department || '');
+    return;
+  }
+  if (currentView === 'accstats') {
+    const content = document.getElementById('accstats-content');
+    if (content) renderAdminStats(content, null);
+    return;
+  }
+  renderAdminTabContent('stats');
+}
+
+function renderAccountingStatsView() {
+  const el = document.getElementById('view-accstats');
+  if (!el) return;
+  el.innerHTML = `<div class="view-area">
+    <div><div class="view-head">Статистика бронирований</div></div>
+    <div id="accstats-content"></div>
+  </div>`;
+  renderAdminStats(document.getElementById('accstats-content'), null);
+}
+// Re-runs `renderFn` (which replaces DOM including `inputId`'s node) while
+// keeping keyboard focus and caret position on that input if it had focus
+// beforehand — otherwise every keystroke bounces focus to <body> because
+// the focused node itself gets thrown away and rebuilt.
+function rerenderKeepingFocus(inputId, renderFn) {
+  const prevInput = document.getElementById(inputId);
+  const hadFocus = document.activeElement === prevInput;
+  const selectionStart = hadFocus ? prevInput.selectionStart : null;
+  const selectionEnd = hadFocus ? prevInput.selectionEnd : null;
+
+  renderFn();
+
+  if (hadFocus) {
+    const nextInput = document.getElementById(inputId);
+    if (nextInput) {
+      nextInput.focus({ preventScroll: true });
+      const start = Number.isInteger(selectionStart) ? selectionStart : nextInput.value.length;
+      const end = Number.isInteger(selectionEnd) ? selectionEnd : start;
+      try { nextInput.setSelectionRange(start, end); } catch {}
+    }
+  }
+}
 function setAdminStatsPeriod(v) {
   adminStatsPeriod = Number(v) || 30;
   const end = new Date();
@@ -2956,39 +3041,42 @@ function setAdminStatsPeriod(v) {
   start.setDate(start.getDate() - adminStatsPeriod + 1);
   adminStatsDateFrom = fmtDate(start);
   adminStatsDateTo = fmtDate(end);
-  renderAdminTabContent('stats');
+  rerenderAdminStats();
 }
 function setAdminStatsDateFrom(v) {
   const parsed = parseDateRu(v);
   if (!parsed && String(v || '').trim()) {
     toast('Введите дату в формате дд.мм.гггг', 't-red', '✕');
-    renderAdminTabContent('stats');
+    rerenderAdminStats();
     return;
   }
   adminStatsDateFrom = parsed;
-  renderAdminTabContent('stats');
+  rerenderAdminStats();
 }
 function setAdminStatsDateTo(v) {
   const parsed = parseDateRu(v);
   if (!parsed && String(v || '').trim()) {
     toast('Введите дату в формате дд.мм.гггг', 't-red', '✕');
-    renderAdminTabContent('stats');
+    rerenderAdminStats();
     return;
   }
   adminStatsDateTo = parsed;
-  renderAdminTabContent('stats');
+  rerenderAdminStats();
 }
-function setAdminStatsDept(v)     { adminStatsDept = v || ''; renderAdminTabContent('stats'); }
+function setAdminStatsDept(v)     { adminStatsDept = v || ''; rerenderAdminStats(); }
 function setAdminStatsCoworking(v) {
   adminStatsCoworking = v || '';
   if (adminStatsFloor) {
     const floor = getFloors().find(f => sameId(f.id, adminStatsFloor));
     if (!floor || !sameId(floor.coworkingId, adminStatsCoworking)) adminStatsFloor = '';
   }
-  renderAdminTabContent('stats');
+  rerenderAdminStats();
 }
-function setAdminStatsFloor(v)    { adminStatsFloor = v || ''; renderAdminTabContent('stats'); }
-function setAdminStatsSearch(v)   { adminStatsSearch = String(v || '').trim().toLowerCase(); renderAdminTabContent('stats'); }
+function setAdminStatsFloor(v)    { adminStatsFloor = v || ''; rerenderAdminStats(); }
+function setAdminStatsSearch(v) {
+  adminStatsSearch = String(v || '').trim().toLowerCase();
+  rerenderKeepingFocus('admin-stats-search', rerenderAdminStats);
+}
 function clearAdminStatsFilters() {
   adminStatsDept = '';
   adminStatsCoworking = '';
@@ -3194,14 +3282,14 @@ function renderAdminStats(el, forceDept = null) {
           <option value="" ${!adminStatsFloor?'selected':''}>Все этажи</option>
           ${floorOptions.map(f => `<option value="${escapeAttr(f.id)}" ${sameId(f.id, adminStatsFloor)?'selected':''}>${escapeHtml(f.name)}</option>`).join('')}
         </select></label>
-        <label><span>Поиск</span><input type="text" class="search-input" placeholder="ФИО, место, отдел..." value="${escapeAttr(adminStatsSearch)}" oninput="setAdminStatsSearch(this.value)"></label>
+        <label><span>Поиск</span><input type="text" id="admin-stats-search" class="search-input" placeholder="ФИО, место, отдел..." value="${escapeAttr(adminStatsSearch)}" oninput="setAdminStatsSearch(this.value)"></label>
       </div>
       <div class="stats-filter-actions">
         <button class="btn btn-ghost btn-sm" onclick="setAdminStatsPeriod(30)">30 дней</button>
         <button class="btn btn-ghost btn-sm" onclick="setAdminStatsPeriod(90)">90 дней</button>
         <button class="btn btn-ghost btn-sm" onclick="setAdminStatsPeriod(180)">180 дней</button>
         ${hasFilters ? `<button class="btn btn-ghost btn-sm" onclick="clearAdminStatsFilters()">Сбросить</button>` : ''}
-        <button class="btn btn-primary btn-sm" onclick="exportAdminStatsSimpleExcel()">Реестр Excel</button>
+        <button class="btn btn-primary btn-sm" onclick="exportAdminStatsSimpleExcel()">Отчет по бронированиям для бухгалтерии</button>
         <button class="btn btn-ghost btn-sm" onclick="exportAdminStatsExcel()">Полный Excel</button>
       </div>
     </div>
@@ -3340,15 +3428,21 @@ function exportAdminStatsSimpleExcel() {
     'Сб': 'Суббота',
     'Вс': 'Воскресенье',
   };
-  const rows = data.rows.map(r => [
+  // Grouped by employee (А-Я), then by date within each employee —
+  // matches the printed accounting report format, not the date-first
+  // order used by data.rows for the other exports.
+  const sortedRows = [...data.rows].sort((a, b) =>
+    a.userName.localeCompare(b.userName, 'ru') || a.date.localeCompare(b.date)
+  );
+  const rows = sortedRows.map(r => [
     r.userName,
-    fmtDateRu(r.date),
+    fmtDateRuFull(r.date),
     weekdayFull[r.weekdayName] || r.weekdayName,
     r.spaceName,
   ]);
 
-  exportExcelWorkbook(`stats-register-${period}.xls`, [
-    excelWorksheet('Реестр', ['ФИ сотрудника', 'Дата', 'День недели', 'Помещение'], rows),
+  exportExcelWorkbook(`accounting-report-${period}.xls`, [
+    excelWorksheet('Отчет для бухгалтерии', ['ФИО сотрудника', 'Дата', 'День недели', 'Помещение'], rows),
   ]);
 }
 
@@ -3490,7 +3584,7 @@ function getDeptMemberSearch(deptId) {
 function renderAdminUsers(el) {
   const users = getUsers();
   const bks   = getActiveBookings(getBookings());
-  const roles = { user:'Сотрудник', manager:'Руководитель', admin:'Администратор' };
+  const roles = { user:'Сотрудник', manager:'Руководитель', admin:'Администратор', accounting:'Бухгалтерия' };
   const search = String(adminUserSearch || '').trim().toLowerCase();
   const filtered = search
     ? users.filter(u => `${u.name} ${u.email} ${u.department || ''}`.toLowerCase().includes(search))
@@ -3562,7 +3656,7 @@ function renderAdminUsers(el) {
         <td>${isSelf
           ? `<span class="badge badge-amber">Вы</span>`
           : `<select class="role-sel" onchange="setUserRole('${u.id}',this.value)">
-              ${['user','manager','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${roles[r]}</option>`).join('')}
+              ${['user','manager','admin','accounting'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${roles[r]}</option>`).join('')}
              </select>`}</td>
         <td>
           ${u.blocked
@@ -3738,6 +3832,7 @@ function showAddUserModal() {
         <option value="user">Сотрудник</option>
         <option value="manager">Руководитель</option>
         <option value="admin">Администратор</option>
+        <option value="accounting">Бухгалтерия</option>
       </select>
     </div>
     <div id="au-err" style="display:none;color:var(--red);font-size:13px"></div>`;
@@ -3828,7 +3923,7 @@ async function createAdminUser() {
 }
 
 async function setUserRole(uid, role) {
-  if (!['user', 'manager', 'admin'].includes(role)) return;
+  if (!['user', 'manager', 'admin', 'accounting'].includes(role)) return;
   const r = await apiFetch('/api/users/role', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

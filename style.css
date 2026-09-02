@@ -99,6 +99,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--paper);color:var(--ink);f
 .rp-user{background:rgba(255,255,255,.1);color:rgba(255,255,255,.5)}
 .rp-manager{background:rgba(217,119,6,.2);color:#fbbf24}
 .rp-admin{background:rgba(220,38,38,.2);color:#f87171}
+.rp-accounting{background:rgba(5,150,105,.2);color:#34d399}
 .logout-btn{padding:5px 11px;background:transparent;border:1px solid rgba(255,255,255,.15);
   color:rgba(255,255,255,.55);border-radius:6px;font-family:inherit;font-size:12px;cursor:pointer;transition:all .15s}
 .logout-btn:hover{border-color:rgba(255,255,255,.3);color:white}

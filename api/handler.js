@@ -315,11 +315,36 @@ async function verifyPassword(password, stored) {
 }
 
 function normalizeRole(role, fallback = 'user') {
-  return ['user', 'manager', 'admin'].includes(role) ? role : fallback;
+  return ['user', 'manager', 'admin', 'accounting'].includes(role) ? role : fallback;
 }
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email));
+}
+
+// Corporate email-domain migrations (company renamed/split, mailboxes moved
+// to a new domain) shouldn't orphan an employee's existing account: role,
+// history and id must survive. LEGACY_EMAIL_DOMAIN_MAP holds "old:new" pairs
+// — parsed here as new-domain -> old-domain so a login under the new address
+// can find the account still filed under the old one.
+function parseLegacyEmailDomainMap(env) {
+  const raw = String(env.LEGACY_EMAIL_DOMAIN_MAP || '').trim();
+  const map = new Map();
+  if (!raw) return map;
+  for (const pair of raw.split(',')) {
+    const [oldDomain, newDomain] = pair.split(':').map(s => String(s || '').trim().toLowerCase());
+    if (oldDomain && newDomain) map.set(newDomain, oldDomain);
+  }
+  return map;
+}
+
+function legacyEmailFor(email, domainMap) {
+  const at = String(email || '').lastIndexOf('@');
+  if (at < 0 || !domainMap.size) return '';
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  const oldDomain = domainMap.get(domain);
+  return oldDomain ? `${local}@${oldDomain}` : '';
 }
 
 function isLdapExternalPassword(value) {
@@ -390,10 +415,12 @@ function normalizeDn(value) {
 function mapRoleFromLdapGroups(groups, env) {
   const adminGroupDn = normalizeDn(env.LDAP_ROLE_ADMIN_GROUP_DN || '');
   const managerGroupDn = normalizeDn(env.LDAP_ROLE_MANAGER_GROUP_DN || '');
+  const accountingGroupDn = normalizeDn(env.LDAP_ROLE_ACCOUNTING_GROUP_DN || '');
   const normalizedGroups = new Set((groups || []).map(normalizeDn).filter(Boolean));
 
   if (adminGroupDn && normalizedGroups.has(adminGroupDn)) return 'admin';
   if (managerGroupDn && normalizedGroups.has(managerGroupDn)) return 'manager';
+  if (accountingGroupDn && normalizedGroups.has(accountingGroupDn)) return 'accounting';
   return 'user';
 }
 
@@ -428,9 +455,21 @@ function createLdapClient(env) {
 }
 
 async function upsertLdapUser(env, profile) {
-  const existing = await env.DB.prepare(
+  let existing = await env.DB.prepare(
     'SELECT id, password, role FROM users WHERE email = ?'
   ).bind(profile.email).first();
+
+  // Same reasoning as the local-password login path: if AD started
+  // reporting a new mail domain, don't spin up a brand-new (role-less)
+  // account when the real one is just filed under the old address.
+  if (!existing) {
+    const legacyEmail = legacyEmailFor(profile.email, parseLegacyEmailDomainMap(env));
+    if (legacyEmail) {
+      existing = await env.DB.prepare(
+        'SELECT id, password, role FROM users WHERE email = ?'
+      ).bind(legacyEmail).first();
+    }
+  }
 
   const ldapMarkerPassword = `${LDAP_EXTERNAL_PASSWORD_PREFIX}${profile.externalId}`;
   let userId = '';
@@ -441,9 +480,20 @@ async function upsertLdapUser(env, profile) {
     const nextRole = existing.role || 'user';
     const nextPassword = isLdapExternalPassword(existing.password) ? ldapMarkerPassword : existing.password;
 
-    await env.DB.prepare(
-      'UPDATE users SET name = ?, department = ?, role = ?, password = ? WHERE id = ?'
-    ).bind(profile.name, profile.department, nextRole, nextPassword, userId).run();
+    try {
+      await env.DB.prepare(
+        'UPDATE users SET email = ?, name = ?, department = ?, role = ?, password = ? WHERE id = ?'
+      ).bind(profile.email, profile.name, profile.department, nextRole, nextPassword, userId).run();
+    } catch (error) {
+      // Most likely a UNIQUE collision on email (a fresh account already
+      // got auto-created under the new address before this account
+      // migrated) — keep the account on its current email rather than
+      // failing the login; an admin can reconcile the duplicate.
+      console.error('[LDAP] legacy email migration failed', error);
+      await env.DB.prepare(
+        'UPDATE users SET name = ?, department = ?, role = ?, password = ? WHERE id = ?'
+      ).bind(profile.name, profile.department, nextRole, nextPassword, userId).run();
+    }
   } else {
     userId = `ldap_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
     // New users always start as 'user'. Admins assign manager/admin roles manually.
@@ -2352,9 +2402,25 @@ export async function onRequest(context) {
         );
       }
 
-      const row = await env.DB.prepare(
+      let row = await env.DB.prepare(
         'SELECT id, email, name, department, role, password, blocked FROM users WHERE email = ?'
       ).bind(loginLocalEmail).first();
+
+      // Not found under the address they typed — if it's a known post-migration
+      // domain, the account may still be filed under the old one. Falling back
+      // here (rather than requiring a separate admin step) means nobody loses
+      // their role or booking history just because the company's mail domain
+      // changed out from under them.
+      let legacyEmailMatched = '';
+      if (!row) {
+        const legacyEmail = legacyEmailFor(loginLocalEmail, parseLegacyEmailDomainMap(env));
+        if (legacyEmail) {
+          row = await env.DB.prepare(
+            'SELECT id, email, name, department, role, password, blocked FROM users WHERE email = ?'
+          ).bind(legacyEmail).first();
+          if (row) legacyEmailMatched = legacyEmail;
+        }
+      }
 
       if (!row) return reply({ error: 'Неверный логин или пароль' }, 401);
       if (Number(row.blocked || 0) === 1) {
@@ -2366,6 +2432,19 @@ export async function onRequest(context) {
       if (!isHashedPassword(row.password) && !isLdapExternalPassword(row.password)) {
         const upgraded = await hashPassword(password);
         await env.DB.prepare('UPDATE users SET password = ? WHERE id = ?').bind(upgraded, row.id).run();
+      }
+
+      if (legacyEmailMatched) {
+        try {
+          await env.DB.prepare('UPDATE users SET email = ? WHERE id = ?').bind(loginLocalEmail, row.id).run();
+          row = { ...row, email: loginLocalEmail };
+        } catch (error) {
+          // Most likely a UNIQUE collision (a fresh account already got
+          // auto-created under the new address before this migrated) —
+          // keep logging the user in under their old email rather than
+          // failing the request; an admin can reconcile the duplicate.
+          console.error('[auth] legacy email migration failed', error);
+        }
       }
 
       await env.DB.prepare('UPDATE users SET last_login = datetime(\'now\') WHERE id = ?')
@@ -2454,6 +2533,11 @@ export async function onRequest(context) {
       const { list } = await getUsersMap(env, { withSessionActive: auth.user.role === 'admin' });
       let users = [];
       if (auth.user.role === 'admin') {
+        users = list;
+      } else if (auth.user.role === 'accounting') {
+        // Accounting reports span the whole company, not one department —
+        // needs the full roster to resolve names/departments, but never
+        // gets booking-management endpoints (those stay admin/manager-only).
         users = list;
       } else if (auth.user.role === 'manager') {
         users = list.filter(u => u.id === auth.user.id || u.department === auth.user.department);

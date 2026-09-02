@@ -49,6 +49,7 @@
       <button class="tnav" onclick="switchView('mybookings',this)">Мои брони</button>
       <button class="tnav manager-only" onclick="switchView('team',this)">Отдел</button>
       <button class="tnav admin-only" id="nav-admin-btn" onclick="switchView('admin',this)">Администрирование</button>
+      <button class="tnav accounting-only" onclick="switchView('accstats',this)">Статистика</button>
     </div>
     <div class="topbar-right">
       <span class="role-pill" id="role-pill"></span>
@@ -151,6 +152,9 @@
 
       <!-- TEAM VIEW -->
       <div id="view-team" style="display:none;flex:1;overflow:hidden"></div>
+
+      <!-- ACCOUNTING STATS VIEW -->
+      <div id="view-accstats" style="display:none;flex:1;overflow:hidden"></div>
 
       <!-- ADMIN VIEW -->
       <div id="view-admin" style="display:none;flex:1;overflow:hidden"></div>
