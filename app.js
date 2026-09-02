@@ -751,17 +751,18 @@ function applyUserUI() {
   const labels = { user:'Сотрудник', manager:'Руководитель', admin:'Администратор', accounting:'Бухгалтерия' };
   rp.textContent = labels[u.role] || u.role;
   rp.className   = 'role-pill rp-' + u.role;
-  // Accounting is a stats-only role: hide the regular nav (Карта/Мои брони)
-  // and show only its own "Статистика" tab, alongside the usual role gates.
+  // Accounting has the same team/booking rights as a manager, plus its own
+  // extra company-wide "Статистика" tab (unlocked, unlike a manager's own
+  // department-locked one under "Отдел").
   document.querySelectorAll('.tnav').forEach(el => {
     if (el.classList.contains('accounting-only')) {
       el.style.display = u.role==='accounting' ? 'block' : 'none';
     } else if (el.classList.contains('manager-only')) {
-      el.style.display = (u.role==='manager'||u.role==='admin') ? 'block' : 'none';
+      el.style.display = (u.role==='manager'||u.role==='admin'||u.role==='accounting') ? 'block' : 'none';
     } else if (el.classList.contains('admin-only')) {
       el.style.display = u.role==='admin' ? 'block' : 'none';
     } else {
-      el.style.display = u.role==='accounting' ? 'none' : 'block';
+      el.style.display = 'block';
     }
   });
 }
@@ -1130,10 +1131,9 @@ async function initApp() {
   const allowed = new Set(['map', 'mybookings', 'team', 'admin', 'cabinet', 'accstats']);
   if (currentUser?.role === 'user')       { allowed.delete('team'); allowed.delete('admin'); allowed.delete('accstats'); }
   if (currentUser?.role === 'manager')    { allowed.delete('admin'); allowed.delete('accstats'); }
-  if (currentUser?.role === 'accounting') { allowed.clear(); allowed.add('accstats'); allowed.add('cabinet'); }
+  if (currentUser?.role === 'accounting') { allowed.delete('admin'); }
   const savedView = localStorage.getItem('lastView');
-  const defaultView = currentUser?.role === 'accounting' ? 'accstats' : 'map';
-  const startView = savedView && allowed.has(savedView) ? savedView : defaultView;
+  const startView = savedView && allowed.has(savedView) ? savedView : 'map';
   const savedAdminTab = localStorage.getItem('adminActiveTab');
   if (savedAdminTab) adminActiveTab = savedAdminTab;
   switchView(startView);
@@ -2057,8 +2057,9 @@ function getAllowedBookingTargets() {
   if (currentUser.role === 'admin') {
     return getUsers().filter(u => !u.blocked).slice().sort((a,b)=>a.name.localeCompare(b.name,'ru'));
   }
-  if (currentUser.role === 'manager') {
-    // Managers can ONLY book for users in their own department (security fix)
+  if (currentUser.role === 'manager' || currentUser.role === 'accounting') {
+    // Managers (and accounting, which has the same team rights) can ONLY
+    // book for users in their own department (security fix)
     const deptUsers = getUsers().filter(u =>
       !u.blocked &&
       u.department === currentUser.department &&
@@ -2089,7 +2090,7 @@ function canCancelBooking(booking) {
   if (!Number.isFinite(endMs) || endMs <= Date.now()) return false;
   if (currentUser.role === 'admin') return true;
   if (currentUser.role === 'user') return isMineBooking(booking);
-  if (currentUser.role === 'manager') {
+  if (currentUser.role === 'manager' || currentUser.role === 'accounting') {
     const owner = getUsers().find(u => u.id === booking.userId);
     if (!owner) return false;
     if (isCurrentUserId(owner.id)) return true;
@@ -2103,7 +2104,7 @@ function canRestoreBookingEntry(booking) {
   if (booking.status !== 'cancelled') return false;
   if (!isBookingActive({ ...booking, status: 'active' })) return false;
   if (currentUser.role === 'admin') return true;
-  if (currentUser.role !== 'manager') return false;
+  if (currentUser.role !== 'manager' && currentUser.role !== 'accounting') return false;
   const owner = getUsers().find(u => sameId(u.id, booking.userId));
   if (!owner) return false;
   if (sameId(owner.id, currentUser.id)) return true;
@@ -2157,7 +2158,7 @@ function spaceClick(spaceId) {
        <div class="date-pills">${selDates.map(d=>`<span class="date-pill">${fmtHuman(d)}</span>`).join('')}</div>
        </div>`
     : '';
-  const canPickTarget = !isBusy && (currentUser.role === 'admin' || currentUser.role === 'manager') && targets.length > 1;
+  const canPickTarget = !isBusy && ['admin', 'manager', 'accounting'].includes(currentUser.role) && targets.length > 1;
   const filteredTargets = bookingUserSearch
     ? targets.filter(u => `${u.name} ${u.email} ${u.department || ''}`.toLowerCase().includes(bookingUserSearch))
     : targets;
@@ -2501,11 +2502,8 @@ async function _doCancelSelected(ids) {
 function switchView(view, btn) {
   const prevView = currentView;
   // Access control
-  if (view === 'admin' && currentUser?.role === 'manager') view = 'team';
+  if (view === 'admin' && (currentUser?.role === 'manager' || currentUser?.role === 'accounting')) view = 'team';
   if ((view === 'admin' || view === 'team') && currentUser?.role === 'user') view = 'map';
-  // Accounting is a stats-only role — every other view redirects to its
-  // report screen, except the personal cabinet (own password change).
-  if (currentUser?.role === 'accounting' && view !== 'cabinet') view = 'accstats';
   if (prevView === 'admin' && view !== 'admin' && editorLockState.mine && editorLockState.floorId) {
     releaseEditorLock(editorLockState.floorId).catch(() => {});
   }
@@ -2642,7 +2640,7 @@ function renderCabinetView() {
   const activeBookings = getActiveBookings(getBookings());
   const myBks = activeBookings.filter(b => sameId(b.userId, me.id))
                               .sort((a, b) => a.date.localeCompare(b.date));
-  const isManager = me.role === 'manager' || me.role === 'admin';
+  const isManager = me.role === 'manager' || me.role === 'admin' || me.role === 'accounting';
   const team = isManager
     ? getUsers().filter(u => me.department && u.department === me.department && !sameId(u.id, me.id) && u.role === 'user')
     : [];
@@ -4415,7 +4413,7 @@ function renderAdminAudit(el) {
             : events.map(e => `
               <tr>
                 <td style="font-size:12px;color:var(--ink3)">${fmtDateTimeHuman(e.createdAt)}</td>
-                <td><strong>${escapeHtml(e.actorName || '—')}</strong><br><span style="font-size:11px;color:var(--ink4)">${escapeHtml(e.actorRole === 'manager' ? 'Руководитель' : 'Администратор')}</span></td>
+                <td><strong>${escapeHtml(e.actorName || '—')}</strong><br><span style="font-size:11px;color:var(--ink4)">${escapeHtml(e.actorRole === 'manager' ? 'Руководитель' : e.actorRole === 'accounting' ? 'Бухгалтерия' : 'Администратор')}</span></td>
                 <td>${escapeHtml(e.targetUserName || '—')}</td>
                 <td>${escapeHtml(e.spaceName || '—')}</td>
                 <td>${e.bookingDate ? fmtHuman(e.bookingDate) : '—'}</td>

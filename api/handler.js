@@ -992,7 +992,7 @@ async function getTargetUser(env, userId) {
 function canManageTarget(actor, target) {
   if (!actor || !target) return false;
   if (actor.role === 'admin') return true;
-  if (actor.role === 'manager') {
+  if (actor.role === 'manager' || actor.role === 'accounting') {
     if (target.id === actor.id) return true;
     return target.role === 'user' && target.department === actor.department;
   }
@@ -1005,7 +1005,7 @@ function canCancelBooking(actor, booking, owner) {
   if (!isBookingActive(booking)) return false;
   if (actor.role === 'admin') return true;
   if (actor.role === 'user') return booking.userId === actor.id;
-  if (actor.role === 'manager') {
+  if (actor.role === 'manager' || actor.role === 'accounting') {
     if (booking.userId === actor.id) return true;
     if (!owner) return false;
     return owner.role === 'user' && owner.department === actor.department;
@@ -3122,7 +3122,7 @@ export async function onRequest(context) {
       if (current.status === 'cancelled') {
         const canSeeCancelled = auth.user.role === 'admin' ||
           current.userId === auth.user.id ||
-          (auth.user.role === 'manager' && owner && owner.role === 'user' && owner.department === auth.user.department);
+          ((auth.user.role === 'manager' || auth.user.role === 'accounting') && owner && owner.role === 'user' && owner.department === auth.user.department);
         if (!canSeeCancelled) return reply({ error: 'Недостаточно прав для отмены' }, 403);
         const bookings = await loadBookings(env);
         const rev = await getBookingsRev(env);
@@ -3156,9 +3156,9 @@ export async function onRequest(context) {
       return reply({ ok: true, bookings, rev, cancelled: changed > 0, alreadyCancelled: changed === 0 });
     }
 
-    /* ── POST /bookings/restore (admin/manager) ──────── */
+    /* ── POST /bookings/restore (admin/manager/accounting) ──────── */
     if (path === '/bookings/restore' && method === 'POST') {
-      if (!['admin', 'manager'].includes(auth.user.role)) {
+      if (!['admin', 'manager', 'accounting'].includes(auth.user.role)) {
         return reply({ error: 'Недостаточно прав' }, 403);
       }
       const { id = '' } = await request.json();
@@ -3329,7 +3329,7 @@ export async function onRequest(context) {
           details_json AS detailsJson,
           created_at AS createdAt
          FROM booking_cancellation_audit
-         WHERE actor_role IN ('manager', 'admin')
+         WHERE actor_role IN ('manager', 'admin', 'accounting')
          ORDER BY created_at DESC
          LIMIT ?`,
         [limit]
