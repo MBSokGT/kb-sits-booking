@@ -810,7 +810,13 @@ async function syncFromServer({ bookingsOnly = false } = {}) {
       if (Number.isInteger(Number(d?.rev))) setServerRev(k, Number(d.rev));
       if (d.value !== null && d.value !== undefined) {
         // Server has data → overwrite localStorage (truth comes from server)
-        localStorage.setItem('ws_' + k, JSON.stringify(d.value));
+        try {
+          localStorage.setItem('ws_' + k, JSON.stringify(d.value));
+        } catch (e) {
+          // Floor plans can embed large base64 images/PDFs — don't let a
+          // quota error here abort the rest of the sync (bookings included).
+          console.error(`Не удалось сохранить "${k}" локально (переполнено хранилище браузера):`, e);
+        }
       } else {
         // Server bucket empty → collect for ordered push (spaces depend on floors)
         const local = DB.get(k, null);
@@ -874,7 +880,15 @@ async function fetchBookingsFromApi() {
   if (!r.ok) return false;
   const d = await r.json();
   const bookings = Array.isArray(d.bookings) ? d.bookings : [];
-  localStorage.setItem('ws_bookings', JSON.stringify(bookings));
+  try {
+    localStorage.setItem('ws_bookings', JSON.stringify(bookings));
+  } catch (e) {
+    // Booking history can outgrow the browser's localStorage quota over
+    // time (this poll runs every 10s). Failing to cache it locally must
+    // not crash init/sync — the map still renders from whatever was
+    // cached last, degraded but alive, instead of a hard error screen.
+    console.error('Не удалось сохранить брони локально (переполнено хранилище браузера):', e);
+  }
   return true;
 }
 
