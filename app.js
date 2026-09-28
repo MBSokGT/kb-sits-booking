@@ -3447,7 +3447,7 @@ function excelWorksheet(title, headers, rows) {
   return `<Worksheet ss:Name="${excelXmlText(safeTitle)}"><Table>${rowXml}</Table></Worksheet>`;
 }
 
-function exportExcelWorkbook(filename, sheets) {
+function exportExcelWorkbook(filename, sheets, extraStyles = '') {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <?mso-application progid="Excel.Sheet"?>
 <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
@@ -3456,6 +3456,7 @@ function exportExcelWorkbook(filename, sheets) {
   xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
   <Styles>
     <Style ss:ID="header"><Font ss:Bold="1"/><Interior ss:Color="#E5E7EB" ss:Pattern="Solid"/></Style>
+    ${extraStyles}
   </Styles>
   ${sheets.join('')}
 </Workbook>`;
@@ -3504,19 +3505,47 @@ async function exportAdminStatsExcel() {
   ]);
 }
 
+// Matches the accounting department's own reference layout (their
+// "Бронирования_Август.xlsx"): the header row is repeated above each
+// employee's own block, separated by a blank row, rather than one header
+// at the top of a flat table. Column widths and the red/white header
+// style mirror that file too (converted from its Excel character-width
+// units to SpreadsheetML points: pixels = width*7+5, points = pixels*0.75).
+function buildAccountingReportWorksheet(rows) {
+  const headers = ['ФИО', 'Дата', 'День недели', 'Помещение'];
+  const headerRowXml = `<Row ss:Height="15">${headers.map(h =>
+    `<Cell ss:StyleID="buhHeader"><Data ss:Type="String">${excelXmlText(h)}</Data></Cell>`
+  ).join('')}</Row>`;
+  const blankRowXml = `<Row ss:Height="15"/>`;
+
+  const groups = [];
+  for (const row of rows) {
+    const last = groups[groups.length - 1];
+    if (last && last.name === row[0]) last.rows.push(row);
+    else groups.push({ name: row[0], rows: [row] });
+  }
+
+  let bodyXml = '';
+  groups.forEach((group, idx) => {
+    bodyXml += headerRowXml;
+    group.rows.forEach(row => {
+      bodyXml += `<Row ss:Height="15">${row.map(v =>
+        `<Cell ss:StyleID="buhBody"><Data ss:Type="String">${excelXmlText(v)}</Data></Cell>`
+      ).join('')}</Row>`;
+    });
+    if (idx < groups.length - 1) bodyXml += blankRowXml;
+  });
+
+  return `<Worksheet ss:Name="Отчет для бухгалтерии"><Table>
+    <Column ss:Width="148.5"/><Column ss:Width="60"/><Column ss:Width="92.25"/><Column ss:Width="87"/>
+    ${bodyXml}
+  </Table></Worksheet>`;
+}
+
 async function exportAdminStatsSimpleExcel() {
   toast('Формируем отчёт…', '', '⏳');
   const data = await loadAdminStatsData();
   const period = `${data.from}_${data.to}`;
-  const weekdayFull = {
-    'Пн': 'Понедельник',
-    'Вт': 'Вторник',
-    'Ср': 'Среда',
-    'Чт': 'Четверг',
-    'Пт': 'Пятница',
-    'Сб': 'Суббота',
-    'Вс': 'Воскресенье',
-  };
   // Grouped by employee (А-Я), then by date within each employee —
   // matches the printed accounting report format, not the date-first
   // order used by data.rows for the other exports.
@@ -3526,13 +3555,21 @@ async function exportAdminStatsSimpleExcel() {
   const rows = sortedRows.map(r => [
     r.userName,
     fmtDateRuFull(r.date),
-    weekdayFull[r.weekdayName] || r.weekdayName,
+    r.weekdayName,
     r.spaceName,
   ]);
 
-  exportExcelWorkbook(`accounting-report-${period}.xls`, [
-    excelWorksheet('Отчет для бухгалтерии', ['ФИО сотрудника', 'Дата', 'День недели', 'Помещение'], rows),
-  ]);
+  const buhStyles = `
+    <Style ss:ID="buhHeader">
+      <Font ss:FontName="Arial" ss:Size="10" ss:Bold="1" ss:Color="#FFFFFF"/>
+      <Interior ss:Color="#BE1F24" ss:Pattern="Solid"/>
+      <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
+    </Style>
+    <Style ss:ID="buhBody">
+      <Font ss:FontName="Arial" ss:Size="10"/>
+    </Style>`;
+
+  exportExcelWorkbook(`accounting-report-${period}.xls`, [buildAccountingReportWorksheet(rows)], buhStyles);
 }
 
 /* ═══════════════════════════════════════════════════════
