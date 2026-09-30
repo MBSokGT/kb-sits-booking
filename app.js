@@ -3542,6 +3542,18 @@ function buildAccountingReportWorksheet(rows) {
   </Table></Worksheet>`;
 }
 
+// The accounting report's "Помещение" column is meant to be the coworking's
+// own short code (e.g. "4.16") - the number accounting actually bills
+// against - not the individual desk/space label. Coworking names here are
+// set up as "Коворкинг #12 (4.16) (ДЛЯ ПРОДАЖ)"; pull the code out of the
+// first parentheses. Falls back to the full name if a coworking was never
+// named that way.
+function coworkingReportLabel(coworkingName) {
+  const name = String(coworkingName || '').trim();
+  const match = name.match(/\(([^)]+)\)/);
+  return match ? match[1].trim() : name;
+}
+
 async function exportAdminStatsSimpleExcel() {
   toast('Формируем отчёт…', '', '⏳');
   const data = await loadAdminStatsData();
@@ -3556,7 +3568,7 @@ async function exportAdminStatsSimpleExcel() {
     r.userName,
     fmtDateRuFull(r.date),
     r.weekdayName,
-    r.spaceName,
+    coworkingReportLabel(r.coworkingName),
   ]);
 
   const buhStyles = `
