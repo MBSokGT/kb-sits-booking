@@ -2914,13 +2914,13 @@ function buildDeptCard(dept, users) {
     </div>
     <div class="dept-members">
       <span class="dept-label">Сотрудники (${members.length})</span>
-      <div class="dept-member-list">
+      ${members.length ? `<div class="dept-member-list">
         ${members.map(u=>`
           <span class="dept-member-chip">
             ${escapeHtml(u.name)}
             ${manualMemberIds.has(u.id) ? `<button onclick="removeMemberFromDept('${dept.id}','${u.id}')" title="Убрать" aria-label="Убрать">${ICON_X}</button>` : ''}
           </span>`).join('')}
-      </div>
+      </div>` : ''}
       ${nonMembers.length ? `
         <div class="dept-add-row" style="position:relative">
           <input type="text" id="dept-search-${dept.id}" name="dept-search-${dept.id}"
