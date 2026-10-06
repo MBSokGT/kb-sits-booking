@@ -101,23 +101,71 @@ function clearServerRevs() {
   serverRevs = {};
 }
 
+// Everything in here is a cache of server data (plus the small client-side
+// session marker), so a full or disabled localStorage must degrade, not
+// break: a write that doesn't fit falls through to sessionStorage (its own
+// quota, survives a reload in the tab) and finally to plain memory, and
+// reads check the freshest tier first. Without this, a full localStorage
+// silently kept serving the OLD cached bookings after a booking was made,
+// and lost the login marker on reload (bounce back to the login screen).
 const DB = {
-  get(k, def){ 
-    try{ 
-      const item = localStorage.getItem('ws_'+k);
-      return item ? JSON.parse(item) : def;
-    } catch(e) { 
-      console.warn('localStorage error:', e);
-      return def;
-    } 
+  _mem: new Map(),
+  _warned: false,
+  _warnFull() {
+    if (DB._warned) return;
+    DB._warned = true;
+    console.warn('localStorage is full or disabled — falling back to session/memory cache');
+    setTimeout(() => {
+      try { toast('Память браузера заполнена — очистите данные сайта в настройках браузера', 't-amber', '!'); } catch (e) {}
+    }, 2000);
   },
-  set(k,v){ 
-    try {
-      localStorage.setItem('ws_'+k, JSON.stringify(v));
-    } catch(e) {
-      console.error('localStorage full or disabled:', e);
-      alert('⚠️ Хранилище браузера переполнено или отключено. Данные не сохранены.');
+  get(k, def){
+    if (DB._mem.has(k)) return DB._mem.get(k);
+    const name = 'ws_' + k;
+    let item = null;
+    try { item = sessionStorage.getItem(name); } catch (e) {}
+    if (item === null) {
+      try { item = localStorage.getItem(name); } catch (e) { console.warn('localStorage error:', e); }
     }
+    try {
+      return item ? JSON.parse(item) : def;
+    } catch (e) {
+      return def;
+    }
+  },
+  // Local-only write (never pushes to the server). Returns true if it
+  // landed in localStorage proper.
+  cache(k, v) {
+    const name = 'ws_' + k;
+    const json = JSON.stringify(v);
+    const clearFallbacks = () => {
+      DB._mem.delete(k);
+      try { sessionStorage.removeItem(name); } catch (e) {}
+    };
+    try {
+      localStorage.setItem(name, json);
+      clearFallbacks();
+      return true;
+    } catch (e) {}
+    // The old copy may be what's eating the room (a stale full-history
+    // blob replaced by a much smaller window) — drop it and retry once.
+    try {
+      localStorage.removeItem(name);
+      localStorage.setItem(name, json);
+      clearFallbacks();
+      return true;
+    } catch (e) {}
+    try {
+      sessionStorage.setItem(name, json);
+      DB._mem.delete(k);
+      return false;
+    } catch (e) {}
+    DB._mem.set(k, v);
+    DB._warnFull();
+    return false;
+  },
+  set(k,v){
+    DB.cache(k, v);
     // Async push to server KV (skip auth/session/users and bookings: bookings use dedicated API)
     if (k !== 'session' && k !== 'users' && k !== 'bookings') {
       if (suppressPushKeys.has(k)) {
@@ -810,14 +858,10 @@ async function syncFromServer({ bookingsOnly = false } = {}) {
       const d = await r.json();
       if (Number.isInteger(Number(d?.rev))) setServerRev(k, Number(d.rev));
       if (d.value !== null && d.value !== undefined) {
-        // Server has data → overwrite localStorage (truth comes from server)
-        try {
-          localStorage.setItem('ws_' + k, JSON.stringify(d.value));
-        } catch (e) {
-          // Floor plans can embed large base64 images/PDFs — don't let a
-          // quota error here abort the rest of the sync (bookings included).
-          console.error(`Не удалось сохранить "${k}" локально (переполнено хранилище браузера):`, e);
-        }
+        // Server has data → overwrite the local cache (truth comes from
+        // server). Floor plans can embed large base64 images/PDFs, so this
+        // must tolerate a full localStorage instead of aborting the sync.
+        DB.cache(k, d.value);
       } else {
         // Server bucket empty → collect for ordered push (spaces depend on floors)
         const local = DB.get(k, null);
@@ -874,41 +918,21 @@ async function pushDomainKey(key, value) {
   }
 }
 
-// The 10s live poll only needs to cover what the map/mini-bookings/"Мои
-// брони" widgets can actually show: a rolling window around today, wide
-// enough for the furthest advance booking (12 months) plus recent history.
-// It deliberately does NOT try to hold the full 2-year retention window —
-// that's what made ws_bookings grow without bound and blow the browser's
-// localStorage quota. Anything older/further belongs to an on-demand
-// range fetch instead (see fetchBookingsRangeFromApi), which the server
-// can always serve since it keeps the full 2 years regardless of what any
-// one client has cached.
-const LIVE_BOOKINGS_SYNC_DAYS_BACK = 90;
-const LIVE_BOOKINGS_SYNC_DAYS_FORWARD = 400;
-
-function liveBookingsSyncRange() {
-  const today = new Date();
-  const from = new Date(today); from.setDate(from.getDate() - LIVE_BOOKINGS_SYNC_DAYS_BACK);
-  const to = new Date(today); to.setDate(to.getDate() + LIVE_BOOKINGS_SYNC_DAYS_FORWARD);
-  return { from: fmtDate(from), to: fmtDate(to) };
-}
-
+// The live poll asks for no range, and the server answers with its default
+// "live window" (a rolling slice around today: recent history plus the
+// furthest advance booking). The server applies that same default to every
+// booking create/cancel/restore response too, so the local cache can never
+// be re-inflated to the full 2-year history by a mutation — that's what
+// blew the browser's localStorage quota. Anything outside the window goes
+// through fetchBookingsRangeFromApi instead, which the server can always
+// serve since it keeps the full 2 years.
 async function fetchBookingsFromApi() {
   if (!currentUser) return false;
-  const range = liveBookingsSyncRange();
-  const r = await apiFetch(`/api/bookings?from=${range.from}&to=${range.to}`);
+  const r = await apiFetch('/api/bookings');
   if (r.status === 401) { requireRelogin(); return false; }
   if (!r.ok) return false;
   const d = await r.json();
-  const bookings = Array.isArray(d.bookings) ? d.bookings : [];
-  try {
-    localStorage.setItem('ws_bookings', JSON.stringify(bookings));
-  } catch (e) {
-    // Kept as a safety net: even the bounded window above could still be
-    // large for a very active company, so a full crash here must still be
-    // impossible — the map renders from whatever was cached last instead.
-    console.error('Не удалось сохранить брони локально (переполнено хранилище браузера):', e);
-  }
+  DB.cache('bookings', Array.isArray(d.bookings) ? d.bookings : []);
   return true;
 }
 

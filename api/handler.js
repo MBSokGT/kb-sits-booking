@@ -1760,21 +1760,41 @@ function isDateOnly(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
+// What clients keep cached and poll every few seconds: recent history plus
+// the furthest advance booking (12 months). Deliberately NOT the full
+// 2-year retention window — a browser's localStorage can't hold that for a
+// busy company. Defined here (not in the client) so every response that
+// carries a bookings list — poll, create, cancel, restore — agrees on it.
+const LIVE_WINDOW_DAYS_BACK = 90;
+const LIVE_WINDOW_DAYS_FORWARD = 400;
+
+function liveBookingsRange(nowMs = Date.now()) {
+  // Booking dates are Moscow calendar days (UTC+3, no DST).
+  const msk = new Date(nowMs + 3 * 60 * 60 * 1000);
+  const shift = days => {
+    const d = new Date(msk);
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  };
+  return { from: shift(-LIVE_WINDOW_DAYS_BACK), to: shift(LIVE_WINDOW_DAYS_FORWARD) };
+}
+
 async function loadBookings(env, range = {}) {
   await purgeOldBookings(env);
   const cutoffMs = Date.now() - BOOKING_RETENTION_MS;
   const where = ['end_utc_ms >= ?'];
   const params = [cutoffMs];
-  // Optional date-only range (inclusive) — lets callers ask for a bounded
-  // window (the live map poll) instead of the full retention window every
-  // time, while reports/exports can still request any range up to 2 years.
-  if (isDateOnly(range.from)) {
+  // An explicit date-only range (inclusive) lets reports/exports ask for any
+  // slice up to the full 2 years. With no range, fall back to the live
+  // window above instead of returning everything.
+  const effective = (isDateOnly(range.from) || isDateOnly(range.to)) ? range : liveBookingsRange();
+  if (isDateOnly(effective.from)) {
     where.push('date >= ?');
-    params.push(range.from);
+    params.push(effective.from);
   }
-  if (isDateOnly(range.to)) {
+  if (isDateOnly(effective.to)) {
     where.push('date <= ?');
-    params.push(range.to);
+    params.push(effective.to);
   }
   const { results } = await allSql(
     env,
