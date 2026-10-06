@@ -643,6 +643,24 @@ function shortName(name) {
 const ICON_X = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg>';
 const ICON_EDIT = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.8 2.7l2.5 2.5L5.6 12.9 2.5 13.5l.6-3.1z"/></svg>';
 
+const ICON_COPY = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg>';
+
+// One row of the floor editor's zone list (initial render and live updates share it).
+function editorZoneRowHtml(sp) {
+  return `<div class="zone-row">
+      <span class="zone-row-swatch" style="background:${safeCssColor(sp.color)}"></span>
+      <div class="zone-row-main">
+        <div class="zone-row-name" title="${escapeAttr(sp.label)}">${escapeHtml(sp.label)}</div>
+        <div class="zone-row-seats">${sp.seats} ${pluralRu(sp.seats, 'место', 'места', 'мест')}</div>
+      </div>
+      <div class="zone-row-actions">
+        <button class="btn btn-ghost btn-xs" onclick="renameEditorZone('${sp.id}')" title="Переименовать" aria-label="Переименовать">${ICON_EDIT}</button>
+        <button class="btn btn-ghost btn-xs" onclick="duplicateEditorZone('${sp.id}')" title="Копировать" aria-label="Копировать">${ICON_COPY}</button>
+        <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')" title="Удалить" aria-label="Удалить">${ICON_X}</button>
+      </div>
+    </div>`;
+}
+
 let _toastTimer;
 function toast(msg, cls='') {
   const el = document.getElementById('toast');
@@ -5057,17 +5075,8 @@ function renderEditorForFloor() {
           Зоны (${editorSpaces.length})
           <button class="btn btn-primary btn-sm" onclick="saveEditorSpaces()" ${lockMine ? '' : 'disabled title="Сохранение заблокировано: этаж редактирует другой администратор"'}>Сохранить</button>
         </div>
-        <div id="editor-zones-list" style="display:flex;flex-direction:column;gap:5px;max-height:300px;overflow-y:auto">
-          ${editorSpaces.length ? editorSpaces.map(sp=>`
-            <div style="display:flex;align-items:center;gap:8px;padding:7px 8px;border:1px solid var(--line);
-              border-radius:6px;font-size:12px">
-              <div style="width:10px;height:10px;border-radius:2px;background:${safeCssColor(sp.color)};flex-shrink:0"></div>
-              <span style="flex:1;font-weight:600">${escapeHtml(sp.label)}</span>
-              <span style="color:var(--ink4)">${sp.seats} мест</span>
-              <button class="btn btn-ghost btn-xs" onclick="renameEditorZone('${sp.id}')" title="Переименовать" aria-label="Переименовать">${ICON_EDIT}</button>
-              <button class="btn btn-ghost btn-xs" onclick="duplicateEditorZone('${sp.id}')" title="Копировать" aria-label="Копировать"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg></button>
-              <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')" title="Удалить" aria-label="Удалить">${ICON_X}</button>
-            </div>`).join('') :
+        <div id="editor-zones-list">
+          ${editorSpaces.length ? editorSpaces.map(editorZoneRowHtml).join('') :
             `<div style="font-size:12px;color:var(--ink4);text-align:center;padding:.75rem">Нет зон</div>`}
         </div>
         <div style="margin-top:.75rem;border-top:1px dashed var(--line);padding-top:.6rem">
@@ -5341,16 +5350,7 @@ function updateEditorZonesList() {
   if (!el) return;
   const title = el.closest('.panel-card')?.querySelector('.panel-title');
   if (title) title.childNodes[0].textContent = `Зоны (${editorSpaces.length})`;
-  el.innerHTML = editorSpaces.length ? editorSpaces.map(sp=>`
-    <div style="display:flex;align-items:center;gap:8px;padding:7px 8px;border:1px solid var(--line);
-      border-radius:6px;font-size:12px">
-      <div style="width:10px;height:10px;border-radius:2px;background:${safeCssColor(sp.color)};flex-shrink:0"></div>
-      <span style="flex:1;font-weight:600">${escapeHtml(sp.label)}</span>
-      <span style="color:var(--ink4)">${sp.seats} мест</span>
-      <button class="btn btn-ghost btn-xs" onclick="renameEditorZone('${sp.id}')" title="Переименовать" aria-label="Переименовать">${ICON_EDIT}</button>
-      <button class="btn btn-ghost btn-xs" onclick="duplicateEditorZone('${sp.id}')" title="Копировать" aria-label="Копировать"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg></button>
-      <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')" title="Удалить" aria-label="Удалить">${ICON_X}</button>
-    </div>`).join('') :
+  el.innerHTML = editorSpaces.length ? editorSpaces.map(editorZoneRowHtml).join('') :
     `<div style="font-size:12px;color:var(--ink4);text-align:center;padding:.75rem">Нет зон</div>`;
 }
 

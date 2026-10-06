@@ -414,11 +414,12 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:none}
 .btn-sm{height:30px;padding:0 11px;font-size:12.5px}
 .btn-xs{height:26px;padding:0 9px;font-size:12px}
 
-.role-sel{height:32px;padding:0 10px;border:1px solid var(--line2);border-radius:var(--radius);font-size:13px;font-weight:400;
+.role-sel,.search-input,.dept-search{height:32px;padding:0 10px;border:1px solid var(--line2);border-radius:var(--radius);font-size:13px;font-weight:400;
   color:var(--ink);background:var(--white);outline:none;transition:border-color .12s}
 select.role-sel{cursor:pointer}
-.role-sel:focus{border-color:var(--ink)}
-.role-sel::placeholder{color:var(--ink4)}
+.role-sel:focus,.search-input:focus,.dept-search:focus{border-color:var(--ink)}
+.role-sel::placeholder,.search-input::placeholder,.dept-search::placeholder{color:var(--ink4)}
+.dept-search{width:100%}
 
 /* tabs: segmented control by default, underline tabs for the admin section */
 .floor-tabs{display:inline-flex;flex-wrap:wrap;gap:2px;margin-bottom:1rem;padding:2px;border:1px solid var(--line2);border-radius:var(--radius);background:var(--white);max-width:100%}
@@ -436,7 +437,7 @@ select.role-sel{cursor:pointer}
    FLOOR EDITOR
 ═══════════════════════════════════════════════════════ */
 .editor-wrap{padding:1.5rem;flex:1;overflow-y:auto}
-.editor-layout{display:grid;grid-template-columns:1fr 280px;gap:1.25rem;align-items:start}
+.editor-layout{display:grid;grid-template-columns:minmax(0,1fr) 308px;gap:1.25rem;align-items:start}
 .editor-canvas-card{background:var(--white);border:1px solid var(--line);border-radius:var(--radius-lg);overflow:hidden}
 .editor-toolbar{padding:.75rem 1rem;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:.625rem;flex-wrap:wrap}
 .editor-canvas-body{position:relative;min-height:200px;background:#f8f9fa;cursor:crosshair}
@@ -470,6 +471,17 @@ select.role-sel{cursor:pointer}
 .panel-field input,.panel-field select{width:100%;height:34px;padding:0 10px;border:1px solid var(--line2);border-radius:var(--radius);
   font-size:13px;color:var(--ink);background:var(--white);outline:none;transition:border-color .12s}
 .panel-field input:focus,.panel-field select:focus{border-color:var(--ink)}
+/* zone list in the editor side panel: the name truncates instead of wrapping,
+   the three icon buttons keep a fixed size, and nothing scrolls sideways */
+#editor-zones-list{display:flex;flex-direction:column;gap:5px;max-height:300px;overflow-y:auto;overflow-x:hidden}
+.zone-row{display:flex;align-items:center;gap:10px;padding:7px 8px 7px 10px;border:1px solid var(--line);border-radius:var(--radius)}
+.zone-row-swatch{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+.zone-row-main{flex:1;min-width:0}
+.zone-row-name{font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.zone-row-seats{font-size:12px;color:var(--ink3);margin-top:1px;white-space:nowrap}
+.zone-row-actions{display:flex;gap:4px;flex-shrink:0}
+.zone-row-actions .btn-xs{width:28px;height:28px;padding:0}
+.dept-meta{min-width:0}
 .color-swatches{display:flex;gap:5px;flex-wrap:wrap;margin-top:4px}
 .swatch{width:22px;height:22px;border-radius:4px;cursor:pointer;border:2px solid transparent;transition:all .12s}
 .swatch.active,.swatch:hover{border-color:var(--ink)}
