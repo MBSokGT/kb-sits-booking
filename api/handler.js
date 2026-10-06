@@ -1002,8 +1002,9 @@ function canManageTarget(actor, target) {
 function canCancelBooking(actor, booking, owner) {
   if (!actor || !booking) return false;
   if (booking.status === 'cancelled') return false;
-  if (!isBookingActive(booking)) return false;
+  // Admin can cancel anything, including a booking whose day has passed.
   if (actor.role === 'admin') return true;
+  if (!isBookingActive(booking)) return false;
   if (actor.role === 'user') return booking.userId === actor.id;
   if (actor.role === 'manager' || actor.role === 'accounting') {
     if (booking.userId === actor.id) return true;
@@ -3209,7 +3210,8 @@ export async function onRequest(context) {
       const booking = normalizeBooking(row);
       if (!booking) return reply({ error: 'Бронирование не найдено' }, 404);
       if (booking.status !== 'cancelled') return reply({ error: 'Бронирование уже активно' }, 400);
-      if (!isBookingActive({ ...booking, status: 'active' })) {
+      const alreadyEnded = !isBookingActive({ ...booking, status: 'active' });
+      if (alreadyEnded && auth.user.role !== 'admin') {
         return reply({ error: 'Нельзя восстановить завершённую бронь' }, 400);
       }
 
@@ -3226,7 +3228,9 @@ export async function onRequest(context) {
         return reply({ error: 'Рабочее место удалено или архивировано. Сначала восстановите зону.' }, 400);
       }
 
-      const active = await loadActiveBookingsByDates(env, [booking.date], Date.now());
+      // A restored past booking must still be checked against that day's
+      // other bookings, which "active" filtering by end time would hide.
+      const active = await loadActiveBookingsByDates(env, [booking.date], alreadyEnded ? 0 : Date.now());
       const spaceConflict = active.find(b =>
         b.id !== booking.id &&
         b.spaceId === booking.spaceId &&

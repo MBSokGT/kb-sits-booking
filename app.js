@@ -2110,9 +2110,11 @@ function hasUserTimeConflict(bookings, userId, date, from, to) {
 function canCancelBooking(booking) {
   if (!currentUser || !booking) return false;
   if (booking.status === 'cancelled') return false;
+  // Admin can cancel anything, including a booking whose day has already
+  // passed (e.g. a day the person didn't come in) — it drops out of reports.
+  if (currentUser.role === 'admin') return true;
   const endMs = bookingEndUtcMs(booking);
   if (!Number.isFinite(endMs) || endMs <= Date.now()) return false;
-  if (currentUser.role === 'admin') return true;
   if (currentUser.role === 'user') return isMineBooking(booking);
   if (currentUser.role === 'manager' || currentUser.role === 'accounting') {
     const owner = getUsers().find(u => u.id === booking.userId);
@@ -2126,8 +2128,9 @@ function canCancelBooking(booking) {
 function canRestoreBookingEntry(booking) {
   if (!currentUser || !booking) return false;
   if (booking.status !== 'cancelled') return false;
-  if (!isBookingActive({ ...booking, status: 'active' })) return false;
+  // Admin can also undo a cancellation on a past day.
   if (currentUser.role === 'admin') return true;
+  if (!isBookingActive({ ...booking, status: 'active' })) return false;
   if (currentUser.role !== 'manager' && currentUser.role !== 'accounting') return false;
   const owner = getUsers().find(u => sameId(u.id, booking.userId));
   if (!owner) return false;
@@ -2633,7 +2636,7 @@ function renderMyBookingsView() {
       <tbody>${shown.map(b=>{
         const sp = spaces.find(s=>s.id===b.spaceId);
         const fl = floors.find(f=>f.id===sp?.floorId);
-        const canCancel = !isHistory && canCancelBooking(b);
+        const canCancel = canCancelBooking(b);
         const checked = selectedMyBookingIds.has(b.id) ? 'checked' : '';
         const statusCell = isHistory
           ? (b.status === 'cancelled' ? '<span style="color:var(--red);font-size:12px">Отменено</span>' : '<span style="color:var(--ink4);font-size:12px">Истекло</span>')
