@@ -43,9 +43,9 @@ function isMineBooking(booking) {
 function getStatusColors() {
   const root = getComputedStyle(document.documentElement);
   return {
-    free: root.getPropertyValue('--status-free').trim() || '#059669',
-    mine: root.getPropertyValue('--status-mine').trim() || '#1d4ed8',
-    busy: root.getPropertyValue('--status-busy').trim() || '#ef4444',
+    free: root.getPropertyValue('--status-free').trim() || '#1a7f55',
+    mine: root.getPropertyValue('--status-mine').trim() || '#c41e1e',
+    busy: root.getPropertyValue('--status-busy').trim() || '#6f7b89',
   };
 }
 
@@ -116,7 +116,7 @@ const DB = {
     DB._warned = true;
     console.warn('localStorage is full or disabled — falling back to session/memory cache');
     setTimeout(() => {
-      try { toast('Память браузера заполнена — очистите данные сайта в настройках браузера', 't-amber', '!'); } catch (e) {}
+      try { toast('Память браузера заполнена — очистите данные сайта в настройках браузера', 't-amber'); } catch (e) {}
     }, 2000);
   },
   get(k, def){
@@ -194,7 +194,7 @@ const DB = {
       const data = await r.json().catch(() => null);
       if (!r.ok) {
         if (currentUser?.role === 'admin') {
-          toast(data?.error || 'Не удалось сохранить изменения на сервере', 't-red', '✕');
+          toast(data?.error || 'Не удалось сохранить изменения на сервере', 't-red');
         }
         return;
       }
@@ -639,12 +639,15 @@ function shortName(name) {
 }
 
 /* toast */
+// Status is conveyed by the coloured dot (t-green / t-red / t-amber), not a glyph.
+const ICON_X = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg>';
+const ICON_EDIT = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.8 2.7l2.5 2.5L5.6 12.9 2.5 13.5l.6-3.1z"/></svg>';
+
 let _toastTimer;
-function toast(msg, cls='', icon='✓') {
+function toast(msg, cls='') {
   const el = document.getElementById('toast');
   el.className = 'toast show ' + cls;
-  document.getElementById('toast-msg').textContent  = msg;
-  document.getElementById('toast-icon').textContent = icon;
+  document.getElementById('toast-msg').textContent = msg;
   clearTimeout(_toastTimer);
   _toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
 }
@@ -904,11 +907,11 @@ async function pushDomainKey(key, value) {
     if (r.status === 409) {
       await syncFromServer().catch(() => {});
       if (currentView === 'admin') renderAdminView(adminActiveTab);
-      toast('Конфликт обновления. Данные перезагружены — повторите сохранение.', 't-amber', '!');
+      toast('Конфликт обновления. Данные перезагружены — повторите сохранение.', 't-amber');
       return false;
     }
     if (!r.ok) {
-      toast(data.error || 'Не удалось сохранить изменения на сервере', 't-red', '✕');
+      toast(data.error || 'Не удалось сохранить изменения на сервере', 't-red');
       return false;
     }
     if (Number.isInteger(Number(data?.rev))) setServerRev(key, Number(data.rev));
@@ -962,7 +965,7 @@ async function syncBookingsFromServer() {
 }
 
 async function replaceBookingsAsAdmin(nextBookings) {
-  toast('Массовая замена бронирований отключена из-за риска потери данных', 't-red', '✕');
+  toast('Массовая замена бронирований отключена из-за риска потери данных', 't-red');
   return false;
 }
 
@@ -980,7 +983,7 @@ async function cancelBookingsBySpacesAsAdmin(spaceIds, reason, entityName = '') 
   }
   const data = await r.json();
   if (!r.ok) {
-    toast(data.error || 'Не удалось отменить бронирования удаляемых зон', 't-red', '✕');
+    toast(data.error || 'Не удалось отменить бронирования удаляемых зон', 't-red');
     return false;
   }
   saveBookings(Array.isArray(data.bookings) ? data.bookings : []);
@@ -1663,11 +1666,11 @@ function onCalendarSlotSelect(id) {
 function applyCalendarCustomTime() {
   const f = document.getElementById('cal-ct-from')?.value || '';
   const t = document.getElementById('cal-ct-to')?.value || '';
-  if (!f || !t) return toast('Укажите оба времени', 't-red', '✕');
-  if (f >= t) return toast('Время конца должно быть позже времени начала', 't-red', '✕');
+  if (!f || !t) return toast('Укажите оба времени', 't-red');
+  if (f >= t) return toast('Время конца должно быть позже времени начала', 't-red');
   const fMin = timeToMinutes(f);
   const tMin = timeToMinutes(t);
-  if (tMin - fMin < 30) return toast('Минимальная длительность 30 минут', 't-red', '✕');
+  if (tMin - fMin < 30) return toast('Минимальная длительность 30 минут', 't-red');
   customFrom = f;
   customTo = t;
   slotId = 'custom';
@@ -1690,11 +1693,11 @@ function selectSlot(id) {
 function applyCustomTime() {
   const f = document.getElementById('ct-from').value;
   const t = document.getElementById('ct-to').value;
-  if (!f || !t) return toast('Укажите оба времени', 't-red', '✕');
-  if (f >= t) return toast('Время конца должно быть позже времени начала', 't-red', '✕');
+  if (!f || !t) return toast('Укажите оба времени', 't-red');
+  if (f >= t) return toast('Время конца должно быть позже времени начала', 't-red');
   const fMin = timeToMinutes(f);
   const tMin = timeToMinutes(t);
-  if (tMin - fMin < 30) return toast('Минимальная длительность 30 минут', 't-red', '✕');
+  if (tMin - fMin < 30) return toast('Минимальная длительность 30 минут', 't-red');
   customFrom = f; customTo = t;
   renderSlots();
   renderCalendarSlotControls();
@@ -1747,7 +1750,7 @@ function toggleFavoriteSpaceFromModal() {
   const isFav = getFavoriteSpaceId() === spaceId;
   setFavoriteSpaceId(isFav ? null : spaceId);
   _updateModalFavBtn(spaceId);
-  toast(isFav ? 'Убрано из любимых' : 'Добавлено в любимые места', isFav ? 't-amber' : 't-green', isFav ? '★' : '★');
+  toast(isFav ? 'Убрано из любимых' : 'Добавлено в любимые места', isFav ? 't-amber' : 't-green');
 }
 
 function renderFavoriteSpace() {
@@ -1904,7 +1907,7 @@ function renderMiniBookings() {
     return `<div class="mini-booking">
       <div class="mb-label">${escapeHtml(sp?.label || b.spaceName || '?')}</div>
       <div class="mb-meta">${fmtHuman(b.date)} · ${b.slotFrom}–${b.slotTo}</div>
-      <button class="mb-del" onclick="cancelBooking('${b.id}')">✕</button>
+      <button class="mb-del" onclick="cancelBooking('${b.id}')" title="Отменить" aria-label="Отменить бронь">${ICON_X}</button>
     </div>`;
   }).join('');
 }
@@ -1969,10 +1972,16 @@ function renderMapView() {
       if (isMineBooking(bk)) { isMine = true; }
       else { isBusy = true; if (!busyBk) busyBk = bk; }
     }
-    // Занято чужим — красное; только моё — синее; свободно везде — зелёное.
-    // Цвета берём из тех же CSS-переменных, что и у индикаторов под названием этажа.
-    const fill   = isBusy ? statusColors.busy : isMine ? statusColors.mine : statusColors.free;
-    const opacity = 0.82;
+    // Свободно — зелёный контур, занято чужим — нейтральный серый, моё — сплошной
+    // фирменный красный. Остальное — лёгкая полупрозрачная заливка, чтобы план
+    // этажа под зонами оставался читаемым. Цвета — из тех же CSS-переменных, что
+    // и у индикаторов под названием этажа.
+    const state  = isBusy ? 'busy' : isMine ? 'mine' : 'free';
+    const tone   = statusColors[state];
+    const solid  = state === 'mine';
+    const fillOpacity = solid ? 0.92 : state === 'busy' ? 0.2 : 0.1;
+    const ink    = solid ? '#ffffff' : (state === 'busy' ? '#364252' : '#0f1923');
+    const inkSub = solid ? 'rgba(255,255,255,.8)' : '#667282';
     // coords are % → scale to SVG px
     const x = sp.x/100*W, y = sp.y/100*H, w = sp.w/100*W, h = sp.h/100*H;
     const lines = sp.label.split(' ');
@@ -1981,28 +1990,27 @@ function renderMapView() {
     let textHtml = '';
     if (lines.length <= 2) {
       textHtml = lines.map((l,i) => `<text x="${x+w/2}" y="${cy + (i-(lines.length-1)/2)*14}"
-        text-anchor="middle" dominant-baseline="middle" fill="white"
-        font-family="DM Sans,sans-serif" font-size="11.5" font-weight="700">${escapeHtml(l)}</text>`).join('');
+        text-anchor="middle" dominant-baseline="middle" fill="${ink}"
+        font-family="DM Sans,sans-serif" font-size="11.5" font-weight="600">${escapeHtml(l)}</text>`).join('');
     } else {
       textHtml = `<text x="${x+w/2}" y="${cy}" text-anchor="middle" dominant-baseline="middle"
-        fill="white" font-family="DM Sans,sans-serif" font-size="11" font-weight="700">${escapeHtml(sp.label)}</text>`;
+        fill="${ink}" font-family="DM Sans,sans-serif" font-size="11" font-weight="600">${escapeHtml(sp.label)}</text>`;
     }
-    // seats badge
-    const seatsHtml = `<rect x="${x+w-22}" y="${y+4}" width="18" height="13" rx="6" fill="rgba(0,0,0,.25)"/>
-      <text x="${x+w-13}" y="${y+14}" text-anchor="middle" fill="rgba(255,255,255,.9)"
-        font-family="DM Mono,monospace" font-size="8" font-weight="500">${sp.seats}</text>`;
+    // seats count (small, unobtrusive)
+    const seatsHtml = `<text x="${x+w-6}" y="${y+13}" text-anchor="end" fill="${inkSub}"
+        font-family="DM Mono,monospace" font-size="9" font-weight="500">${sp.seats}</text>`;
     // Подпись: при нескольких датах показываем «Занято» без имени (у разных дней могут быть разные люди)
     const whoHtml = isBusy
-      ? `<text x="${x+w/2}" y="${y+h-7}" text-anchor="middle" fill="rgba(255,255,255,.75)"
-          font-family="DM Sans,sans-serif" font-size="9">${checkDates.length > 1 ? 'Занято' : escapeHtml(shortName(busyBk.userName))}</text>`
+      ? `<text x="${x+w/2}" y="${y+h-7}" text-anchor="middle" fill="${inkSub}"
+          font-family="DM Sans,sans-serif" font-size="9.5">${checkDates.length > 1 ? 'Занято' : escapeHtml(shortName(busyBk.userName))}</text>`
       : isMine
-      ? `<text x="${x+w/2}" y="${y+h-7}" text-anchor="middle" fill="rgba(255,255,255,.75)"
-          font-family="DM Sans,sans-serif" font-size="9">Моё</text>`
+      ? `<text x="${x+w/2}" y="${y+h-7}" text-anchor="middle" fill="${inkSub}"
+          font-family="DM Sans,sans-serif" font-size="9.5">Моё</text>`
       : '';
 
     zones += `<g class="zone-svg" style="cursor:pointer" onclick="spaceClick('${sp.id}')">
-      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5"
-        fill="${fill}" fill-opacity="${opacity}" stroke="rgba(255,255,255,.4)" stroke-width="1.5"/>
+      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="4"
+        fill="${tone}" fill-opacity="${fillOpacity}" stroke="${tone}" stroke-opacity="${solid ? 1 : 0.85}" stroke-width="1.25"/>
       ${seatsHtml}${textHtml}${whoHtml}
     </g>`;
   });
@@ -2047,7 +2055,6 @@ function updateMapZoomLabel() {
 
 function renderListView(spaces, date, from, to) {
   const la = document.getElementById('list-area');
-  const types = { 'Кабинет':'🚪', 'Переговорная':'👥', 'Опен-спейс':'💻', 'Тихая зона':'🤫', 'зона':'📍' };
 
   la.innerHTML = `<table class="spaces-table">
     <thead><tr>
@@ -2057,9 +2064,8 @@ function renderListView(spaces, date, from, to) {
       const bk    = findBookingForSpace(sp.id, date, from, to);
       const isMine = isMineBooking(bk);
       const isBusy = bk && !isMine;
-      const icon = Object.entries(types).find(([k]) => sp.label.includes(k))?.[1] || '📍';
       return `<tr>
-        <td><strong>${icon} ${escapeHtml(sp.label)}</strong></td>
+        <td><strong>${escapeHtml(sp.label)}</strong></td>
         <td>${sp.seats}</td>
         <td>${!bk
           ? `<span class="status-dot"><span class="dot dot-free"></span>Свободно</span>`
@@ -2143,9 +2149,9 @@ function canRestoreBookingEntry(booking) {
 ═══════════════════════════════════════════════════════ */
 function spaceClick(spaceId) {
   const sp      = getSpaces().find(s=>s.id===spaceId);
-  if (!sp) { toast('Помещение не найдено', 't-red', '✕'); return; }
+  if (!sp) { toast('Помещение не найдено', 't-red'); return; }
   const floor   = getFloors().find(f=>f.id===sp.floorId);
-  if (!floor) { toast('Этаж не найден', 't-red', '✕'); return; }
+  if (!floor) { toast('Этаж не найден', 't-red'); return; }
   const date    = selDates[0] || fmtDate(new Date());
   const from    = slotFrom(), to = slotTo();
   const bk      = findBookingForSpace(spaceId, date, from, to);
@@ -2224,8 +2230,8 @@ function spaceClick(spaceId) {
       <div class="mig-item"><div class="mig-l">Этаж</div><div class="mig-v">${escapeHtml(floor.name)}</div></div>
       <div class="mig-item"><div class="mig-l">Время</div><div class="mig-v">${from}–${to}</div></div>
     </div>
-    ${isBusy ? `<div style="padding:.75rem;background:var(--amber-l);border:1px solid rgba(217,119,6,.25);
-      border-radius:var(--radius);font-size:13px;color:var(--amber)">
+    ${isBusy ? `<div style="padding:.75rem;background:var(--paper);border:1px solid var(--line);
+      border-radius:var(--radius);font-size:13px;color:var(--ink2)">
       Занято: <strong>${escapeHtml(bk.userName)}</strong>
       ${canCancelBusy ? `<div style="margin-top:4px;font-size:12px;color:var(--ink3)">У вас есть право отменить эту бронь</div>` : ''}
     </div>` : ''}`;
@@ -2259,14 +2265,14 @@ function spaceClick(spaceId) {
 async function showSpaceHistoryModal(spaceId) {
   const sp = getSpaces().find(s => sameId(s.id, spaceId));
   if (!sp) {
-    toast('Место не найдено', 't-red', '✕');
+    toast('Место не найдено', 't-red');
     return;
   }
   const r = await apiFetch(`/api/spaces/${encodeURIComponent(spaceId)}/history?limit=80`);
   if (r.status === 401) return requireRelogin();
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
-    toast(data.error || 'Не удалось загрузить историю', 't-red', '✕');
+    toast(data.error || 'Не удалось загрузить историю', 't-red');
     return;
   }
 
@@ -2315,11 +2321,11 @@ async function showSpaceHistoryModal(spaceId) {
 
 async function bookSpace(spaceId) {
   const sp   = getSpaces().find(s=>s.id===spaceId);
-  if (!sp) { toast('Помещение не найдено', 't-red', '✕'); return; }
+  if (!sp) { toast('Помещение не найдено', 't-red'); return; }
   const from = slotFrom(), to = slotTo();
   const targetId = document.getElementById('book-for-user')?.value || bookingForUserId || currentUser.id;
   if (!canBookForUser(targetId)) {
-    toast('Нельзя бронировать за выбранного сотрудника', 't-red', '✕');
+    toast('Нельзя бронировать за выбранного сотрудника', 't-red');
     return;
   }
   const targetUser = getUsers().find(u=>u.id===targetId) || currentUser;
@@ -2346,9 +2352,9 @@ async function bookSpace(spaceId) {
       renderStats();
       renderMiniBookings();
       if (currentView === 'map') renderMapView();
-      return toast('Карта обновлена. Место было изменено или удалено — выберите снова.', 't-amber', '!');
+      return toast('Карта обновлена. Место было изменено или удалено — выберите снова.', 't-amber');
     }
-    return toast(errMsg, 't-red', '✕');
+    return toast(errMsg, 't-red');
   }
 
   saveBookings(Array.isArray(data.bookings) ? data.bookings : []);
@@ -2378,15 +2384,15 @@ async function bookSpace(spaceId) {
   const who = isCurrentUserId(targetUser.id) ? '' : ` для ${targetUser.name}`;
   if (created === 0) {
     if (skippedBusyDates.length) {
-      return toast(`Стол недоступен: ${previewDates(skippedBusyDates)}. Выберите другое место.`, 't-amber', '!');
+      return toast(`Стол недоступен: ${previewDates(skippedBusyDates)}. Выберите другое место.`, 't-amber');
     }
     const reason = parts.length ? ` (${parts.join(', ')})` : '';
-    return toast(`Бронь не создана${reason}`, 't-amber', '!');
+    return toast(`Бронь не создана${reason}`, 't-amber');
   }
   const msg = parts.length
     ? `Забронировано${who}: ${created} дн., пропущено (${parts.join(', ')})`
     : `Забронировано${who}: ${created} ${created===1?'день':'дней'}`;
-  toast(msg, 't-green', '✓');
+  toast(msg, 't-green');
 
   selDates = [];
   calAnchorDate = null;
@@ -2411,7 +2417,7 @@ function refreshView() {
 async function cancelBooking(id, options = {}) {
   const bk = getBookings().find(b=>b.id===id);
   if (!bk) return;
-  if (!canCancelBooking(bk)) return toast('Недостаточно прав для отмены', 't-red', '✕');
+  if (!canCancelBooking(bk)) return toast('Недостаточно прав для отмены', 't-red');
   if (!options.force) {
     const label = getSpaces().find(s => s.id === bk.spaceId)?.label || bk.spaceName || 'это бронирование';
     confirmAction(`Отменить бронь «${escapeHtml(label)}» на ${fmtHuman(bk.date)} ${bk.slotFrom}–${bk.slotTo}?`, () => {
@@ -2427,7 +2433,7 @@ async function cancelBooking(id, options = {}) {
   });
   if (r.status === 401) return requireRelogin();
   const data = await r.json();
-  if (!r.ok) return toast(data.error || 'Ошибка отмены', 't-red', '✕');
+  if (!r.ok) return toast(data.error || 'Ошибка отмены', 't-red');
 
   saveBookings(Array.isArray(data.bookings) ? data.bookings : []);
   selectedMyBookingIds.delete(id);
@@ -2435,7 +2441,7 @@ async function cancelBooking(id, options = {}) {
     adminCancellationAuditLoadedAt = 0;
     loadAdminCancellationAudit(true).catch(() => {});
   }
-  toast('Бронирование отменено', '', '✓');
+  toast('Бронирование отменено', '');
   renderCalendar(); renderStats(); renderMiniBookings();
   if (currentView === 'map') renderMapView();
   if (currentView === 'mybookings') renderMyBookingsView();
@@ -2463,7 +2469,7 @@ function toggleMyBookingsSelectAll(checked) {
 
 async function cancelSelectedMyBookings() {
   const ids = [...selectedMyBookingIds];
-  if (!ids.length) return toast('Не выбраны бронирования для отмены', 't-amber', '!');
+  if (!ids.length) return toast('Не выбраны бронирования для отмены', 't-amber');
   const n = ids.length;
   const word = pluralRu(n, 'бронирование', 'бронирования', 'бронирований');
   confirmAction(`Отменить ${n} ${word}?`, () => _doCancelSelected(ids));
@@ -2506,11 +2512,10 @@ async function _doCancelSelected(ids) {
   if (cancelled > 0) {
     toast(
       failed > 0 ? `Отменено: ${cancelled}, ошибок: ${failed}` : `Отменено бронирований: ${cancelled}`,
-      failed > 0 ? 't-amber' : 't-green',
-      failed > 0 ? '!' : '✓'
+      failed > 0 ? 't-amber' : 't-green'
     );
   } else {
-    toast('Не удалось отменить выбранные бронирования', 't-red', '✕');
+    toast('Не удалось отменить выбранные бронирования', 't-red');
   }
 
   renderCalendar();
@@ -2809,8 +2814,8 @@ function renderTeamView() {
   } else {
     content.innerHTML = `
     <div class="metrics">
-      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${team.length}</div><div class="metric-l">${staffWord.charAt(0).toUpperCase()+staffWord.slice(1)}</div></div>
-      <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${filteredBks.length}</div><div class="metric-l">${bkWord.charAt(0).toUpperCase()+bkWord.slice(1)}</div></div>
+      <div class="metric"><div class="metric-n">${team.length}</div><div class="metric-l">${staffWord.charAt(0).toUpperCase()+staffWord.slice(1)}</div></div>
+      <div class="metric"><div class="metric-n">${filteredBks.length}</div><div class="metric-l">${bkWord.charAt(0).toUpperCase()+bkWord.slice(1)}</div></div>
     </div>
     <div class="card">
       <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
@@ -2895,7 +2900,7 @@ function buildDeptCard(dept, users) {
         ${members.map(u=>`
           <span class="dept-member-chip">
             ${escapeHtml(u.name)}
-            ${manualMemberIds.has(u.id) ? `<button onclick="removeMemberFromDept('${dept.id}','${u.id}')" title="Убрать">×</button>` : ''}
+            ${manualMemberIds.has(u.id) ? `<button onclick="removeMemberFromDept('${dept.id}','${u.id}')" title="Убрать" aria-label="Убрать">${ICON_X}</button>` : ''}
           </span>`).join('')}
       </div>
       ${nonMembers.length ? `
@@ -2935,13 +2940,13 @@ function addDepartment() {
 
 function createDepartment() {
   const name = document.getElementById('new-dept-name').value.trim();
-  if (!name) return toast('Введите название', 't-red', '✕');
+  if (!name) return toast('Введите название', 't-red');
   const depts = getDepartments();
   depts.push({ id: DB.uid(), name, headUserId: null, memberIds: [] });
   saveDepartments(depts);
   closeModal();
   _refreshDeptTab();
-  toast('Отдел создан', '', '✓');
+  toast('Отдел создан', '');
 }
 
 function editDeptName(deptId) {
@@ -2963,7 +2968,7 @@ function editDeptName(deptId) {
 
 function saveDeptName(deptId) {
   const name = document.getElementById('edit-dept-name').value.trim();
-  if (!name) return toast('Введите название', 't-red', '✕');
+  if (!name) return toast('Введите название', 't-red');
   const depts = getDepartments();
   const dept  = depts.find(d => d.id === deptId);
   if (!dept) return;
@@ -2980,7 +2985,7 @@ function deleteDepartment(deptId) {
   confirmAction(`Удалить отдел «${escapeHtml(dept.name)}»?`, () => {
     saveDepartments(getDepartments().filter(d => d.id !== deptId));
     _refreshDeptTab();
-    toast('Отдел удалён', '', '✓');
+    toast('Отдел удалён', '');
   });
 }
 
@@ -2990,7 +2995,7 @@ function setDeptHead(deptId, userId) {
   if (!dept) return;
   dept.headUserId = userId || null;
   saveDepartments(depts);
-  toast('Руководитель обновлён', '', '✓');
+  toast('Руководитель обновлён', '');
 }
 
 function addMemberToDeptById(deptId, userId) {
@@ -3119,7 +3124,7 @@ function setAdminStatsPeriod(v) {
 function setAdminStatsDateFrom(v) {
   const parsed = parseDateRu(v);
   if (!parsed && String(v || '').trim()) {
-    toast('Введите дату в формате дд.мм.гггг', 't-red', '✕');
+    toast('Введите дату в формате дд.мм.гггг', 't-red');
     rerenderAdminStats();
     return;
   }
@@ -3129,7 +3134,7 @@ function setAdminStatsDateFrom(v) {
 function setAdminStatsDateTo(v) {
   const parsed = parseDateRu(v);
   if (!parsed && String(v || '').trim()) {
-    toast('Введите дату в формате дд.мм.гггг', 't-red', '✕');
+    toast('Введите дату в формате дд.мм.гггг', 't-red');
     rerenderAdminStats();
     return;
   }
@@ -3410,10 +3415,10 @@ async function loadAndRenderAdminStatsResults(token, ctx) {
 
   resultsEl.innerHTML = `
     <div class="metrics">
-      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${data.activeUsers}<span style="font-size:14px;font-weight:500;color:var(--ink3)">/${data.totalStaff}</span></div><div class="metric-l">Сотрудников с визитами</div></div>
-      <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${data.rows.length}</div><div class="metric-l">Бронирований за период</div></div>
-      <div class="metric mt-purple"><div class="metric-n" style="color:var(--purple)">${attendancePct}%</div><div class="metric-l">Охват сотрудников</div></div>
-      <div class="metric mt-amber"><div class="metric-n" style="color:var(--amber)">${data.totalHours}</div><div class="metric-l">Часов забронировано</div></div>
+      <div class="metric"><div class="metric-n">${data.activeUsers}<span style="font-size:14px;font-weight:500;color:var(--ink3)">/${data.totalStaff}</span></div><div class="metric-l">Сотрудников с визитами</div></div>
+      <div class="metric"><div class="metric-n">${data.rows.length}</div><div class="metric-l">Бронирований за период</div></div>
+      <div class="metric"><div class="metric-n">${attendancePct}%</div><div class="metric-l">Охват сотрудников</div></div>
+      <div class="metric"><div class="metric-n">${data.totalHours}</div><div class="metric-l">Часов забронировано</div></div>
     </div>
 
     <div class="stats-kpi-strip">
@@ -3493,11 +3498,11 @@ function exportExcelWorkbook(filename, sheets, extraStyles = '') {
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  toast(`Excel выгружен: ${filename}`, 't-green', '✓');
+  toast(`Excel выгружен: ${filename}`, 't-green');
 }
 
 async function exportAdminStatsExcel() {
-  toast('Формируем отчёт…', '', '⏳');
+  toast('Формируем отчёт…', '');
   const data = await loadAdminStatsData();
   const period = `${data.from}_${data.to}`;
   const summaryRows = [
@@ -3582,7 +3587,7 @@ function coworkingReportLabel(coworkingName) {
 }
 
 async function exportAdminStatsSimpleExcel() {
-  toast('Формируем отчёт…', '', '⏳');
+  toast('Формируем отчёт…', '');
   const data = await loadAdminStatsData();
   const period = `${data.from}_${data.to}`;
   // Grouped by employee (А-Я), then by date within each employee —
@@ -3795,10 +3800,10 @@ function renderAdminUsers(el) {
     </div>
   </div>
   <div class="metrics" style="margin-bottom:1.25rem">
-    <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${users.length}</div><div class="metric-l">Пользователей</div></div>
-    <div class="metric mt-amber"><div class="metric-n" style="color:var(--amber)">${users.filter(u=>u.role==='manager').length}</div><div class="metric-l">Руководителей</div></div>
-    <div class="metric mt-purple"><div class="metric-n" style="color:var(--purple)">${users.filter(u=>u.role==='admin').length}</div><div class="metric-l">Администраторов</div></div>
-    <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${bks.length}</div><div class="metric-l">Активных бронирований</div></div>
+    <div class="metric"><div class="metric-n">${users.length}</div><div class="metric-l">Пользователей</div></div>
+    <div class="metric"><div class="metric-n">${users.filter(u=>u.role==='manager').length}</div><div class="metric-l">Руководителей</div></div>
+    <div class="metric"><div class="metric-n">${users.filter(u=>u.role==='admin').length}</div><div class="metric-l">Администраторов</div></div>
+    <div class="metric"><div class="metric-n">${bks.length}</div><div class="metric-l">Активных бронирований</div></div>
   </div>
   <div class="card"><div class="card-head">Пользователи</div>
   <div style="padding:0"><table class="data-table">
@@ -3829,7 +3834,7 @@ function renderAdminUsers(el) {
             : `<span class="badge badge-green">Активен</span>`}
         </td>
         <td style="white-space:nowrap">
-          <button class="btn btn-ghost btn-xs" data-uid="${u.id}" onclick="showEditUserModal(this.dataset.uid)">✏️ Редактировать</button>
+          <button class="btn btn-ghost btn-xs" data-uid="${u.id}" onclick="showEditUserModal(this.dataset.uid)">Редактировать</button>
           ${isSelf ? '' : `<button class="btn ${u.blocked ? 'btn-ghost' : 'btn-danger'} btn-xs" data-uid="${u.id}" onclick="toggleUserBlock(this.dataset.uid, ${u.blocked ? 0 : 1})">
             ${u.blocked ? 'Разблокировать' : 'Заблокировать'}</button>`}
           ${isSelf ? '' : `<button class="btn btn-danger btn-xs" data-uid="${u.id}" data-name="${escapeHtml(u.name)}" onclick="deleteUser(this.dataset.uid, this.dataset.name)">Удалить</button>`}
@@ -3865,10 +3870,10 @@ function showEditUserModal(uid) {
     const email = document.getElementById('edit-user-email').value.trim().toLowerCase();
     const dept = document.getElementById('edit-user-dept').value.trim();
     
-    if (!name || !email) { toast('Заполните обязательные поля', 't-red', '✕'); return; }
+    if (!name || !email) { toast('Заполните обязательные поля', 't-red'); return; }
     
     const emailExists = users.find(x => x.id !== u.id && x.email === email);
-    if (emailExists) { toast('Email уже используется', 't-red', '✕'); return; }
+    if (emailExists) { toast('Email уже используется', 't-red'); return; }
 
     try {
       const r = await apiFetch('/api/users/update', {
@@ -3879,15 +3884,15 @@ function showEditUserModal(uid) {
       if (r.status === 401) return requireRelogin();
       const data = await r.json();
       if (!r.ok) {
-        toast(data.error || 'Не удалось обновить пользователя', 't-red', '✕');
+        toast(data.error || 'Не удалось обновить пользователя', 't-red');
         return;
       }
       if (Array.isArray(data.users)) saveUsers(data.users);
       closeModal();
       if (currentView === 'admin') renderAdminView();
-      toast(`Пользователь обновлён: ${name}`, 't-green', '✓');
+      toast(`Пользователь обновлён: ${name}`, 't-green');
     } catch {
-      toast('Нет соединения с сервером', 't-red', '✕');
+      toast('Нет соединения с сервером', 't-red');
     }
   });
   
@@ -3900,7 +3905,7 @@ async function updateUserDept(uid, dept) {
   if (!u) return;
   const nextDept = dept.trim();
   if (!nextDept) {
-    toast('Укажите отдел', 't-red', '✕');
+    toast('Укажите отдел', 't-red');
     if (currentView === 'admin') renderAdminView();
     return;
   }
@@ -3915,15 +3920,15 @@ async function updateUserDept(uid, dept) {
     if (r.status === 401) return requireRelogin();
     const data = await r.json();
     if (!r.ok) {
-      toast(data.error || 'Не удалось обновить отдел', 't-red', '✕');
+      toast(data.error || 'Не удалось обновить отдел', 't-red');
       if (currentView === 'admin') renderAdminView();
       return;
     }
     if (Array.isArray(data.users)) saveUsers(data.users);
     if (currentView === 'admin') renderAdminView();
-    toast(`Отдел обновлён: ${u.name}`, 't-green', '✓');
+    toast(`Отдел обновлён: ${u.name}`, 't-green');
   } catch {
-    toast('Нет соединения с сервером', 't-red', '✕');
+    toast('Нет соединения с сервером', 't-red');
     if (currentView === 'admin') renderAdminView();
   }
 }
@@ -3959,7 +3964,7 @@ function showPasswordModal(uid) {
   document.getElementById('pwd-save-btn').addEventListener('click', async () => {
     const newPwd = document.getElementById('new-password-input').value.trim();
     if (!newPwd) { closeModal(); return; }
-    if (newPwd.length < 6) { toast('Минимум 6 символов', 't-red', '✕'); return; }
+    if (newPwd.length < 6) { toast('Минимум 6 символов', 't-red'); return; }
 
     try {
       const r = await apiFetch('/api/users/password', {
@@ -3970,15 +3975,15 @@ function showPasswordModal(uid) {
       if (r.status === 401) return requireRelogin();
       const data = await r.json();
       if (!r.ok) {
-        toast(data.error || 'Не удалось обновить пароль', 't-red', '✕');
+        toast(data.error || 'Не удалось обновить пароль', 't-red');
         return;
       }
       if (Array.isArray(data.users)) saveUsers(data.users);
       closeModal();
       if (currentView === 'admin') renderAdminView();
-      toast(`Пароль обновлён для ${u.name}`, 't-green', '✓');
+      toast(`Пароль обновлён для ${u.name}`, 't-green');
     } catch {
-      toast('Нет соединения с сервером', 't-red', '✕');
+      toast('Нет соединения с сервером', 't-red');
     }
   });
   
@@ -4048,7 +4053,7 @@ async function importUsersFromCsv() {
   const errText = Array.isArray(data.errors) && data.errors.length
     ? ` Ошибок: ${data.errors.length}.`
     : '';
-  toast(`Импорт завершён. Создано: ${data.created || 0}, обновлено: ${data.updated || 0}, пропущено: ${data.skipped || 0}.${errText}`, 't-green', '✓');
+  toast(`Импорт завершён. Создано: ${data.created || 0}, обновлено: ${data.updated || 0}, пропущено: ${data.skipped || 0}.${errText}`, 't-green');
   if (currentView === 'admin') renderAdminView('users');
 
   if (Array.isArray(data.createdCredentials) && data.createdCredentials.length) {
@@ -4083,7 +4088,7 @@ async function createAdminUser() {
   if (!r.ok) return showErr(data.error || 'Не удалось создать аккаунт');
   if (Array.isArray(data.users)) saveUsers(data.users);
   closeModal();
-  toast('Аккаунт создан', 't-green', '✓');
+  toast('Аккаунт создан', 't-green');
   if (currentView === 'admin') renderAdminView();
 }
 
@@ -4097,12 +4102,12 @@ async function setUserRole(uid, role) {
   if (r.status === 401) return requireRelogin();
   const data = await r.json();
   if (!r.ok) {
-    toast(data.error || 'Не удалось обновить роль', 't-red', '✕');
+    toast(data.error || 'Не удалось обновить роль', 't-red');
     if (currentView === 'admin') renderAdminView();
     return;
   }
   if (Array.isArray(data.users)) saveUsers(data.users);
-  toast('Роль обновлена', 't-green', '✓');
+  toast('Роль обновлена', 't-green');
   if (currentView === 'admin') renderAdminView();
 }
 
@@ -4110,7 +4115,7 @@ async function toggleUserBlock(uid, nextBlocked) {
   const user = getUsers().find(u => u.id === uid);
   if (!user) return;
   if (isCurrentUserId(user.id)) {
-    toast('Нельзя заблокировать себя', 't-red', '✕');
+    toast('Нельзя заблокировать себя', 't-red');
     return;
   }
   const action = Number(nextBlocked) === 1 ? 'Заблокировать' : 'Разблокировать';
@@ -4124,12 +4129,12 @@ async function toggleUserBlock(uid, nextBlocked) {
   if (r.status === 401) return requireRelogin();
   const data = await r.json();
   if (!r.ok) {
-    toast(data.error || 'Не удалось обновить статус', 't-red', '✕');
+    toast(data.error || 'Не удалось обновить статус', 't-red');
     if (currentView === 'admin') renderAdminView('users');
     return;
   }
   if (Array.isArray(data.users)) saveUsers(data.users);
-  toast(Number(nextBlocked) === 1 ? 'Пользователь заблокирован' : 'Пользователь разблокирован', 't-green', '✓');
+  toast(Number(nextBlocked) === 1 ? 'Пользователь заблокирован' : 'Пользователь разблокирован', 't-green');
   if (currentView === 'admin') renderAdminView('users');
 }
 
@@ -4142,10 +4147,10 @@ async function deleteUser(uid, name) {
   });
   if (r.status === 401) return requireRelogin();
   const data = await r.json();
-  if (!r.ok) return toast(data.error || 'Не удалось удалить пользователя', 't-red', '✕');
+  if (!r.ok) return toast(data.error || 'Не удалось удалить пользователя', 't-red');
   if (Array.isArray(data.users)) saveUsers(data.users);
   if (Array.isArray(data.bookings)) saveBookings(data.bookings);
-  toast(`${escapeHtml(name)} удалён`, '', '✓');
+  toast(`${escapeHtml(name)} удалён`, '');
   renderAdminView();
 }
 
@@ -4230,7 +4235,7 @@ function renderAdminBookings(el) {
 
   const uPill = adminBkUserFilter ? (()=>{
     const u=users.find(u=>u.id===adminBkUserFilter);
-    return `<span class="filter-pill">${escapeHtml(u?.name||'?')}<button onclick="adminBkSetUserFilter('')">×</button></span>`;
+    return `<span class="filter-pill">${escapeHtml(u?.name||'?')}<button onclick="adminBkSetUserFilter('')" aria-label="Сбросить">${ICON_X}</button></span>`;
   })() : '';
   const coworkings = getCoworkings();
   const floorOptions = adminBkCoworkingFilter
@@ -4239,10 +4244,10 @@ function renderAdminBookings(el) {
 
   el.innerHTML = `
     <div class="metrics" style="margin-bottom:1.25rem">
-      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${bks.length}</div><div class="metric-l">Всего бронирований</div></div>
-      <div class="metric mt-green"><div class="metric-n" style="color:${weekTrendColor}">${weekDeltaSign}${weekDelta}</div><div class="metric-l">Изменение за неделю (${weekDeltaSign}${weekDeltaPct}%)</div></div>
-      <div class="metric mt-purple"><div class="metric-n" style="color:var(--purple)">${totalSpaces}</div><div class="metric-l">Всего рабочих пространств</div></div>
-      <div class="metric mt-amber"><div class="metric-n" style="color:var(--amber)">${todayLoadPct}%</div><div class="metric-l">Загрузка сегодня (${todayUniqueSpaces}/${totalSpaces||0})</div></div>
+      <div class="metric"><div class="metric-n">${bks.length}</div><div class="metric-l">Всего бронирований</div></div>
+      <div class="metric"><div class="metric-n" style="color:${weekTrendColor}">${weekDeltaSign}${weekDelta}</div><div class="metric-l">Изменение за неделю (${weekDeltaSign}${weekDeltaPct}%)</div></div>
+      <div class="metric"><div class="metric-n">${totalSpaces}</div><div class="metric-l">Всего рабочих пространств</div></div>
+      <div class="metric"><div class="metric-n">${todayLoadPct}%</div><div class="metric-l">Загрузка сегодня (${todayUniqueSpaces}/${totalSpaces||0})</div></div>
     </div>
 
     <div class="card">
@@ -4288,8 +4293,8 @@ function renderAdminBookings(el) {
             oninput="adminBkSetSearch(this.value)" style="width:190px">
           <input type="date" class="search-input" value="${adminBkDateFrom}" onchange="adminBkSetDateFrom(this.value)" title="С даты" style="width:130px">
           <input type="date" class="search-input" value="${adminBkDateTo}" onchange="adminBkSetDateTo(this.value)" title="По дату" style="width:130px">
-          ${hasFilters?`<button class="btn btn-ghost btn-sm" onclick="adminBkClearFilters()">✕ Сбросить</button>`:''}
-          <button class="btn btn-ghost btn-sm" onclick="exportCSV(getAdminFilteredBookings().filtered)">⬇ CSV</button>
+          ${hasFilters?`<button class="btn btn-ghost btn-sm" onclick="adminBkClearFilters()">Сбросить</button>`:''}
+          <button class="btn btn-ghost btn-sm" onclick="exportCSV(getAdminFilteredBookings().filtered)">Скачать CSV</button>
         </div>
       </div>
       <div style="padding:0"><table class="data-table">
@@ -4343,9 +4348,9 @@ async function adminRestoreBk(id) {
   });
   if (r.status === 401) return requireRelogin();
   const data = await r.json();
-  if (!r.ok) return toast(data.error || 'Не удалось восстановить бронирование', 't-red', '✕');
+  if (!r.ok) return toast(data.error || 'Не удалось восстановить бронирование', 't-red');
   if (Array.isArray(data.bookings)) saveBookings(data.bookings);
-  toast('Бронирование восстановлено', 't-green', '✓');
+  toast('Бронирование восстановлено', 't-green');
   if (currentView === 'admin') renderAdminView('bookings');
 }
 function adminBkSetSearch(v)     { adminBkSearch=String(v||'').toLowerCase(); renderAdminView('bookings'); }
@@ -4469,9 +4474,9 @@ function renderAdminAudit(el) {
   const adminCount = events.filter(e => e.actorRole === 'admin').length;
   el.innerHTML = `
     <div class="metrics" style="margin-bottom:1.25rem">
-      <div class="metric mt-red"><div class="metric-n" style="color:var(--red)">${events.length}</div><div class="metric-l">Всего отмен в журнале</div></div>
-      <div class="metric mt-amber"><div class="metric-n" style="color:var(--amber)">${managerCount}</div><div class="metric-l">Отмен руководителями</div></div>
-      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${adminCount}</div><div class="metric-l">Отмен администраторами</div></div>
+      <div class="metric"><div class="metric-n">${events.length}</div><div class="metric-l">Всего отмен в журнале</div></div>
+      <div class="metric"><div class="metric-n">${managerCount}</div><div class="metric-l">Отмен руководителями</div></div>
+      <div class="metric"><div class="metric-n">${adminCount}</div><div class="metric-l">Отмен администраторами</div></div>
     </div>
     <div class="card">
       <div class="card-head">Действия руководителей и администраторов
@@ -4556,10 +4561,10 @@ function renderAdminLayoutAudit(el) {
 
   el.innerHTML = `
     <div class="metrics" style="margin-bottom:1.25rem">
-      <div class="metric mt-blue"><div class="metric-n" style="color:var(--blue)">${events.length}</div><div class="metric-l">Событий</div></div>
-      <div class="metric mt-amber"><div class="metric-n" style="color:var(--amber)">${events.filter(e => e.entityType === 'space').length}</div><div class="metric-l">Операций по зонам</div></div>
-      <div class="metric mt-purple"><div class="metric-n" style="color:var(--purple)">${events.filter(e => e.entityType === 'floor').length}</div><div class="metric-l">Операций по этажам</div></div>
-      <div class="metric mt-green"><div class="metric-n" style="color:var(--green)">${events.filter(e => e.entityType === 'coworking').length}</div><div class="metric-l">Операций по коворкингам</div></div>
+      <div class="metric"><div class="metric-n">${events.length}</div><div class="metric-l">Событий</div></div>
+      <div class="metric"><div class="metric-n">${events.filter(e => e.entityType === 'space').length}</div><div class="metric-l">Операций по зонам</div></div>
+      <div class="metric"><div class="metric-n">${events.filter(e => e.entityType === 'floor').length}</div><div class="metric-l">Операций по этажам</div></div>
+      <div class="metric"><div class="metric-n">${events.filter(e => e.entityType === 'coworking').length}</div><div class="metric-l">Операций по коворкингам</div></div>
     </div>
     <div class="card">
       <div class="card-head">История изменений планировки
@@ -4602,13 +4607,13 @@ async function loadEditorArchivedSpaces(force = false) {
     if (r.status === 401) return requireRelogin();
     const data = await r.json();
     if (!r.ok) {
-      toast(data.error || 'Не удалось загрузить архив зон', 't-red', '✕');
+      toast(data.error || 'Не удалось загрузить архив зон', 't-red');
       return;
     }
     editorArchivedSpaces = Array.isArray(data.spaces) ? data.spaces : [];
     editorArchivedLoadedFloorId = editorFloorId;
   } catch {
-    toast('Нет соединения с сервером', 't-red', '✕');
+    toast('Нет соединения с сервером', 't-red');
   } finally {
     editorArchivedLoading = false;
     if (currentView === 'admin' && adminActiveTab === 'floors') renderAdminTabContent('floors');
@@ -4625,12 +4630,12 @@ async function restoreArchivedZone(spaceId) {
   });
   if (r.status === 401) return requireRelogin();
   const data = await r.json();
-  if (!r.ok) return toast(data.error || 'Не удалось восстановить зону', 't-red', '✕');
+  if (!r.ok) return toast(data.error || 'Не удалось восстановить зону', 't-red');
   await syncFromServer().catch(() => {});
   editorArchivedSpaces = editorArchivedSpaces.filter(z => !sameId(z.id, id));
   editorArchivedLoadedFloorId = null;
   renderAdminTabContent('floors');
-  toast('Зона восстановлена', 't-green', '✓');
+  toast('Зона восстановлена', 't-green');
 }
 
 function retryEditorLock() {
@@ -4651,15 +4656,15 @@ function renderAdminFloors(el) {
 
   el.innerHTML = `
     <div style="margin-bottom:1rem;display:flex;gap:.75rem">
-      <button class="btn btn-primary" onclick="showAddCoworkingModal()">➕ Добавить коворкинг</button>
-      <button class="btn btn-primary" onclick="showAddFloorModal()">➕ Добавить этаж</button>
+      <button class="btn btn-primary" onclick="showAddCoworkingModal()">Добавить коворкинг</button>
+      <button class="btn btn-primary" onclick="showAddFloorModal()">Добавить этаж</button>
     </div>
     <div style="margin-bottom:.875rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
       <div class="floor-tabs" id="editor-coworking-tabs" style="margin-bottom:0">
         ${coworkings.map(c=>`<button class="floor-tab-btn ${c.id===editorCoworkingId?'active':''}"
           onclick="selectEditorCoworking('${c.id}',this)">${escapeHtml(c.name)}</button>`).join('')}
       </div>
-      ${editorCoworkingId ? `<button class="btn btn-danger btn-sm" onclick="deleteCoworking('${editorCoworkingId}')">🗑 Удалить коворкинг</button>` : ''}
+      ${editorCoworkingId ? `<button class="btn btn-danger btn-sm" onclick="deleteCoworking('${editorCoworkingId}')">Удалить коворкинг</button>` : ''}
     </div>
     <div style="margin-bottom:.875rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
       <div class="floor-tabs" id="editor-floor-tabs" style="margin-bottom:0">
@@ -4668,7 +4673,7 @@ function renderAdminFloors(el) {
               onclick="selectEditorFloor('${f.id}',this)">${escapeHtml(f.name)}</button>`).join('')
           : `<span style="font-size:12px;color:var(--ink4);padding:6px 10px">Нет этажей</span>`}
       </div>
-      ${editorFloorId ? `<button class="btn btn-danger btn-sm" onclick="deleteFloor('${editorFloorId}')">🗑 Удалить этаж</button>` : ''}
+      ${editorFloorId ? `<button class="btn btn-danger btn-sm" onclick="deleteFloor('${editorFloorId}')">Удалить этаж</button>` : ''}
     </div>
     <div class="editor-wrap" style="padding:0">
       <div class="editor-layout" id="editor-layout"></div>
@@ -4741,7 +4746,7 @@ function showAddCoworkingModal() {
 }
 
 function showAddFloorModal() {
-  if (!editorCoworkingId) return toast('Сначала выберите коворкинг', 't-red', '✕');
+  if (!editorCoworkingId) return toast('Сначала выберите коворкинг', 't-red');
   const existingFloors = getFloorsByCoworking(editorCoworkingId);
   const existingNames  = new Set(existingFloors.map(f => f.name.trim().toLowerCase()));
 
@@ -4795,17 +4800,17 @@ function floorChipPick(label) {
 function createCoworkingFromModal() {
   const name = document.getElementById('new-coworking-name').value.trim();
   const floorName = document.getElementById('new-floor-name').value.trim();
-  if (!name) return toast('Введите название коворкинга', 't-red', '✕');
+  if (!name) return toast('Введите название коворкинга', 't-red');
   const created = createCoworkingWithFloor(name, floorName || 'Этаж 1');
   if (!created) return;
   closeModal();
-  toast(`Коворкинг "${created.item.name}" создан`, 't-green', '✓');
+  toast(`Коворкинг "${created.item.name}" создан`, 't-green');
   refreshAdminFloorsIfOpen();
 }
 
 function createFloorFromModal() {
   const name = document.getElementById('new-floor-name').value.trim();
-  if (!name) return toast('Введите название этажа', 't-red', '✕');
+  if (!name) return toast('Введите название этажа', 't-red');
   addFloorWithName(name);
   closeModal();
 }
@@ -4817,13 +4822,13 @@ function addCoworking() {
   if (floorName === null) return;
   const created = createCoworkingWithFloor(name, floorName);
   if (!created) return;
-  toast(`Коворкинг "${created.item.name}" создан`, 't-green', '✓');
+  toast(`Коворкинг "${created.item.name}" создан`, 't-green');
   refreshAdminFloorsIfOpen();
 }
 
 function openAddCoworkingFlow(btn) {
   if (currentUser?.role !== 'admin') {
-    toast('Доступно только администратору', 't-red', '✕');
+    toast('Доступно только администратору', 't-red');
     return;
   }
   const name = prompt('Название коворкинга:');
@@ -4837,7 +4842,7 @@ function openAddCoworkingFlow(btn) {
   const adminBtn = document.getElementById('nav-admin-btn');
   switchView('admin', adminBtn || btn || null);
   refreshAdminFloorsIfOpen();
-  toast(`Создано: ${created.item.name} / ${created.floor.name}`, 't-green', '✓');
+  toast(`Создано: ${created.item.name} / ${created.floor.name}`, 't-green');
 }
 
 function renameCoworking(id, name) {
@@ -4854,7 +4859,7 @@ function renameCoworking(id, name) {
 function deleteCoworking(id) {
   const coworkings = getCoworkings();
   if (coworkings.length <= 1) {
-    toast('Нельзя удалить последний коворкинг', 't-red', '✕');
+    toast('Нельзя удалить последний коворкинг', 't-red');
     return;
   }
   const cw = coworkings.find(c=>c.id===id);
@@ -4995,16 +5000,16 @@ function renderEditorForFloor() {
           ${escapeHtml(floor.name)}
         </span>
         <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center">
-          <button class="btn btn-ghost btn-sm" onclick="resetEditorZoom()" title="Сбросить масштаб" style="font-size:11px">↺</button>
+          <button class="btn btn-ghost btn-sm" onclick="resetEditorZoom()" title="Сбросить масштаб" aria-label="Сбросить масштаб"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 8a5.5 5.5 0 1 0 1.8-4.1"/><path d="M2.5 2.5v3h3"/></svg></button>
           <button class="btn btn-ghost btn-sm" onclick="changeEditorZoom(-0.25)" title="Уменьшить" style="font-size:16px;padding:2px 8px;line-height:1">−</button>
           <span style="font-size:12px;color:var(--ink3);min-width:36px;text-align:center">${Math.round(editorZoom*100)}%</span>
           <button class="btn btn-ghost btn-sm" onclick="changeEditorZoom(0.25)" title="Увеличить" style="font-size:16px;padding:2px 8px;line-height:1">+</button>
           <div style="width:1px;height:18px;background:var(--line)"></div>
           <label class="btn btn-ghost btn-sm" style="cursor:pointer">
-            📎 Загрузить план (JPG/PNG/PDF)
+            Загрузить план (JPG/PNG/PDF)
             <input type="file" accept=".jpg,.jpeg,.png,.pdf,.webp" style="display:none" onchange="uploadFloorImage(event,'${floor.id}')">
           </label>
-          ${floor.imageUrl ? `<button class="btn btn-danger btn-sm" onclick="removeFloorImage('${floor.id}')">✕ Удалить план</button>` : ''}
+          ${floor.imageUrl ? `<button class="btn btn-danger btn-sm" onclick="removeFloorImage('${floor.id}')">Удалить план</button>` : ''}
           <span style="font-size:11px;color:var(--ink4)">Рисуй поверх — создаёт зону</span>
         </div>
       </div>
@@ -5050,7 +5055,7 @@ function renderEditorForFloor() {
       <div class="panel-card">
         <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between">
           Зоны (${editorSpaces.length})
-          <button class="btn btn-primary btn-sm" onclick="saveEditorSpaces()" ${lockMine ? '' : 'disabled title="Сохранение заблокировано: этаж редактирует другой администратор"'}>💾 Сохранить</button>
+          <button class="btn btn-primary btn-sm" onclick="saveEditorSpaces()" ${lockMine ? '' : 'disabled title="Сохранение заблокировано: этаж редактирует другой администратор"'}>Сохранить</button>
         </div>
         <div id="editor-zones-list" style="display:flex;flex-direction:column;gap:5px;max-height:300px;overflow-y:auto">
           ${editorSpaces.length ? editorSpaces.map(sp=>`
@@ -5059,9 +5064,9 @@ function renderEditorForFloor() {
               <div style="width:10px;height:10px;border-radius:2px;background:${safeCssColor(sp.color)};flex-shrink:0"></div>
               <span style="flex:1;font-weight:600">${escapeHtml(sp.label)}</span>
               <span style="color:var(--ink4)">${sp.seats} мест</span>
-              <button class="btn btn-ghost btn-xs" onclick="renameEditorZone('${sp.id}')" title="Переименовать">✏️</button>
-              <button class="btn btn-ghost btn-xs" onclick="duplicateEditorZone('${sp.id}')" title="Копировать">⧉</button>
-              <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')" title="Удалить">✕</button>
+              <button class="btn btn-ghost btn-xs" onclick="renameEditorZone('${sp.id}')" title="Переименовать" aria-label="Переименовать">${ICON_EDIT}</button>
+              <button class="btn btn-ghost btn-xs" onclick="duplicateEditorZone('${sp.id}')" title="Копировать" aria-label="Копировать"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg></button>
+              <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')" title="Удалить" aria-label="Удалить">${ICON_X}</button>
             </div>`).join('') :
             `<div style="font-size:12px;color:var(--ink4);text-align:center;padding:.75rem">Нет зон</div>`}
         </div>
@@ -5124,7 +5129,7 @@ function renderEditorZones() {
       ondblclick="renameEditorZone('${sp.id}')"
       style="left:${x}px;top:${y}px;width:${w}px;height:${h}px;background:${safeCssColor(sp.color)}">
       <div class="zone-label">${escapeHtml(sp.label)}<br><span style="font-size:9px;opacity:.8">${sp.seats} мест</span></div>
-      <button class="zone-del" onclick="deleteEditorZone('${sp.id}')">✕</button>
+      <button class="zone-del" onclick="deleteEditorZone('${sp.id}')" aria-label="Удалить зону">${ICON_X}</button>
     </div>`;
   }).join('');
 }
@@ -5234,7 +5239,7 @@ function createZoneFromModal(px,py,pw,ph,CW,CH) {
   renderEditorZones();
   updateEditorZonesList();
   selectEditorZone(newSp.id);
-  toast(`Зона "${label}" добавлена — не забудь сохранить`, 't-green', '✓');
+  toast(`Зона "${label}" добавлена — не забудь сохранить`, 't-green');
 }
 
 function selectEditorZone(zoneId) {
@@ -5292,12 +5297,12 @@ function saveEditorZoneName(id) {
   const sp = editorSpaces.find(s => s.id === id);
   if (!sp) return;
   const name = document.getElementById('zone-rename-input')?.value.trim();
-  if (!name) return toast('Введите название', 't-red', '✕');
+  if (!name) return toast('Введите название', 't-red');
   sp.label = name;
   closeModal();
   renderEditorZones();
   updateEditorZonesList();
-  toast('Зона переименована — не забудь сохранить', 't-green', '✓');
+  toast('Зона переименована — не забудь сохранить', 't-green');
 }
 
 function duplicateEditorZone(id) {
@@ -5315,7 +5320,7 @@ function duplicateEditorZone(id) {
   renderEditorZones();
   updateEditorZonesList();
   selectEditorZone(copy.id);
-  toast('Зона скопирована — не забудь сохранить', 't-green', '✓');
+  toast('Зона скопирована — не забудь сохранить', 't-green');
 }
 
 function pickColor(c) {
@@ -5342,9 +5347,9 @@ function updateEditorZonesList() {
       <div style="width:10px;height:10px;border-radius:2px;background:${safeCssColor(sp.color)};flex-shrink:0"></div>
       <span style="flex:1;font-weight:600">${escapeHtml(sp.label)}</span>
       <span style="color:var(--ink4)">${sp.seats} мест</span>
-      <button class="btn btn-ghost btn-xs" onclick="renameEditorZone('${sp.id}')" title="Переименовать">✏️</button>
-      <button class="btn btn-ghost btn-xs" onclick="duplicateEditorZone('${sp.id}')" title="Копировать">⧉</button>
-      <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')" title="Удалить">✕</button>
+      <button class="btn btn-ghost btn-xs" onclick="renameEditorZone('${sp.id}')" title="Переименовать" aria-label="Переименовать">${ICON_EDIT}</button>
+      <button class="btn btn-ghost btn-xs" onclick="duplicateEditorZone('${sp.id}')" title="Копировать" aria-label="Копировать"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg></button>
+      <button class="btn btn-danger btn-xs" onclick="deleteEditorZone('${sp.id}')" title="Удалить" aria-label="Удалить">${ICON_X}</button>
     </div>`).join('') :
     `<div style="font-size:12px;color:var(--ink4);text-align:center;padding:.75rem">Нет зон</div>`;
 }
@@ -5353,7 +5358,7 @@ async function saveEditorSpaces() {
   if (currentUser?.role === 'admin') {
     const lockMine = sameId(editorLockState.floorId, editorFloorId) && editorLockState.mine;
     if (!lockMine) {
-      toast(editorLockState.error || 'Сохранение заблокировано: этаж редактируется другим администратором', 't-red', '✕');
+      toast(editorLockState.error || 'Сохранение заблокировано: этаж редактируется другим администратором', 't-red');
       return;
     }
   }
@@ -5362,7 +5367,7 @@ async function saveEditorSpaces() {
   const floorIds = new Set(getFloors().map(f => f.id));
   const cleanedSpaces = finalSpaces.filter(s => floorIds.has(s.floorId));
   if (cleanedSpaces.length !== finalSpaces.length) {
-    toast('Некоторые зоны относились к удалённым этажам и были убраны', 't-amber', '!');
+    toast('Некоторые зоны относились к удалённым этажам и были убраны', 't-amber');
   }
   const okCoworkings = await pushDomainKey('coworkings', getCoworkings());
   if (!okCoworkings) return;
@@ -5377,7 +5382,7 @@ async function saveEditorSpaces() {
   renderFloors(); renderStats(); renderMiniBookings();
   adminLayoutAuditLoadedAt = 0;
   loadAdminLayoutAudit(true).catch(() => {});
-  toast('Планировка сохранена ✓', 't-green', '✓');
+  toast('Планировка сохранена', 't-green');
 }
 
 function uploadFloorImage(e, floorId) {
@@ -5386,7 +5391,7 @@ function uploadFloorImage(e, floorId) {
   const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
 
   if (isPdf) {
-    toast('Конвертирую PDF…', '', '⏳');
+    toast('Конвертирую PDF…', '');
     const url = URL.createObjectURL(file);
     pdfjsLib.getDocument(url).promise
       .then(pdf => pdf.getPage(1))
@@ -5403,7 +5408,7 @@ function uploadFloorImage(e, floorId) {
       })
       .catch(err => {
         URL.revokeObjectURL(url);
-        toast('Ошибка PDF: ' + err.message, 't-red', '✕');
+        toast('Ошибка PDF: ' + err.message, 't-red');
       });
     return;
   }
@@ -5422,7 +5427,7 @@ function _applyFloorImage(floorId, dataUrl) {
   saveFloors(floors);
   if (currentView === 'map') renderMapView();
   refreshAdminFloorsIfOpen();
-  toast('План загружен ✓', 't-green', '✓');
+  toast('План загружен', 't-green');
 }
 
 function removeFloorImage(floorId) {
@@ -5582,19 +5587,19 @@ function handleEditorHotkeys(e) {
 
   if (key === 'c') {
     if (!editorSelectedZoneId) {
-      toast('Выберите зону для копирования', 't-amber', '!');
+      toast('Выберите зону для копирования', 't-amber');
       return;
     }
     const sp = editorSpaces.find(s => s.id === editorSelectedZoneId);
     if (!sp) return;
     editorClipboardZone = { ...sp };
-    toast('Зона скопирована', 't-green', '✓');
+    toast('Зона скопирована', 't-green');
     e.preventDefault();
   }
 
   if (key === 'v') {
     if (!editorClipboardZone) {
-      toast('Скопируйте зону (Cmd/Ctrl+C)', 't-amber', '!');
+      toast('Скопируйте зону (Cmd/Ctrl+C)', 't-amber');
       return;
     }
     const offset = 2;
@@ -5609,7 +5614,7 @@ function handleEditorHotkeys(e) {
     renderEditorZones();
     updateEditorZonesList();
     selectEditorZone(copy.id);
-    toast('Зона вставлена — не забудь сохранить', 't-green', '✓');
+    toast('Зона вставлена — не забудь сохранить', 't-green');
     e.preventDefault();
   }
 }
@@ -5621,7 +5626,7 @@ function handleEditorHotkeys(e) {
 
 // Подписка на real-time обновления
 window.addEventListener('bookingUpdated', (event) => {
-  console.log('🔄 Real-time: изменение в бронированиях', event.detail);
+  console.log('Real-time: изменение в бронированиях', event.detail);
   
   // Обновляем UI
   if (currentView === 'map') renderMapView();
@@ -5633,7 +5638,7 @@ window.addEventListener('bookingUpdated', (event) => {
 });
 
 window.addEventListener('zoneUpdated', (event) => {
-  console.log('🔄 Real-time: изменение в зонах', event.detail);
+  console.log('Real-time: изменение в зонах', event.detail);
   
   // Обновляем карту
   if (currentView === 'map') renderMapView();
